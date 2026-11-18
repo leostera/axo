@@ -1,6 +1,8 @@
-//! Coding agents for Axod. Pi is the only one today: launching Pi for a Session with the lifeline
-//! that ends it with axod, the transcript writer lock that proves whether one is alive, its
-//! bridge socket, and the link axod follows it over.
+//! Coding agents for Axod (RFD0072): which agent a Session runs and what it can do (`kind`), the
+//! one shape every running agent presents to its Session (`runtime`), and each agent's adapter.
+//! Pi is the only adapter today: launching Pi for a Session with the lifeline that ends it with
+//! axod, the transcript writer lock that proves whether one is alive, its bridge socket, and the
+//! link axod follows it over.
 //!
 //! Nothing here knows about the session catalog or its database; callers decide which agent to
 //! launch and when, and what its events mean for the catalog.
@@ -8,15 +10,19 @@
 pub mod activity;
 mod command;
 mod history;
+mod kind;
 mod lock;
 pub mod pi;
 pub mod process;
+mod runtime;
 
 pub use activity::Activity;
 pub use command::AgentCommand;
 pub use history::{HistoryIdentity, ensure_existing_history, recoverable_history};
+pub use kind::{AgentKind, Capabilities, Deliveries, UnknownAgent};
 pub use axo_pty::lifeline::{LIFELINE_FD, Lifeline};
 pub use lock::{FORK_EXEC_WINDOW, WriterLock};
+pub use runtime::{AgentCommands, AgentEvent, CommandResult, QueuedDelivery, RejectReason};
 
 /// A fresh directory under /tmp (not the per-user temp directory: socket paths are limited to
 /// 104 bytes).

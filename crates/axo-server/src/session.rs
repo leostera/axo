@@ -22,7 +22,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use axo_agent::pi::link::LinkEvent;
+use axo_agent::AgentEvent;
 use axo_protocol::rpc;
 use axo_protocol::{
     Event, Layout, PaneRole, SessionId, SessionRecord, ShellActivity, ShellId, ShellRecord,
@@ -51,7 +51,7 @@ pub(crate) enum Message {
     /// The Pi's link said something.
     Link {
         runtime_id: RuntimeId,
-        event: LinkEvent,
+        event: AgentEvent,
     },
     /// A Pi launch ended.
     Launched {

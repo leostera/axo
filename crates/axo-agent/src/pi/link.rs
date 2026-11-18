@@ -20,9 +20,8 @@ use tokio::sync::{Notify, mpsc, oneshot};
 
 use crate::pi::BridgeSocketPath;
 use crate::pi::connection::{Connection, ExpectedPane, Rejection, Step};
-use crate::pi::protocol::{
-    Action, CommandResult, ModelChoice, Outgoing, ProtocolVersion, QueuedDelivery, parse_record,
-};
+use crate::pi::protocol::{Action, ModelChoice, Outgoing, ProtocolVersion, parse_record};
+use crate::runtime::{AgentEvent, CommandResult, QueuedDelivery};
 
 /// The largest record either side may send.
 pub const MAX_RECORD_BYTES: usize = 8 * 1024 * 1024;
@@ -46,25 +45,6 @@ pub struct LinkConfig {
     pub process_id: u32,
     /// Prefix for log lines, e.g. `session_id=… shell_id=2`.
     pub log_context: String,
-}
-
-/// What the link tells the Session, in the order it happens.
-#[derive(Debug, PartialEq)]
-pub enum LinkEvent {
-    /// The connection proved it serves the pane; `pi_session_id` is Pi's own transcript id.
-    Bound { pi_session_id: String },
-    /// A bound connection ended; the link tries again.
-    Disconnected,
-    /// Pi's `/resume` picked a saved Session (`None` when the request was malformed).
-    ResumeRequested { target_session_file: Option<String> },
-    /// One Pi event, in stream order.
-    Event {
-        pi_session_id: String,
-        stream_id: String,
-        sequence: u64,
-        name: String,
-        data: Value,
-    },
 }
 
 /// An [`Action`] that owns its strings, to cross to the link.
@@ -294,7 +274,7 @@ pub async fn run(
     config: LinkConfig,
     mut requests: LinkRequests,
     wake: Arc<Notify>,
-    mut report: impl FnMut(LinkEvent) -> bool + Send,
+    mut report: impl FnMut(AgentEvent) -> bool + Send,
 ) {
     let context = config.log_context.clone();
     let mut retry = RETRY_FIRST;
@@ -346,7 +326,7 @@ pub async fn run(
         )
         .await;
         if connection.is_bound() {
-            report(LinkEvent::Disconnected);
+            report(AgentEvent::Disconnected);
         }
         if let Outcome::Invalid = outcome {
             requests.refuse_waiting();
@@ -376,7 +356,7 @@ async fn follow(
     token: &str,
     connection: &mut Connection<'_>,
     requests: &mut LinkRequests,
-    report: &mut (impl FnMut(LinkEvent) -> bool + Send),
+    report: &mut (impl FnMut(AgentEvent) -> bool + Send),
     context: &str,
 ) -> Outcome {
     let (mut reader, mut writer) = stream.into_split();
@@ -453,7 +433,7 @@ fn drain_records(
     buffer: &mut Vec<u8>,
     connection: &mut Connection<'_>,
     pending: &mut HashMap<String, oneshot::Sender<io::Result<CommandResult>>>,
-    report: &mut (impl FnMut(LinkEvent) -> bool + Send),
+    report: &mut (impl FnMut(AgentEvent) -> bool + Send),
     context: &str,
 ) -> Option<Outcome> {
     let mut start = 0;
@@ -479,7 +459,7 @@ fn apply_record(
     line: &[u8],
     connection: &mut Connection<'_>,
     pending: &mut HashMap<String, oneshot::Sender<io::Result<CommandResult>>>,
-    report: &mut (impl FnMut(LinkEvent) -> bool + Send),
+    report: &mut (impl FnMut(AgentEvent) -> bool + Send),
     context: &str,
 ) -> Option<Outcome> {
     let Ok(record) = parse_record(line) else {
@@ -500,11 +480,13 @@ fn apply_record(
         }
         Step::Bound { pi_session_id } => {
             log::info!("event=pi.session_binding_verified {context}");
-            report(LinkEvent::Bound { pi_session_id })
+            report(AgentEvent::Bound {
+                agent_session_id: pi_session_id,
+            })
         }
         Step::ResumeRequested {
             target_session_file,
-        } => report(LinkEvent::ResumeRequested {
+        } => report(AgentEvent::ResumeRequested {
             target_session_file,
         }),
         Step::Event {
@@ -513,8 +495,8 @@ fn apply_record(
             sequence,
             name,
             data,
-        } => report(LinkEvent::Event {
-            pi_session_id,
+        } => report(AgentEvent::Event {
+            agent_session_id: pi_session_id,
             stream_id,
             sequence,
             name,
@@ -638,8 +620,8 @@ mod tests {
         let (mut lines, mut writer) = accept_as_pi(&listener, &directory).await;
         assert_eq!(
             heard.recv().await.unwrap(),
-            LinkEvent::Bound {
-                pi_session_id: "pi-1".into()
+            AgentEvent::Bound {
+                agent_session_id: "pi-1".into()
             }
         );
         send(
@@ -648,7 +630,7 @@ mod tests {
         )
         .await;
         assert!(
-            matches!(heard.recv().await.unwrap(), LinkEvent::Event { name, .. } if name == "agent.start")
+            matches!(heard.recv().await.unwrap(), AgentEvent::Event { name, .. } if name == "agent.start")
         );
 
         let asking = tokio::spawn({
@@ -667,11 +649,11 @@ mod tests {
 
         // Pi restarts its listener: the link says so, and comes back.
         drop((lines, writer));
-        assert_eq!(heard.recv().await.unwrap(), LinkEvent::Disconnected);
+        assert_eq!(heard.recv().await.unwrap(), AgentEvent::Disconnected);
         let _again = accept_as_pi(&listener, &directory).await;
         assert!(matches!(
             heard.recv().await.unwrap(),
-            LinkEvent::Bound { .. }
+            AgentEvent::Bound { .. }
         ));
         link.abort();
         std::fs::remove_dir_all(directory).unwrap();
@@ -692,7 +674,7 @@ mod tests {
         let (_lines, mut writer) = accept_as_pi(&listener, &directory).await;
         assert!(matches!(
             heard.recv().await.unwrap(),
-            LinkEvent::Bound { .. }
+            AgentEvent::Bound { .. }
         ));
         let event = |sequence: u64, text: &str| {
             let mut line = json!({ "type": "event", "streamId": STREAM, "sequence": sequence, "name": "message", "data": { "text": text } }).to_string();
@@ -718,7 +700,7 @@ mod tests {
         writer.write_all(&joined).await.unwrap();
         writer.write_all(third_tail).await.unwrap();
         for (expected, length) in [(1, long), (2, 1), (3, 1), (4, 1)] {
-            let LinkEvent::Event { sequence, data, .. } = heard.recv().await.unwrap() else {
+            let AgentEvent::Event { sequence, data, .. } = heard.recv().await.unwrap() else {
                 panic!("an event");
             };
             assert_eq!(sequence, expected);

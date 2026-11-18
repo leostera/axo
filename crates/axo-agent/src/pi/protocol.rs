@@ -4,12 +4,13 @@
 //! Session's bridge token, and Pi answers with its identity, then streams events and answers
 //! commands.
 
-use std::fmt;
 use std::path::PathBuf;
 
 use axo_protocol::commands::{CommandId, StopTarget};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
+
+use crate::runtime::{CommandResult, QueuedDelivery};
 
 /// The only protocol version either side speaks.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -113,16 +114,6 @@ pub struct ModelChoice<'a> {
     pub id: &'a str,
 }
 
-/// How a working Pi takes a message: `steer` after the current tool calls, `followUp` once the
-/// turn ends, `interrupt` at once, stopping the turn.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub enum QueuedDelivery {
-    Steer,
-    FollowUp,
-    Interrupt,
-}
-
 /// Records Pi sends.
 #[derive(Debug, Deserialize, PartialEq)]
 #[serde(
@@ -167,55 +158,6 @@ pub struct Identity {
     pub process_id: u64,
 }
 
-/// Pi's answer to a command.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
-#[serde(try_from = "CommandResultWire")]
-pub enum CommandResult {
-    Accepted,
-    Rejected(RejectReason),
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub enum RejectReason {
-    Invalid,
-    Busy,
-    Idle,
-    Stale,
-    Unavailable,
-}
-
-/// `{accepted: true}` or `{accepted: false, reason}`.
-#[derive(Deserialize)]
-struct CommandResultWire {
-    accepted: bool,
-    reason: Option<RejectReason>,
-}
-
-impl TryFrom<CommandResultWire> for CommandResult {
-    type Error = &'static str;
-
-    fn try_from(wire: CommandResultWire) -> Result<Self, Self::Error> {
-        match (wire.accepted, wire.reason) {
-            (true, None) => Ok(CommandResult::Accepted),
-            (false, Some(reason)) => Ok(CommandResult::Rejected(reason)),
-            _ => Err("a command result has a reason exactly when it was rejected"),
-        }
-    }
-}
-
-impl fmt::Display for RejectReason {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(match self {
-            RejectReason::Invalid => "invalid",
-            RejectReason::Busy => "busy",
-            RejectReason::Idle => "idle",
-            RejectReason::Stale => "stale",
-            RejectReason::Unavailable => "unavailable",
-        })
-    }
-}
-
 /// Parses one record (without its newline).
 pub fn parse_record(line: &[u8]) -> serde_json::Result<Record> {
     serde_json::from_slice(line)
@@ -224,6 +166,7 @@ pub fn parse_record(line: &[u8]) -> serde_json::Result<Record> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::runtime::RejectReason;
     use serde_json::json;
 
     #[test]

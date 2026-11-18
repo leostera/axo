@@ -10,8 +10,7 @@ use std::fmt;
 use std::io;
 use std::time::{Duration, Instant};
 
-use axo_agent::pi::link::LinkCommands;
-use axo_agent::pi::protocol::{CommandResult, QueuedDelivery, RejectReason};
+use axo_agent::{AgentCommands, CommandResult, QueuedDelivery, RejectReason};
 use axo_ipc::peer::{Peer, Signer};
 use axo_protocol::SessionId;
 use axo_protocol::asset::FetchedAttachment;
@@ -228,7 +227,7 @@ impl QueuedPrompt {
     }
 
     /// Sends it on `link`, oldest first, and tells whoever waits.
-    pub(crate) async fn deliver(mut self, link: &LinkCommands) {
+    pub(crate) async fn deliver(mut self, link: &AgentCommands) {
         let sent = send(link, &self.prompt).await;
         if let Err(error) = &sent {
             log::warn!(
@@ -347,7 +346,7 @@ pub(crate) fn still_starting() -> io::Error {
 
 /// Sends `prompt` on `link` and waits for Pi's answer. With a `command_id`, pi-axo takes the
 /// prompt at most once, with a receipt (RFD0024).
-pub(crate) async fn send(link: &LinkCommands, prompt: &Prompt) -> Result<(), PromptError> {
+pub(crate) async fn send(link: &AgentCommands, prompt: &Prompt) -> Result<(), PromptError> {
     let delivery = match prompt.delivery {
         PromptDelivery::Steer => Some(QueuedDelivery::Steer),
         PromptDelivery::FollowUp => Some(QueuedDelivery::FollowUp),
@@ -374,7 +373,7 @@ pub(crate) async fn send(link: &LinkCommands, prompt: &Prompt) -> Result<(), Pro
 }
 
 /// Whether the run `stop` names was running and is stopping.
-pub(crate) async fn stop(link: &LinkCommands, stop: &StopTarget) -> Result<bool, PromptError> {
+pub(crate) async fn stop(link: &AgentCommands, stop: &StopTarget) -> Result<bool, PromptError> {
     match link.stop_turn(stop.clone(), PROMPT_ANSWER_TIMEOUT).await {
         Ok(CommandResult::Accepted) => Ok(true),
         Ok(CommandResult::Rejected(RejectReason::Idle)) => Ok(false),

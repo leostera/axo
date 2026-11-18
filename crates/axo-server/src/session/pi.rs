@@ -15,11 +15,13 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use axo_agent::pi::link::{self, LinkCommands, LinkConfig, LinkEvent};
-use axo_agent::pi::protocol::{CommandResult, RejectReason};
+use axo_agent::pi::link::{self, LinkConfig};
 use axo_agent::pi::{BridgeSocketPath, PiLaunch, PiProcess, SocketCleanup};
 use axo_agent::process::ProcessIdentity;
-use axo_agent::{Activity, AgentCommand, FORK_EXEC_WINDOW, WriterLock};
+use axo_agent::{
+    Activity, AgentCommand, AgentCommands, AgentEvent, CommandResult, FORK_EXEC_WINDOW,
+    RejectReason, WriterLock,
+};
 use axo_protocol::{Event, PaneRole, PiCommandInfo, PiModelInfo, SessionStatus, ThinkingLevel};
 use axo_pty::WindowSize;
 use serde_json::Value;
@@ -64,7 +66,7 @@ enum PiState {
     },
     Running {
         runtime_id: RuntimeId,
-        link: LinkCommands,
+        link: AgentCommands,
         link_task: tokio::task::AbortHandle,
     },
 }
@@ -358,7 +360,7 @@ pub(crate) enum Admission {
     },
     /// Send it on this link.
     Send {
-        link: LinkCommands,
+        link: AgentCommands,
         delivery: axo_protocol::rpc::PromptDelivery,
     },
 }
@@ -583,7 +585,7 @@ impl Session {
         if let Some(pi) = &mut self.pi {
             pi.state = PiState::Running {
                 runtime_id,
-                link,
+                link: AgentCommands::Pi(link),
                 link_task,
             };
             pi.activity = None;
@@ -742,7 +744,7 @@ impl Session {
     }
 
     /// Asks the running Pi to exit (stopping any turn), and kills it if it has not after a grace.
-    fn ask_pi_to_exit(&self, runtime_id: RuntimeId, link: LinkCommands) {
+    fn ask_pi_to_exit(&self, runtime_id: RuntimeId, link: AgentCommands) {
         let mailbox = self.mailbox();
         tokio::spawn(async move {
             // Its answer doesn't matter.
@@ -883,7 +885,7 @@ impl Session {
 
     /// Disarm automatic recovery before admitting explicit stop I/O. A lost receipt must not
     /// turn a person's stop into fresh work after a restart. New real prompts re-arm normally.
-    pub(crate) fn pi_stop_link(&mut self) -> io::Result<LinkCommands> {
+    pub(crate) fn pi_stop_link(&mut self) -> io::Result<AgentCommands> {
         let link = self.pi_link()?;
         if let Some(pi) = &mut self.pi {
             pi.recovery = Recovery::Suppressed;
@@ -895,7 +897,7 @@ impl Session {
     }
 
     /// The running Pi's link: `NotFound` when no Pi runs.
-    pub(crate) fn pi_link(&self) -> io::Result<LinkCommands> {
+    pub(crate) fn pi_link(&self) -> io::Result<AgentCommands> {
         match self.pi.as_ref().map(|pi| &pi.state) {
             Some(PiState::Running { link, .. }) => Ok(link.clone()),
             _ => Err(io::Error::new(io::ErrorKind::NotFound, "Pi is not running")),
@@ -975,7 +977,7 @@ impl Session {
             .map_or_else(Vec::new, |pi| pi.controls.models.clone())
     }
 
-    pub(super) async fn link_event(&mut self, runtime_id: RuntimeId, event: LinkEvent) {
+    pub(super) async fn link_event(&mut self, runtime_id: RuntimeId, event: AgentEvent) {
         if !self.pi_is_current(runtime_id) {
             return;
         }
@@ -983,8 +985,8 @@ impl Session {
             pi.active_at = Instant::now();
         }
         match event {
-            LinkEvent::Bound { pi_session_id } => self.bound(pi_session_id).await,
-            LinkEvent::Disconnected => {
+            AgentEvent::Bound { agent_session_id } => self.bound(agent_session_id).await,
+            AgentEvent::Disconnected => {
                 if let Some(pi) = &mut self.pi
                     && let Some(activity) = &mut pi.activity
                 {
@@ -992,7 +994,7 @@ impl Session {
                 }
                 self.publish();
             }
-            LinkEvent::ResumeRequested {
+            AgentEvent::ResumeRequested {
                 target_session_file,
             } => {
                 let Some(target) = target_session_file else {
@@ -1014,8 +1016,8 @@ impl Session {
                     }
                 });
             }
-            LinkEvent::Event {
-                pi_session_id,
+            AgentEvent::Event {
+                agent_session_id: pi_session_id,
                 stream_id,
                 sequence,
                 name,
@@ -1313,7 +1315,7 @@ pub(crate) fn log_socket_cleanup(session_id: axo_protocol::SessionId, cleanup: S
 /// Switches the model, the thinking level, or both, on `link`. Pi announces the result itself,
 /// in `pi.state`, which reaches clients in the snapshot.
 pub(crate) async fn set_model(
-    link: &LinkCommands,
+    link: &AgentCommands,
     model: Option<(&str, &str)>,
     thinking_level: Option<ThinkingLevel>,
 ) -> io::Result<()> {

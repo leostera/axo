@@ -10,7 +10,8 @@ use std::path::Path;
 use axo_protocol::is_uuid;
 use serde_json::Value;
 
-use crate::pi::protocol::{CommandResult, Identity, Record};
+use crate::pi::protocol::{Identity, Record};
+use crate::runtime::CommandResult;
 
 /// JavaScript's largest exact integer: sequences beyond it cannot round-trip through clients.
 pub const MAX_SEQUENCE: u64 = 9_007_199_254_740_991;
@@ -271,7 +272,8 @@ fn resume_target(data: &Value) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pi::protocol::{CommandResult, ProtocolVersion};
+    use crate::pi::protocol::ProtocolVersion;
+    use crate::runtime::CommandResult;
     use serde_json::json;
     use std::path::PathBuf;
 
