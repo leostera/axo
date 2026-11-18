@@ -2,6 +2,19 @@ import AxoDaemonManager
 import AxoProtocol
 import SwiftUI
 
+/// What linking with a code does to this Mac. A code links the Mac to the account that made it,
+/// which can then run commands here and read its conversations, and a code can arrive by any
+/// `axo://pair` link. So replacing a link the Mac already has, or may have (an older axod does
+/// not say), is never one click: the person confirms it.
+enum RemoteAccessLinkAction: Equatable {
+  case link
+  case replace
+
+  init(status: RemoteAccessStatus?) {
+    self = status?.linked == false ? .link : .replace
+  }
+}
+
 struct RemoteAccessSettingsView: View {
   var daemon: DaemonController
   var remoteAccess: RemoteAccessModel
@@ -11,6 +24,7 @@ struct RemoteAccessSettingsView: View {
   @State private var pairingError: String?
   @State private var pairingSuccess: String?
   @State private var isLinking = false
+  @State private var confirmingReplacement = false
   @State private var connectError: String?
   @State private var isRequestingConnection = false
 
@@ -38,6 +52,11 @@ struct RemoteAccessSettingsView: View {
       Section("Link this Mac") {
         Text("Enter the one-time code from your Axo account to connect this Mac.")
           .foregroundStyle(.secondary)
+        Text(
+          "The account that made the code can run commands on this Mac and read its conversations. Only use a code you made yourself."
+        )
+        .font(.caption)
+        .foregroundStyle(.secondary)
 
         TextField("XXXX-YYYY", text: $pairingCodeText)
           .font(.system(.title3, design: .monospaced))
@@ -57,7 +76,10 @@ struct RemoteAccessSettingsView: View {
         }
 
         Button {
-          linkHost()
+          switch RemoteAccessLinkAction(status: connection) {
+          case .link: linkHost()
+          case .replace: confirmingReplacement = true
+          }
         } label: {
           if isLinking {
             ProgressView("Linking this Mac…")
@@ -66,6 +88,16 @@ struct RemoteAccessSettingsView: View {
           }
         }
         .disabled(parsedPairingCode == nil || !daemonIsRunning || isLinking)
+        .confirmationDialog(
+          "Replace this Mac's link?", isPresented: $confirmingReplacement
+        ) {
+          Button("Replace Link", role: .destructive) { linkHost() }
+          Button("Cancel", role: .cancel) {}
+        } message: {
+          Text(
+            "This Mac is already linked to an Axo account. This code moves it to the account that made the code, which can then run commands here and read its conversations."
+          )
+        }
       }
 
       Section("Connection") {
