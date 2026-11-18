@@ -690,6 +690,7 @@ pub(crate) async fn prompt(
         .ok_or(PromptError::NoPi)
         .map_err(refused)?;
     // The receiving agent, and whoever reads its transcript, sees who sent the prompt.
+    let mut admitted = None;
     let text = match from {
         Some(from) => {
             let sender = core
@@ -698,9 +699,11 @@ pub(crate) async fn prompt(
                 .ok_or(PromptError::Invalid("the sending Session is not open"))
                 .map_err(refused)?;
             let name = sender.manual_name.unwrap_or(sender.name);
-            lock(&core.provenance)
-                .admit(from, from == target, Instant::now())
-                .map_err(refused)?;
+            admitted = Some(
+                lock(&core.provenance)
+                    .admit(from, from == target, Instant::now())
+                    .map_err(refused)?,
+            );
             format!("[From Axo Session {from} {name:?}]\n\n{}", text.as_str())
         }
         None => text.into_string(),
@@ -712,11 +715,20 @@ pub(crate) async fn prompt(
         attachments,
     };
     let queued = prompt.clone();
+    let refund = |error: PromptError| {
+        if error.not_taken()
+            && let Some(admitted) = admitted
+        {
+            lock(&core.provenance).refund(admitted);
+        }
+        error
+    };
     let admission = handle
         .call(move |session| Box::pin(session.admit_prompt(queued)))
         .await
         .map_err(|_| PromptError::NoPi)
         .and_then(|admitted| admitted)
+        .map_err(refund)
         .map_err(refused)?;
     match admission {
         Admission::Queued { delivery } => {
@@ -737,7 +749,7 @@ pub(crate) async fn prompt(
                 sent.as_ref()
                     .map_or_else(prompts::refusal, |()| "delivered"),
             );
-            sent?;
+            sent.map_err(refund)?;
             Ok(PromptAccepted {
                 accepted: true,
                 queued: false,

@@ -47,13 +47,14 @@ impl PromptProvenance {
         self.sent.remove(&session_id);
     }
 
-    /// Counts one prompt from `from` against its limits, or refuses it.
+    /// Counts one prompt from `from` against its limits, or refuses it. The count stands unless
+    /// the prompt is then definitely not taken: see [`Self::refund`].
     pub(crate) fn admit(
         &mut self,
         from: SessionId,
         to_self: bool,
         now: Instant,
-    ) -> Result<(), PromptError> {
+    ) -> Result<Admitted, PromptError> {
         let sent = self.sent.entry(from).or_default();
         while sent
             .front()
@@ -68,8 +69,34 @@ impl PromptProvenance {
             return Err(PromptError::RateLimited);
         }
         sent.push_back((now, to_self));
-        Ok(())
+        Ok(Admitted {
+            from,
+            at: now,
+            to_self,
+        })
     }
+
+    /// Takes back the count of a prompt that was definitely not taken (refused as busy, queue
+    /// full, no Pi): only prompts that may have reached an agent count against the sender.
+    pub(crate) fn refund(&mut self, admitted: Admitted) {
+        let Some(sent) = self.sent.get_mut(&admitted.from) else {
+            return;
+        };
+        if let Some(index) = sent
+            .iter()
+            .rposition(|entry| *entry == (admitted.at, admitted.to_self))
+        {
+            sent.remove(index);
+        }
+    }
+}
+
+/// One prompt counted against its sender's limits, until refunded.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Admitted {
+    from: SessionId,
+    at: Instant,
+    to_self: bool,
 }
 
 /// Why a prompt was not delivered.
@@ -86,6 +113,17 @@ pub(crate) enum PromptError {
     QueueFull,
     /// Pi refused or could not be reached.
     Unavailable(String),
+}
+
+impl PromptError {
+    /// Whether the prompt certainly reached no agent: refused before or by Pi. `Unavailable`
+    /// may have reached it (a lost answer), so it is not.
+    pub(crate) fn not_taken(&self) -> bool {
+        matches!(
+            self,
+            Self::Invalid(_) | Self::NoPi | Self::RateLimited | Self::Busy | Self::QueueFull
+        )
+    }
 }
 
 impl fmt::Display for PromptError {
@@ -225,6 +263,25 @@ mod tests {
         ));
         provenance.admit(other, false, now).unwrap();
         provenance.admit(me, false, now + RATE_WINDOW).unwrap();
+    }
+
+    #[test]
+    fn a_prompt_definitely_not_taken_does_not_count_against_its_sender() {
+        let mut provenance = PromptProvenance::default();
+        let me = SessionId::from_u128(1);
+        let now = Instant::now();
+        // An interval timer refused as busy every tick never uses up its agent's prompts.
+        for _ in 0..MAX_AGENT_PROMPTS_PER_WINDOW * 2 {
+            let admitted = provenance.admit(me, true, now).unwrap();
+            provenance.refund(admitted);
+        }
+        for _ in 0..MAX_SELF_PROMPTS_PER_WINDOW {
+            provenance.admit(me, true, now).unwrap();
+        }
+        assert!(matches!(
+            provenance.admit(me, true, now),
+            Err(PromptError::RateLimited)
+        ));
     }
 
     #[test]

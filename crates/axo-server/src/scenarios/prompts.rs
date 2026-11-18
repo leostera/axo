@@ -86,6 +86,54 @@ async fn an_agents_prompt_names_its_sender_and_prompting_itself_is_limited() {
         .await;
 }
 
+/// A prompt Pi refuses as busy reached no agent, so it does not count against its sender: an
+/// agent retrying `turn` delivery while Pi works can still send once Pi can take it.
+#[tokio::test(flavor = "multi_thread")]
+async fn prompts_refused_as_busy_do_not_use_up_the_senders_limit() {
+    let fixture = Fixture::with(Pi::Fake { turn_ms: 10_000 }).await;
+    let record = fixture.new_session().await;
+    fixture.wait_for_pi(record.id).await;
+    let to_self = |text: &str, delivery| PromptSession {
+        session_id: record.id,
+        text: prompt_text(text),
+        delivery,
+        from_session_id: Some(record.id),
+    };
+    sessions::prompt(
+        &fixture.core,
+        to_self("start a long turn", PromptDelivery::FollowUp),
+        None,
+        Vec::new(),
+    )
+    .await
+    .unwrap();
+    fixture
+        .until("the turn to start", || {
+            fixture.pi_log().contains("SENT:[From Axo Session")
+        })
+        .await;
+    for _ in 0..12 {
+        assert!(matches!(
+            sessions::prompt(
+                &fixture.core,
+                to_self("only if idle", PromptDelivery::Turn),
+                None,
+                Vec::new()
+            )
+            .await,
+            Err(PromptError::Busy)
+        ));
+    }
+    sessions::prompt(
+        &fixture.core,
+        to_self("after it", PromptDelivery::FollowUp),
+        None,
+        Vec::new(),
+    )
+    .await
+    .expect("refused prompts did not count");
+}
+
 /// A prompt from a Session that is not open is refused, and so is one to a Session with no Pi.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_prompt_names_open_sessions_only() {
