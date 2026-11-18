@@ -538,7 +538,7 @@ impl Extension for Relay {
 
 /// Linking hands this Mac to an account, which may then run commands here and receives every
 /// Session's transcript, so only the person links it: from Axo.app, never from an agent's shell or
-/// script (the agent-vs-person rule, RFD0068). A loopback relay is exempt: it never leaves this
+/// script (the agent-vs-person rule, RFD0073; its loopback exception is in RFD0074). A loopback relay is exempt: it never leaves this
 /// Mac, so whoever runs it already runs as the person (local Workers and the e2e tests).
 fn admit_link(endpoint: &RelayEndpoint) -> Result<(), RpcError> {
     if endpoint.is_loopback() {
