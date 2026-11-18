@@ -185,18 +185,7 @@ public enum AppUpgradeInstaller {
     defer { try? FileManager.default.removeItem(at: work) }
 
     let archive = work.appendingPathComponent("Axo.app.zip")
-    do {
-      let (downloaded, response) = try await session.download(
-        from: archiveURL)
-      guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
-        throw AppUpgradeError.download("the server answered \((response as? HTTPURLResponse)?.statusCode ?? 0)")
-      }
-      try FileManager.default.moveItem(at: downloaded, to: archive)
-    } catch let error as AppUpgradeError {
-      throw error
-    } catch {
-      throw AppUpgradeError.download(error.localizedDescription)
-    }
+    try await downloadArchive(archiveURL, to: archive, configuration: session.configuration)
 
     let unpacked = work.appendingPathComponent("unpacked")
     try run("/usr/bin/ditto", ["-x", "-k", archive.path, unpacked.path]) {
@@ -226,6 +215,25 @@ public enum AppUpgradeInstaller {
     }
     preservePrevious(staged, beside: bundle)
     return found
+  }
+
+  /// The largest archive an update downloads: several times a release's (about 100 MB), and
+  /// far short of filling a disk, since nothing checks the bytes until they are unzipped.
+  static let maximumArchiveBytes: Int64 = 1 << 30
+
+  static func downloadArchive(
+    _ url: URL, to archive: URL, maximumBytes: Int64 = maximumArchiveBytes,
+    configuration: URLSessionConfiguration
+  ) async throws {
+    do {
+      try await CappedDownload.fetch(url, to: archive, maximumBytes: maximumBytes, configuration: configuration)
+    } catch CappedDownload.Failure.status(let status) {
+      throw AppUpgradeError.download("the server answered \(status)")
+    } catch CappedDownload.Failure.tooLarge(let limit) {
+      throw AppUpgradeError.download("the archive is larger than \(limit / (1 << 20)) MiB")
+    } catch CappedDownload.Failure.transport(let reason) {
+      throw AppUpgradeError.download(reason)
+    }
   }
 
   static func verifyReleaseMetadata(_ app: URL, published: PublishedBuild) throws {
