@@ -60,7 +60,7 @@ crate.spec(package = "tokio-rusqlite", version = "0.8", features = ["bundled"])
 crate.spec(package = "security-framework", version = "3.7.0")
 crate.spec(package = "serde", version = "1", features = ["derive"])
 # OpenCode's HTTP API on 127.0.0.1 (RFD0072): plain HTTP and its SSE stream, no TLS.
-crate.spec(package = "reqwest", version = "0.13", default_features = False, features = ["stream"])
+crate.spec(package = "reqwest", version = "0.13", default_features = False, features = ["json", "query", "stream"])
 crate.spec(package = "serde_json", version = "1")
 crate.spec(package = "sha1", version = "0.10")
 crate.spec(package = "sha2", version = "0.10")

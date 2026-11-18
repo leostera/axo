@@ -284,6 +284,8 @@ pub(crate) enum LaunchedAgent {
     Pi(LaunchedPi),
     /// Codex's server, its TUI and their thread (RFD0072).
     Codex(axo_agent::codex::CodexProcess),
+    /// OpenCode's server, its TUI and their session (RFD0072).
+    OpenCode(axo_agent::opencode::OpenCodeProcess),
 }
 
 pub(crate) struct LaunchedPi {
@@ -376,7 +378,7 @@ fn launch(core: &Core, request: LaunchRequest, in_flight: LaunchInFlight) -> io:
 /// starts or confirms the thread and the TUI.
 async fn launch_codex(
     core: Arc<Core>,
-    request: CodexRequest,
+    request: ServedRequest,
     in_flight: LaunchInFlight,
 ) -> io::Result<Launched> {
     let places = SearchPlaces::from_environment(AgentKind::Codex, &request.home);
@@ -389,8 +391,8 @@ async fn launch_codex(
         pane_id: request.pane_id,
         environment: pi_environment(&core.agent_socket),
         home: request.home,
-        thread_id: request.thread_id,
-        thread_name: request.thread_name,
+        thread_id: request.conversation,
+        thread_name: request.name,
         instructions: Some(agent_brief()),
         mcp: Some(request.mcp),
         previous: request.previous,
@@ -410,6 +412,49 @@ async fn launch_codex(
         })
 }
 
+/// Launches a Session's OpenCode: finds `opencode`, starts its server on the blocking pool,
+/// then creates or confirms the session and starts the TUI.
+async fn launch_opencode(
+    core: Arc<Core>,
+    request: ServedRequest,
+    in_flight: LaunchInFlight,
+) -> io::Result<Launched> {
+    let places = SearchPlaces::from_environment(AgentKind::OpenCode, &request.home);
+    let installed =
+        discovery::discover(AgentKind::OpenCode, &places, discovery::VERSION_TIMEOUT).await?;
+    let launch = axo_agent::opencode::OpenCodeLaunch {
+        executable: installed.executable,
+        paths: axo_agent::opencode::OpenCodePaths::new(
+            &core.pi_directories.bridges,
+            &request.session_uuid,
+        ),
+        initial_pwd: request.folder,
+        session_uuid: request.session_uuid,
+        pane_id: request.pane_id,
+        environment: pi_environment(&core.agent_socket),
+        home: request.home,
+        session_id: request.conversation,
+        session_name: request.name,
+        mcp: Some(request.mcp),
+        previous: request.previous,
+        size: request.size,
+    };
+    let (lock, server, address) = {
+        let (core, launch) = (Arc::clone(&core), launch.clone());
+        tokio::task::spawn_blocking(move || {
+            axo_agent::opencode::start_server(&launch, &core.lifeline)
+        })
+        .await
+        .map_err(io::Error::other)??
+    };
+    axo_agent::opencode::attach(launch, lock, server, address)
+        .await
+        .map(|process| Launched {
+            in_flight,
+            agent: LaunchedAgent::OpenCode(process),
+        })
+}
+
 /// A launched agent's pane process, with the link that follows it.
 struct Followed {
     running: Running,
@@ -422,16 +467,18 @@ struct Followed {
     thread_id: Option<String>,
 }
 
-/// What a Codex launch needs, owned.
-struct CodexRequest {
+/// What the launch of an agent axod runs as a server of its own (Codex, OpenCode) needs, owned.
+struct ServedRequest {
     folder: PathBuf,
     home: PathBuf,
     session_uuid: String,
     pane_id: String,
     size: WindowSize,
-    /// The Session's thread, once it has one.
-    thread_id: Option<String>,
-    thread_name: String,
+    /// The Session's conversation in the agent (Codex's thread, OpenCode's session), once it
+    /// has one.
+    conversation: Option<String>,
+    /// The new conversation's name.
+    name: String,
     mcp: axo_agent::axo_mcp::AxoMcp,
     /// The server an earlier axod started, if it said.
     previous: Option<ProcessIdentity>,
@@ -560,7 +607,8 @@ impl Session {
             shell_id.get()
         );
         self.publish();
-        if self.row.agent == AgentKind::Codex {
+        let agent = self.row.agent;
+        if matches!(agent, AgentKind::Codex | AgentKind::OpenCode) {
             let id = self.id;
             let previous = core
                 .store
@@ -570,14 +618,14 @@ impl Session {
                 .flatten()
                 .and_then(|stored| ProcessIdentity::parse(&stored).ok());
             let request = crate::current_user_home_directory().and_then(|home| {
-                Ok(CodexRequest {
+                Ok(ServedRequest {
                     folder: self.row.folder.clone(),
                     home,
                     session_uuid: self.id.to_string(),
                     pane_id,
                     size: self.pane_size(shell_id),
-                    thread_id: self.row.agent_conversation.clone(),
-                    thread_name: self.row.manual_name.clone().unwrap_or_else(|| self.row.name.clone()),
+                    conversation: self.row.agent_conversation.clone(),
+                    name: self.row.manual_name.clone().unwrap_or_else(|| self.row.name.clone()),
                     mcp: axo_mcp_server(&core, self.id)?,
                     previous,
                 })
@@ -592,7 +640,10 @@ impl Session {
             let mailbox = self.mailbox();
             let in_flight = core.pi_launches.begin();
             tokio::spawn(async move {
-                let result = launch_codex(core, request, in_flight).await;
+                let result = match agent {
+                    AgentKind::OpenCode => launch_opencode(core, request, in_flight).await,
+                    _ => launch_codex(core, request, in_flight).await,
+                };
                 match mailbox.upgrade() {
                     Some(mailbox) => {
                         if let Err(unsent) = mailbox.send(Message::Launched { attempt, result }) {
@@ -854,6 +905,56 @@ impl Session {
                     link: AgentCommands::Codex(link),
                     link_task,
                     thread_id: Some(thread_id),
+                })
+            }
+            LaunchedAgent::OpenCode(launched) => {
+                let axo_agent::opencode::OpenCodeProcess {
+                    pty,
+                    writer_lock,
+                    server,
+                    identity,
+                    address,
+                    session_id,
+                } = launched;
+                let paths = axo_agent::opencode::OpenCodePaths::new(
+                    &self.core.pi_directories.bridges,
+                    &self.id.to_string(),
+                );
+                let running = Running::new(
+                    PaneRole::Pi,
+                    Some(pane_id),
+                    self.row.folder.clone(),
+                    pty,
+                    Some(writer_lock),
+                )?;
+                let runtime_id = running.runtime_id;
+                let (link, requests) = axo_agent::opencode::command_channel();
+                let config = axo_agent::opencode::LinkConfig {
+                    address,
+                    session_id: session_id.clone(),
+                    directory: self.row.folder.clone(),
+                    conversation: paths.conversation().to_owned(),
+                    log_context,
+                };
+                let mailbox = self.mailbox();
+                // The link owns the server: it stops when the link is let go.
+                let link_task = tokio::spawn(axo_agent::opencode::run(
+                    config,
+                    requests,
+                    Some(server),
+                    move |event| {
+                        mailbox.upgrade().is_some_and(|mailbox| {
+                            mailbox.send(Message::Link { runtime_id, event }).is_ok()
+                        })
+                    },
+                ))
+                .abort_handle();
+                Ok(Followed {
+                    running,
+                    identity,
+                    link: AgentCommands::OpenCode(link),
+                    link_task,
+                    thread_id: Some(session_id),
                 })
             }
         }
@@ -1616,6 +1717,13 @@ pub(super) fn stop_unwanted(message: Message) {
         }
         // Dropping the server stops it; the TUI is stopped like a Pi.
         LaunchedAgent::Codex(mut process) => {
+            tokio::spawn(async move {
+                axo_pty::process::stop_async(&mut process.pty.child, grace).await;
+                drop(process);
+                drop(in_flight);
+            });
+        }
+        LaunchedAgent::OpenCode(mut process) => {
             tokio::spawn(async move {
                 axo_pty::process::stop_async(&mut process.pty.child, grace).await;
                 drop(process);

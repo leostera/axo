@@ -25,16 +25,8 @@ use crate::runtime::{QueuedDelivery, RejectReason};
 const MAX_INLINE_IMAGE_BYTES: u64 = 5 * 1024 * 1024;
 const MODEL_IMAGES: [&str; 4] = ["image/png", "image/jpeg", "image/gif", "image/webp"];
 
-/// An event in Axo's vocabulary (`runtime`), for the link to number and report.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Emitted {
-    pub name: &'static str,
-    pub data: Value,
-}
-
-fn emit(name: &'static str, data: Value) -> Emitted {
-    Emitted { name, data }
-}
+pub use crate::vocabulary::Emitted;
+use crate::vocabulary::{emit, format_size};
 
 /// A `turn/start` to send: the input, and the id of the client prompt that asked for it.
 #[derive(Clone, Debug, PartialEq)]
@@ -594,15 +586,6 @@ fn user_input(text: &str, attachments: &[FetchedAttachment]) -> Vec<Value> {
 }
 
 /// A size as people read it, as pi-axo writes it.
-fn format_size(bytes: u64) -> String {
-    if bytes < 1024 {
-        format!("{bytes} B")
-    } else if bytes < 1024 * 1024 {
-        format!("{:.1} KB", bytes as f64 / 1024.0)
-    } else {
-        format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
-    }
-}
 
 #[cfg(test)]
 #[path = "thread_tests.rs"]

@@ -207,3 +207,30 @@ mod tests {
         fs::remove_dir_all(directory).unwrap();
     }
 }
+
+/// How long a killed earlier server (the guard, the server and the helpers it started) gets
+/// to let go of the lock.
+const KILLED_RELEASE: Duration = Duration::from_secs(5);
+
+/// Takes a Session's agent lock for a server under the lifeline guard (Codex, OpenCode). A
+/// server an earlier axod started (`previous`) that still holds it is killed, it and its
+/// process group, and the lock taken once it lets go; any other holder is not signalled and
+/// this fails with `WouldBlock` and `held`.
+pub(crate) fn take_server_lock(
+    lock_base: &Path,
+    previous: Option<crate::process::ProcessIdentity>,
+    killed_log: &str,
+    held: &'static str,
+) -> io::Result<WriterLock> {
+    match WriterLock::acquire_within(lock_base, FORK_EXEC_WINDOW) {
+        Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+            let Some(previous) = previous.filter(|previous| previous.is_running()) else {
+                return Err(io::Error::new(io::ErrorKind::WouldBlock, held));
+            };
+            log::warn!("{killed_log} pid={}", previous.pid);
+            previous.kill();
+            WriterLock::acquire_within(lock_base, KILLED_RELEASE)
+        }
+        acquired => acquired,
+    }
+}

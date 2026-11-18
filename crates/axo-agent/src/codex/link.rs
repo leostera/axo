@@ -11,19 +11,17 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use axo_protocol::asset::FetchedAttachment;
-use axo_protocol::commands::{CommandId, StopTarget};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
 use tokio::net::UnixStream;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::oneshot;
 use tokio_tungstenite::tungstenite::Message;
 
 use crate::codex::rpc::{self, Incoming, RequestId};
 use crate::codex::thread::{
     Emitted, Observed, SendPlan, StopPlan, Thread, TurnRequest, reasoning_effort,
 };
-use crate::runtime::{AgentEvent, CommandResult, QueuedDelivery, RejectReason};
+use crate::runtime::{AgentEvent, CommandResult, RejectReason};
 
 /// How long the server gets to answer a request of the link's own (start, resume, list).
 const SETUP_TIMEOUT: Duration = Duration::from_secs(30);
@@ -32,7 +30,6 @@ const RETRY_FIRST: Duration = Duration::from_millis(50);
 const RETRY_LAST: Duration = Duration::from_secs(1);
 /// How long the link tries to reach a server that never listens.
 const CONNECT_DEADLINE: Duration = Duration::from_secs(30);
-const QUEUED_COMMANDS: usize = 32;
 
 #[derive(Clone, Debug)]
 pub struct LinkConfig {
@@ -46,121 +43,8 @@ pub struct LinkConfig {
     pub log_context: String,
 }
 
-/// A command for the link, with where its answer goes.
-#[derive(Debug)]
-enum Action {
-    Send {
-        text: String,
-        delivery: Option<QueuedDelivery>,
-        command_id: Option<CommandId>,
-        attachments: Vec<FetchedAttachment>,
-    },
-    Stop(StopTarget),
-    ResumeTurn,
-    Shutdown,
-    SetModel {
-        model: Option<String>,
-        thinking_level: Option<String>,
-    },
-}
-
-#[derive(Debug)]
-struct Request {
-    action: Action,
-    reply: oneshot::Sender<io::Result<CommandResult>>,
-}
-
-/// Sends commands to the thread a link follows. Cheap to clone.
-#[derive(Clone, Debug)]
-pub struct LinkCommands(mpsc::Sender<Request>);
-
-/// The link's end of [`LinkCommands`].
-#[derive(Debug)]
-pub struct LinkRequests(mpsc::Receiver<Request>);
-
-pub fn command_channel() -> (LinkCommands, LinkRequests) {
-    let (sender, receiver) = mpsc::channel(QUEUED_COMMANDS);
-    (LinkCommands(sender), LinkRequests(receiver))
-}
-
-impl LinkCommands {
-    pub async fn send_message(
-        &self,
-        text: &str,
-        delivery: Option<QueuedDelivery>,
-        command_id: Option<&CommandId>,
-        attachments: &[FetchedAttachment],
-        timeout: Duration,
-    ) -> io::Result<CommandResult> {
-        self.command(
-            Action::Send {
-                text: text.to_owned(),
-                delivery,
-                command_id: command_id.cloned(),
-                attachments: attachments.to_vec(),
-            },
-            timeout,
-        )
-        .await
-    }
-
-    pub async fn stop_turn(
-        &self,
-        stop: StopTarget,
-        timeout: Duration,
-    ) -> io::Result<CommandResult> {
-        self.command(Action::Stop(stop), timeout).await
-    }
-
-    pub async fn resume_turn(&self, timeout: Duration) -> io::Result<CommandResult> {
-        self.command(Action::ResumeTurn, timeout).await
-    }
-
-    pub async fn shutdown(&self, timeout: Duration) -> io::Result<CommandResult> {
-        self.command(Action::Shutdown, timeout).await
-    }
-
-    /// Codex names models by id alone; the provider is ignored.
-    pub async fn set_model(
-        &self,
-        model: Option<(&str, &str)>,
-        thinking_level: Option<&str>,
-        timeout: Duration,
-    ) -> io::Result<CommandResult> {
-        self.command(
-            Action::SetModel {
-                model: model.map(|(_, id)| id.to_owned()),
-                thinking_level: thinking_level.map(str::to_owned),
-            },
-            timeout,
-        )
-        .await
-    }
-
-    async fn command(&self, action: Action, timeout: Duration) -> io::Result<CommandResult> {
-        let (reply, answer) = oneshot::channel();
-        let asked = async {
-            self.0
-                .send(Request { action, reply })
-                .await
-                .map_err(|_| io::Error::new(io::ErrorKind::NotConnected, "Codex's link has ended"))?;
-            answer.await.unwrap_or_else(|_| {
-                Err(io::Error::new(
-                    io::ErrorKind::ConnectionAborted,
-                    "Codex's link closed before answering",
-                ))
-            })
-        };
-        tokio::time::timeout(timeout, asked)
-            .await
-            .unwrap_or_else(|_| {
-                Err(io::Error::new(
-                    io::ErrorKind::TimedOut,
-                    "Codex did not answer the command in time",
-                ))
-            })
-    }
-}
+use crate::channel::{Action, Request};
+pub use crate::channel::{LinkCommands, LinkRequests, ServerProcess, command_channel};
 
 type Socket = tokio_tungstenite::WebSocketStream<UnixStream>;
 
@@ -684,7 +568,8 @@ impl<'a> Connection<'a> {
                     Some(Some(effort)) => Some(effort),
                     None => None,
                 };
-                let events = thread.choose(model.as_deref(), effort);
+                // Codex names models by id alone; the provider is ignored.
+                let events = thread.choose(model.as_ref().map(|(_, id)| id.as_str()), effort);
                 let _ = reply.send(Ok(CommandResult::Accepted));
                 let thread_id = thread.id().to_owned();
                 if !self.report_all(&thread_id, events, report) {
@@ -770,38 +655,6 @@ fn thinking_level_of(effort: &str) -> Option<&'static str> {
         "high" => Some("high"),
         "xhigh" => Some("xhigh"),
         _ => None,
-    }
-}
-
-/// The app-server process the link owns: stopped when the link ends.
-pub struct ServerProcess(std::process::Child);
-
-impl ServerProcess {
-    pub fn new(child: std::process::Child) -> Self {
-        Self(child)
-    }
-
-    pub fn id(&self) -> u32 {
-        self.0.id()
-    }
-}
-
-impl std::fmt::Debug for ServerProcess {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.debug_tuple("ServerProcess").field(&self.0.id()).finish()
-    }
-}
-
-impl Drop for ServerProcess {
-    fn drop(&mut self) {
-        // The guard shell kills the server on SIGTERM; it leads its own process group.
-        let pid = self.0.id() as libc::pid_t;
-        // SAFETY: signals the guard this value spawned, and its group.
-        unsafe {
-            libc::kill(pid, libc::SIGTERM);
-            libc::kill(-pid, libc::SIGTERM);
-        }
-        let _ = self.0.wait();
     }
 }
 

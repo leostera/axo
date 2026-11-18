@@ -5,6 +5,7 @@
 
 mod attachments;
 mod codex;
+mod opencode;
 mod idle_pis;
 mod input_key;
 mod lifecycle;

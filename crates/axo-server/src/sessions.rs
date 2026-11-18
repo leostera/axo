@@ -202,8 +202,11 @@ fn new_session_folder(core: &Core, request: &rpc::CreateSession) -> io::Result<P
 }
 
 /// The agents a Session can be created with: those with an adapter (RFD0072).
-const RUNNABLE_AGENTS: [axo_agent::AgentKind; 2] =
-    [axo_agent::AgentKind::Pi, axo_agent::AgentKind::Codex];
+const RUNNABLE_AGENTS: [axo_agent::AgentKind; 3] = [
+    axo_agent::AgentKind::Pi,
+    axo_agent::AgentKind::Codex,
+    axo_agent::AgentKind::OpenCode,
+];
 
 /// Creates a Session with its agent beside a terminal, and returns it once the agent has
 /// started.

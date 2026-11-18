@@ -9,15 +9,18 @@
 
 pub mod activity;
 pub mod axo_mcp;
+mod channel;
 pub mod codex;
 mod command;
 pub mod discovery;
+pub mod opencode;
 mod history;
 mod lock;
 pub mod pi;
 pub mod process;
 mod runtime;
 pub mod transcript;
+mod vocabulary;
 
 pub use activity::Activity;
 pub use command::AgentCommand;

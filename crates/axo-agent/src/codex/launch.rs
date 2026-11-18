@@ -18,11 +18,7 @@ use crate::WriterLock;
 use crate::axo_mcp::AxoMcp;
 use crate::process::ProcessIdentity;
 use crate::codex::link::{ServerProcess, create_thread, wait_until_listening};
-use crate::lock::FORK_EXEC_WINDOW;
 
-/// How long a killed earlier server (the guard, the server and the helpers it started) gets
-/// to let go of the lock.
-const KILLED_RELEASE: std::time::Duration = std::time::Duration::from_secs(5);
 /// The longest socket path macOS takes (`sun_path` is 104 bytes, with its terminator).
 const MAX_SOCKET_PATH: usize = 103;
 
@@ -124,28 +120,14 @@ pub fn start_server(
     Ok((writer_lock, ServerProcess::new(child)))
 }
 
-/// Takes the Session's lock. A server an earlier axod started that still holds it is killed
-/// (it and its process group), and the lock taken once it lets go; any other holder is not
-/// signalled and the launch fails.
+/// Takes the Session's lock, killing the server an earlier axod started if it still holds it.
 fn take_lock(launch: &CodexLaunch) -> io::Result<WriterLock> {
-    match WriterLock::acquire_within(&launch.paths.lock_base, FORK_EXEC_WINDOW) {
-        Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-            let Some(previous) = launch.previous.filter(|previous| previous.is_running()) else {
-                return Err(io::Error::new(
-                    io::ErrorKind::WouldBlock,
-                    "another process holds this Session's Codex",
-                ));
-            };
-            log::warn!(
-                "event=codex.previous_killed session_id={} pid={}",
-                launch.session_uuid,
-                previous.pid
-            );
-            previous.kill();
-            WriterLock::acquire_within(&launch.paths.lock_base, KILLED_RELEASE)
-        }
-        acquired => acquired,
-    }
+    crate::lock::take_server_lock(
+        &launch.paths.lock_base,
+        launch.previous,
+        &format!("event=codex.previous_killed session_id={}", launch.session_uuid),
+        "another process holds this Session's Codex",
+    )
 }
 
 /// The second half: once the server listens, starts or confirms the thread and starts the TUI

@@ -61,11 +61,13 @@ rust_test(
     data = [
         ":pi_extension_fixture",
         "//crates/axo-agent:fake_codex",
+        "//crates/axo-agent:fake_opencode",
         "//crates/axod:fake_pi",
     ],
     env = {
-        # Codex Sessions in the tests run the fake; nothing finds the user's codex.
+        # Codex and OpenCode Sessions in the tests run fakes; nothing finds the user's own.
         "AXO_CODEX_EXECUTABLE": "$(rootpath //crates/axo-agent:fake_codex)",
+        "AXO_OPENCODE_EXECUTABLE": "$(rootpath //crates/axo-agent:fake_opencode)",
         "AXO_PI_EXTENSION_PATH": "$(rootpath :pi_extension_fixture)",
         "AXO_TEST_FAKE_PI": "$(rootpath //crates/axod:fake_pi)",
     },
