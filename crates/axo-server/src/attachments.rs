@@ -17,6 +17,8 @@ use axo_pty::{NextOutput, OutputSubscriber, TerminalOutput, attach};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
 
+use axo_ipc::peer::Peer;
+
 use crate::core::Core;
 use crate::session::panes::RuntimeId;
 
@@ -35,8 +37,13 @@ pub(crate) struct Attached {
     pub(crate) runtime_id: RuntimeId,
 }
 
-/// Binds the attach socket and serves it on the runtime until axod stops.
-pub(crate) fn listen(core: &Arc<Core>, stop: axo_ipc::Stop) -> io::Result<()> {
+/// Who may attach to a pane of a Session: attaching hands out the pane's PTY, so it is typing
+/// into it (RFD0073). axod admits [`crate::callers::may_type_into`].
+pub(crate) type Admit = fn(&Core, &Peer, SessionId) -> bool;
+
+/// Binds the attach socket and serves it on the runtime until axod stops, to callers `admit`
+/// lets in.
+pub(crate) fn listen(core: &Arc<Core>, stop: axo_ipc::Stop, admit: Admit) -> io::Result<()> {
     let path = &core.attach_socket_path;
     crate::SocketPath::parse(path.clone())
         .map_err(|message| io::Error::new(io::ErrorKind::InvalidInput, message))?;
@@ -66,7 +73,7 @@ pub(crate) fn listen(core: &Arc<Core>, stop: axo_ipc::Stop) -> io::Result<()> {
             }
             let active = Arc::clone(&active);
             tokio::spawn(async move {
-                serve(core, stream).await;
+                serve(core, stream, admit).await;
                 active.fetch_sub(1, Ordering::AcqRel);
             });
         }
@@ -145,8 +152,9 @@ async fn detach_from(core: &Core, shell_id: ShellId, runtime_id: RuntimeId) {
     }
 }
 
-async fn serve(core: Arc<Core>, stream: UnixStream) {
+async fn serve(core: Arc<Core>, stream: UnixStream, admit: Admit) {
     let started_at = Instant::now();
+    let peer = Peer::of(&stream);
     let Ok(stream) = stream.into_std() else {
         return;
     };
@@ -194,6 +202,17 @@ async fn serve(core: Arc<Core>, stream: UnixStream) {
             return;
         }
     };
+    if !admit(&core, &peer, attached.session_id) {
+        log::warn!(
+            "event=session.attach_rejected shell_id={} reason=not_allowed",
+            shell_id.get()
+        );
+        detach_from(&core, shell_id, attached.runtime_id).await;
+        tokio::task::spawn_blocking(move || {
+            let _ = attach::write_rejection(&mut handshake, attach::Rejection::NotAllowed);
+        });
+        return;
+    }
     let Attached {
         master,
         output,

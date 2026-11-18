@@ -21,12 +21,12 @@ swift_test(
     data = [
         "//crates/axo-server:pi_extension_fixture",
         "//crates/axod:axod",
-        "//crates/axod:testdata/pi-fixture.sh",
+        "//crates/axod:fake_pi",
     ],
     env = {
         "AXOD_BINARY": "$(rootpath //crates/axod:axod)",
         "AXO_PI_EXTENSION_PATH": "$(rootpath //crates/axo-server:pi_extension_fixture)",
-        "AXO_TEST_PI_EXECUTABLE": "$(rootpath //crates/axod:testdata/pi-fixture.sh)",
+        "AXO_TEST_FAKE_PI": "$(rootpath //crates/axod:fake_pi)",
     },
     tags = ["no-sandbox"],
     timeout = "short",

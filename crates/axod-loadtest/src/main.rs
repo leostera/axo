@@ -43,9 +43,9 @@ struct Args {
     /// axod binary; defaults to $AXOD_BINARY.
     #[arg(long)]
     axod: Option<PathBuf>,
-    /// Pi stand-in; defaults to $AXO_TEST_PI_EXECUTABLE.
+    /// The fake Pi (//crates/axod:fake_pi); defaults to $AXO_TEST_FAKE_PI.
     #[arg(long)]
-    pi_fixture: Option<PathBuf>,
+    fake_pi: Option<PathBuf>,
     /// Override the profile's duration in seconds.
     #[arg(long)]
     seconds: Option<u64>,
@@ -133,8 +133,8 @@ fn main() -> ExitCode {
 
 fn run(args: &Args, profile: Profile) -> Result<Report, String> {
     let axod = path_argument(&args.axod, "AXOD_BINARY", "--axod")?;
-    let pi_fixture = path_argument(&args.pi_fixture, "AXO_TEST_PI_EXECUTABLE", "--pi-fixture")?;
-    let daemon = Daemon::start(&axod, &pi_fixture)?;
+    let fake_pi = path_argument(&args.fake_pi, "AXO_TEST_FAKE_PI", "--fake-pi")?;
+    let daemon = Daemon::start(&axod, &fake_pi)?;
     let sessions = create_sessions(&daemon, profile)?;
     let assignment = assign_shells(&sessions, profile)?;
     let lifecycle_session = create_sessions(
@@ -165,16 +165,18 @@ fn run(args: &Args, profile: Profile) -> Result<Report, String> {
         }));
     }
     for (session_id, shell) in assignment.flood.iter().cloned() {
+        let agent = daemon.agent_socket(&session_id)?;
         workers.push(spawn(&format!("flood-{}", shell.id), {
-            let (socket, recorder) = (daemon.socket(), recorder.clone());
-            move || start_flood(socket, session_id, shell.id, recorder)
+            let recorder = recorder.clone();
+            move || start_flood(agent, session_id, shell.id, recorder)
         }));
     }
     for index in 0..profile.attach_churners {
-        let shell = assignment.flood[index % assignment.flood.len()].1.clone();
+        let (session_id, shell) = assignment.flood[index % assignment.flood.len()].clone();
+        let relay = daemon.attach_relay(&session_id)?;
         workers.push(spawn(&format!("attach-{index}"), {
             let (stop, recorder) = (stop.clone(), recorder.clone());
-            move || churn_attachments(shell, stop, recorder)
+            move || churn_attachments(relay, shell, stop, recorder)
         }));
     }
     workers.push(spawn("lifecycle", {
@@ -191,12 +193,13 @@ fn run(args: &Args, profile: Profile) -> Result<Report, String> {
         .into_iter()
         .enumerate()
         .map(|(index, (session, input_shell))| {
-            spawn(&format!("probe-{index}"), {
+            let agent = daemon.agent_socket(&session.id)?;
+            Ok(spawn(&format!("probe-{index}"), {
                 let (socket, recorder) = (daemon.socket(), recorder.clone());
-                move || probe_until(socket, session, input_shell, deadline, recorder)
-            })
+                move || probe_until(socket, agent, session, input_shell, deadline, recorder)
+            }))
         })
-        .collect();
+        .collect::<Result<_, String>>()?;
     for probe in probes {
         let _ = probe.join();
     }
@@ -342,9 +345,10 @@ fn subscribe_until(
     }
 }
 
-fn start_flood(socket: PathBuf, session_id: String, shell_id: i64, recorder: Recorder) {
+/// Starts a flood in `shell_id`, typed from inside its Session's Pi (`agent`).
+fn start_flood(agent: PathBuf, session_id: String, shell_id: i64, recorder: Recorder) {
     let command = b"while :; do seq 1 20000; done\n";
-    let result = Client::connect(&socket, Duration::from_secs(10))
+    let result = Client::connect(&agent, Duration::from_secs(10))
         .map_err(|error| error.to_string())
         .and_then(|mut client| {
             client
@@ -364,10 +368,10 @@ fn start_flood(socket: PathBuf, session_id: String, shell_id: i64, recorder: Rec
     }
 }
 
-fn churn_attachments(shell: Shell, stop: Arc<AtomicBool>, recorder: Recorder) {
+fn churn_attachments(relay: PathBuf, shell: Shell, stop: Arc<AtomicBool>, recorder: Recorder) {
     while !stop.load(Ordering::Relaxed) {
         let started = Instant::now();
-        match daemon::attach_once(&shell.attach_socket_path, shell.id) {
+        match daemon::attach_once(&relay, shell.id) {
             Ok(()) => recorder.latency("attach.open", started.elapsed()),
             Err(error) => recorder.error("attach.open", error),
         }
@@ -410,8 +414,11 @@ fn cycle_lifecycle(socket: PathBuf, session_id: String, stop: Arc<AtomicBool>, r
 
 /// Measures every control-plane call on one persistent connection, round-robin, until
 /// `deadline`. `input_shell` is owned by this probe alone (input sequences are per shell).
+/// Probes the control plane on `socket`, and types into `input_shell` from inside its
+/// Session's Pi (`agent`).
 fn probe_until(
     socket: PathBuf,
+    agent: PathBuf,
     session: Session,
     input_shell: Option<Shell>,
     deadline: Instant,
@@ -419,6 +426,12 @@ fn probe_until(
 ) {
     let Ok(mut client) = Client::connect(&socket, Duration::from_secs(10)) else {
         return recorder.error("probe.connect", "could not connect".to_owned());
+    };
+    let Ok(mut typing) = Client::connect(&agent, Duration::from_secs(10)) else {
+        return recorder.error(
+            "probe.connect",
+            "could not connect as the Session".to_owned(),
+        );
     };
     let shell_ids: Vec<i64> = session.shells.iter().map(|shell| shell.id).collect();
     let any_shell = shell_ids[0];
@@ -488,7 +501,7 @@ fn probe_until(
                 data: base64(b":\n"),
             };
             measure(&recorder, "axo.terminal.input", || {
-                client
+                typing
                     .call::<_, client::Ignored>("axo.terminal.input", &input)
                     .map(drop)
             });

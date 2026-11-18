@@ -1,5 +1,9 @@
 //! An isolated axod for one load-test run: temporary HOME and server directory under /tmp (Unix
 //! socket paths are limited to 104 bytes, which rules out Bazel's long TEST_TMPDIR).
+//!
+//! Its Pis are the fake Pi, held at its startup gate. Only the person or a Session's own
+//! processes type into its panes (RFD0073), so input and attachments go through the fake Pi of
+//! the Session they reach, as an agent's would: one more hop on a Unix socket.
 
 use std::fs;
 use std::io::{Read, Write};
@@ -20,17 +24,25 @@ pub struct Daemon {
 }
 
 impl Daemon {
-    pub fn start(axod: &Path, pi_fixture: &Path) -> Result<Daemon, String> {
+    pub fn start(axod: &Path, fake_pi: &Path) -> Result<Daemon, String> {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_or(0, |d| d.as_nanos());
         let directory = PathBuf::from(format!("/tmp/axod-load-{}-{nanos}", std::process::id()));
         fs::create_dir_all(directory.join("home")).map_err(|e| format!("temp dir: {e}"))?;
-        let pi_fixture = fs::canonicalize(pi_fixture).map_err(|e| format!("Pi fixture: {e}"))?;
+        let fake_pi = fs::canonicalize(fake_pi).map_err(|e| format!("fake Pi: {e}"))?;
+        fs::create_dir_all(directory.join("agents")).map_err(|e| format!("agents dir: {e}"))?;
+        fs::write(directory.join("pi-gate"), "hold").map_err(|e| format!("Pi gate: {e}"))?;
         let log = fs::File::create(directory.join("axod.log")).map_err(|e| format!("log: {e}"))?;
         let child = Command::new(axod)
             .env("HOME", directory.join("home"))
-            .env("AXO_PI_EXECUTABLE", pi_fixture)
+            .env("AXO_PI_EXECUTABLE", fake_pi)
+            .env("AXO_FAKE_PI_AGENT_SOCKETS", directory.join("agents"))
+            .env("AXO_FAKE_PI_STARTUP_GATE", directory.join("pi-gate"))
+            .env(
+                "AXO_FAKE_PI_ATTACH_SOCKET",
+                directory.join("server/attach.sock"),
+            )
             .arg("--socket")
             .arg(directory.join("axod.sock"))
             .arg("--server-dir")
@@ -47,6 +59,31 @@ impl Daemon {
 
     pub fn socket(&self) -> PathBuf {
         self.directory.join("axod.sock")
+    }
+
+    /// Where calls reach axod from inside `session_id`'s Pi, once that Pi takes them.
+    pub fn agent_socket(&self, session_id: &str) -> Result<PathBuf, String> {
+        let path = self
+            .directory
+            .join("agents")
+            .join(format!("{session_id}.sock"));
+        let deadline = Instant::now() + STARTUP_TIMEOUT;
+        while UnixStream::connect(&path).is_err() {
+            if Instant::now() >= deadline {
+                return Err(format!("the Pi of {session_id} took no calls"));
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        Ok(path)
+    }
+
+    /// Where `session_id`'s Pi attaches to its panes and hands the attachment on.
+    pub fn attach_relay(&self, session_id: &str) -> Result<PathBuf, String> {
+        self.agent_socket(session_id)?;
+        Ok(self
+            .directory
+            .join("agents")
+            .join(format!("{session_id}.attach.sock")))
     }
 
     pub fn pid(&self) -> i32 {
@@ -91,10 +128,11 @@ impl Drop for Daemon {
     }
 }
 
-/// One attach-protocol-v2 handshake: request, header, descriptor byte, then up to 64 KiB of
-/// replay. The PTY descriptor is never received (no control buffer), so the kernel discards it.
-pub fn attach_once(socket: &Path, shell_id: i64) -> Result<(), String> {
-    let mut stream = UnixStream::connect(socket).map_err(|e| format!("connect: {e}"))?;
+/// One attach-protocol-v2 handshake, made by the pane's Session's Pi through `relay`: request,
+/// header, descriptor byte, then up to 64 KiB of replay. The PTY descriptor is never received
+/// (no control buffer), so the kernel discards it.
+pub fn attach_once(relay: &Path, shell_id: i64) -> Result<(), String> {
+    let mut stream = UnixStream::connect(relay).map_err(|e| format!("connect: {e}"))?;
     stream
         .set_read_timeout(Some(Duration::from_secs(5)))
         .map_err(|e| e.to_string())?;

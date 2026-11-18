@@ -44,11 +44,15 @@ rust_test(
     name = "rpc_tests",
     srcs = ["tests/rpc.rs"],
     edition = "2024",
-    data = [":axod", "//crates/axo-server:pi_extension_fixture", "testdata/pi-fixture.sh"],
+    data = [
+        ":axod",
+        ":fake_pi",
+        "//crates/axo-server:pi_extension_fixture",
+    ],
     env = {
         "AXOD_BINARY": "$(rootpath :axod)",
+        "AXO_TEST_FAKE_PI": "$(rootpath :fake_pi)",
         "AXO_PI_EXTENSION_PATH": "$(rootpath //crates/axo-server:pi_extension_fixture)",
-        "AXO_TEST_PI_EXECUTABLE": "$(rootpath testdata/pi-fixture.sh)",
     },
     timeout = "short",
     deps = [

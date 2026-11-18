@@ -34,6 +34,8 @@ pub enum Rejection {
     ShellNotOpen = 2,
     Other = 3,
     DaemonBusy = 4,
+    /// The caller may not type into that pane: it is neither the person nor in its Session.
+    NotAllowed = 5,
 }
 
 impl Rejection {
@@ -42,6 +44,7 @@ impl Rejection {
         match code {
             2 => Rejection::ShellNotOpen,
             4 => Rejection::DaemonBusy,
+            5 => Rejection::NotAllowed,
             _ => Rejection::Other,
         }
     }
@@ -541,6 +544,10 @@ fn receive_header(control: &mut UnixStream) -> io::Result<u64> {
             Rejection::Other => (
                 io::ErrorKind::Other,
                 "daemon rejected the terminal attachment",
+            ),
+            Rejection::NotAllowed => (
+                io::ErrorKind::PermissionDenied,
+                "only the person or that Session's own processes attach to its panes",
             ),
         };
         return Err(io::Error::new(kind, message));
@@ -1198,6 +1205,7 @@ mod tests {
         for (rejection, kind) in [
             (Rejection::ShellNotOpen, io::ErrorKind::NotFound),
             (Rejection::Other, io::ErrorKind::Other),
+            (Rejection::NotAllowed, io::ErrorKind::PermissionDenied),
         ] {
             let (listener, path) = listener();
             let server = thread::spawn(move || {

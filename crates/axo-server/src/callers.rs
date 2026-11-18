@@ -10,12 +10,16 @@
 //! pane must still be axod's child. The caller's own pid is the one the kernel gave when it
 //! connected; a process started after that is a later one with a reused pid, and is no caller.
 //! A process that left its pane's tree (a daemon reparented to launchd) belongs to no Session.
+//!
+//! Typing into a pane is acting in its Session, as the person at its keyboard: only the person
+//! (the signed Axo.app, or the account through the relay) or that Session's own processes may.
+//! A pane showing another Mac's Session belongs to that Session.
 
 use std::collections::HashMap;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use axo_agent::process::ProcessIdentity;
-use axo_ipc::peer::Peer;
+use axo_ipc::peer::{Peer, Signer};
 use axo_protocol::SessionId;
 use axo_protocol::rpc::error_code;
 use jsonrpc_core::{Error as RpcError, ErrorCode};
@@ -42,6 +46,25 @@ pub(crate) fn act_as(core: &Core, peer: &Peer, claimed: SessionId) -> Result<(),
     Err(not_that_session())
 }
 
+/// Whether `peer` is the person: the signed Axo.app here, or the account through the relay.
+pub(crate) fn is_the_person(peer: &Peer) -> bool {
+    matches!(peer, Peer::Relay) || peer.is(Signer::AxoApp)
+}
+
+/// Whether `peer` may type into `session`'s panes: the person, or the Session's own processes.
+pub(crate) fn may_type_into(core: &Core, peer: &Peer, session: SessionId) -> bool {
+    is_the_person(peer) || session_of(core, peer) == Some(session)
+}
+
+/// Refuses typing into `session`'s panes unless [`may_type_into`].
+pub(crate) fn type_into(core: &Core, peer: &Peer, session: SessionId) -> Result<(), RpcError> {
+    if may_type_into(core, peer, session) {
+        return Ok(());
+    }
+    log::warn!("event=caller.input_refused session_id={session}");
+    Err(not_that_session())
+}
+
 pub(crate) fn not_that_session() -> RpcError {
     RpcError {
         code: ErrorCode::ServerError(error_code::NOT_THAT_SESSION),
@@ -63,26 +86,32 @@ fn still_the_process(pid: u32, connected_at: SystemTime) -> Option<ProcessIdenti
     (Duration::from_micros(process.started) <= connected_at).then_some(process)
 }
 
-/// Every open local Session's running panes, by pid. A pid two Sessions claim (one's record is
-/// stale) is no one's.
+/// Every running pane by pid: open local Sessions' and those showing other Macs' Sessions. A
+/// pid two Sessions claim (one's record is stale) is no one's.
 fn local_panes(core: &Core) -> HashMap<u32, Option<SessionId>> {
-    let mut panes = HashMap::new();
+    let mut claims = core.peers.pane_processes();
     for (id, entry) in &core.catalog.view().sessions {
-        if !core.registry.contains(*id) {
-            continue;
+        if core.registry.contains(*id) {
+            claims.extend(
+                entry
+                    .record
+                    .shells
+                    .iter()
+                    .filter(|shell| shell.process_id > 0)
+                    .map(|shell| (shell.process_id, *id)),
+            );
         }
-        for shell in &entry.record.shells {
-            if shell.process_id > 0 {
-                panes
-                    .entry(shell.process_id)
-                    .and_modify(|owner: &mut Option<SessionId>| {
-                        if *owner != Some(*id) {
-                            *owner = None;
-                        }
-                    })
-                    .or_insert(Some(*id));
-            }
-        }
+    }
+    let mut panes = HashMap::new();
+    for (pid, id) in claims {
+        panes
+            .entry(pid)
+            .and_modify(|owner: &mut Option<SessionId>| {
+                if *owner != Some(id) {
+                    *owner = None;
+                }
+            })
+            .or_insert(Some(id));
     }
     panes
 }

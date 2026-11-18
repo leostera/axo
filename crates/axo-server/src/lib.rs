@@ -268,7 +268,7 @@ pub fn serve_ipc(
         server_directory.join("peers.json"),
     );
     let _bridges = runtime.block_on(async {
-        attachments::listen(&core, stop.clone())?;
+        attachments::listen(&core, stop.clone(), callers::may_type_into)?;
         let watched = watch_bridges(&core);
         sessions::restore(&core, previous_stop).await?;
         Ok::<_, io::Error>(watched)

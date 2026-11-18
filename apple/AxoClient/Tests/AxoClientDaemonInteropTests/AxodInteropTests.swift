@@ -192,7 +192,18 @@ final class AxodInteropTests: XCTestCase {
 
     let session = try await axod.createSession()
     let shell = try XCTUnwrap(session.shells.first { $0.role == .terminal })
-    let attachSocket = try UnixSocketPath(shell.attachSocketPath)
+    // Only the person (the signed Axo.app) or the pane's own Session attaches to it (RFD0073):
+    // this unsigned test attaches through the Session's fake Pi, which attaches from inside it.
+    let attachSocket = try UnixSocketPath(
+      directory.appendingPathComponent("agents/\(session.id.rawValue).attach.sock").path)
+    try await waitForSocket(at: attachSocket, from: daemon)
+    do {
+      _ = try TerminalAttachment.open(
+        socketPath: try UnixSocketPath(shell.attachSocketPath), shellID: shell.id)
+      XCTFail("an unsigned process outside the Session must not attach")
+    } catch let error as TerminalAttachmentError {
+      XCTAssertEqual(error, .rejected(.notAllowed))
+    }
     let first = try TerminalAttachment.open(socketPath: attachSocket, shellID: shell.id)
     defer { first.close() }
     let second = try TerminalAttachment.open(socketPath: attachSocket, shellID: shell.id)
@@ -223,8 +234,10 @@ final class AxodInteropTests: XCTestCase {
   }
 }
 
-/// Starts Axod with its catalog in `directory`. Pi panes run the declared inert fixtures, never
-/// the developer's Pi or extension: without an extension Axod cannot start a Session.
+/// Starts Axod with its catalog in `directory`. Pi panes run the fake Pi held at its startup
+/// gate, never the developer's Pi or extension: without an extension Axod cannot start a
+/// Session. Each fake Pi relays attachments to its Session's panes on
+/// `directory/agents/<session>.attach.sock`.
 private func startAxod(socket: UnixSocketPath, in directory: URL) throws -> Process {
   let home = directory.appendingPathComponent("home", isDirectory: true)
   try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
@@ -239,8 +252,15 @@ private func startAxod(socket: UnixSocketPath, in directory: URL) throws -> Proc
   environment["AXO_PI_EXTENSION_PATH"] = try runfile(
     named: "AXO_PI_EXTENSION_PATH", executable: false
   ).path
-  environment["AXO_PI_EXECUTABLE"] = try runfile(named: "AXO_TEST_PI_EXECUTABLE", executable: true)
-    .path
+  environment["AXO_PI_EXECUTABLE"] = try runfile(named: "AXO_TEST_FAKE_PI", executable: true).path
+  let agents = directory.appendingPathComponent("agents", isDirectory: true)
+  try FileManager.default.createDirectory(at: agents, withIntermediateDirectories: true)
+  let gate = directory.appendingPathComponent("pi-gate")
+  try "hold".write(to: gate, atomically: true, encoding: .utf8)
+  environment["AXO_FAKE_PI_AGENT_SOCKETS"] = agents.path
+  environment["AXO_FAKE_PI_STARTUP_GATE"] = gate.path
+  environment["AXO_FAKE_PI_ATTACH_SOCKET"] =
+    directory.appendingPathComponent("server/attach.sock").path
   daemon.environment = environment
   daemon.standardOutput = FileHandle.nullDevice
   daemon.standardError = FileHandle.nullDevice

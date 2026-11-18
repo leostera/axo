@@ -143,17 +143,35 @@ fn unique_test_directory(tag: &str) -> std::path::PathBuf {
     std::path::PathBuf::from("/tmp").join(format!("{tag}-{}-{index}-{nanos}", std::process::id()))
 }
 
+/// axod with the fake Pi held at its startup gate: it keeps its transcript and never binds its
+/// bridge, and it carries its Session's agent calls and attachments to axod (see
+/// `agent_socket` and `open_shell`).
 fn start_axod(directory: &std::path::Path, socket: &std::path::Path) -> ChildGuard {
-    let fixture_pi = std::env::var_os("AXO_TEST_PI_EXECUTABLE")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| {
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/pi-fixture.sh")
-        });
-    start_axod_with_pi(
-        directory,
-        socket,
-        &std::fs::canonicalize(fixture_pi).expect("declared Pi fixture executable"),
-    )
+    start_axod_with_pi(directory, socket, &fake_pi())
+}
+
+fn fake_pi() -> std::path::PathBuf {
+    let path = std::path::PathBuf::from(
+        std::env::var_os("AXO_TEST_FAKE_PI").expect("the test needs AXO_TEST_FAKE_PI"),
+    );
+    std::fs::canonicalize(&path).unwrap_or(path)
+}
+
+/// Where each fake Pi of the axod listening on `socket` takes its Session's agent calls.
+fn agents_directory(socket: &std::path::Path) -> std::path::PathBuf {
+    socket.parent().unwrap().join("agents")
+}
+
+/// The socket on which a call reaches axod from inside `session_id`'s Pi, as that Session's
+/// own process (RFD0073); this test process belongs to no Session.
+fn agent_socket(socket: &std::path::Path, session_id: &str) -> std::path::PathBuf {
+    let path = agents_directory(socket).join(format!("{session_id}.sock"));
+    let deadline = Instant::now() + READY_WAIT;
+    while UnixStream::connect(&path).is_err() {
+        assert!(Instant::now() < deadline, "the Session's Pi took no calls");
+        thread::sleep(Duration::from_millis(20));
+    }
+    path
 }
 
 fn start_axod_with_pi(
@@ -162,8 +180,15 @@ fn start_axod_with_pi(
     pi: &std::path::Path,
 ) -> ChildGuard {
     std::fs::create_dir_all(directory).unwrap();
+    let agents = agents_directory(socket);
+    std::fs::create_dir_all(&agents).unwrap();
+    let gate = socket.parent().unwrap().join("pi-gate");
+    std::fs::write(&gate, "hold").unwrap();
     let child = Command::new(axod_binary())
         .env("AXO_PI_EXECUTABLE", pi)
+        .env("AXO_FAKE_PI_AGENT_SOCKETS", agents)
+        .env("AXO_FAKE_PI_STARTUP_GATE", gate)
+        .env("AXO_FAKE_PI_ATTACH_SOCKET", directory.join("attach.sock"))
         .arg("--socket")
         .arg(socket)
         .arg("--server-dir")
@@ -305,8 +330,13 @@ fn wait_for_socket(socket: &std::path::Path, child: &mut ChildGuard) {
     }
 }
 
-fn open_shell(shell: &Value) -> (UnixStream, OwnedFd) {
-    let mut control = UnixStream::connect(shell["attachSocketPath"].as_str().unwrap()).unwrap();
+/// Attaches to `shell` of `session` from inside that Session's Pi, which hands the attachment on:
+/// only the person or a Session's own processes may attach to its panes (RFD0073).
+fn open_shell(socket: &std::path::Path, session: &Value, shell: &Value) -> (UnixStream, OwnedFd) {
+    let session_id = session["id"].as_str().unwrap();
+    agent_socket(socket, session_id);
+    let relay = agents_directory(socket).join(format!("{session_id}.attach.sock"));
+    let mut control = UnixStream::connect(relay).unwrap();
     control
         .set_read_timeout(Some(Duration::from_secs(3)))
         .unwrap();
@@ -464,11 +494,12 @@ fn terminal_attachments_share_output_and_shells_never_stall_unattached() {
     wait_for_socket(&socket, &mut daemon);
     let session = create_session(&socket);
     let session_id = session["id"].as_str().unwrap().to_owned();
+    let agent = agent_socket(&socket, &session_id);
     let shell = terminal_shell(&session);
     let shell_id = shell["id"].as_i64().unwrap();
 
     // Two concurrent attachments both receive the replay and every live byte.
-    let (first, first_master) = open_shell(shell);
+    let (first, first_master) = open_shell(&socket, &session, shell);
     write_pty(
         first_master.as_raw_fd(),
         b"printf '%s%s\\n' AXO_REPLAY_ SCREEN_9971\n",
@@ -478,7 +509,7 @@ fn terminal_attachments_share_output_and_shells_never_stall_unattached() {
         b"AXO_REPLAY_SCREEN_9971",
         READY_WAIT
     ));
-    let (second, _second_master) = open_shell(shell);
+    let (second, _second_master) = open_shell(&socket, &session, shell);
     assert!(
         stream_contains(&second, b"AXO_REPLAY_SCREEN_9971", READY_WAIT),
         "a concurrent attachment should replay earlier output"
@@ -495,7 +526,7 @@ fn terminal_attachments_share_output_and_shells_never_stall_unattached() {
     // With nothing attached, far more output than a PTY buffer holds must not block the shell.
     let command = b"seq 1 100000 >/dev/tty; printf '%s%s\\n' AXO_UNATTACHED_ DONE_5521\n";
     let input = rpc_with_params(
-        &socket,
+        &agent,
         "axo.terminal.input",
         json!({
             "sessionId": session_id,
@@ -507,7 +538,7 @@ fn terminal_attachments_share_output_and_shells_never_stall_unattached() {
     assert_eq!(input["result"]["accepted"], true, "{input}");
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
-        let (third, _third_master) = open_shell(shell);
+        let (third, _third_master) = open_shell(&socket, &session, shell);
         let finished = stream_contains(
             &third,
             b"AXO_UNATTACHED_DONE_5521",
@@ -557,6 +588,7 @@ fn local_protocol_streams_events_and_controls_the_pty() {
 
     let session = create_session(&socket);
     let session_id = session["id"].as_str().unwrap().to_owned();
+    let agent = agent_socket(&socket, &session_id);
     let shell = terminal_shell(&session);
     let shell_id = shell["id"].as_i64().unwrap();
     let mut events = EventStream::open(&socket, json!({ "sessionId": session_id }));
@@ -564,7 +596,7 @@ fn local_protocol_streams_events_and_controls_the_pty() {
     assert_eq!(initial["type"], "session.snapshot");
     assert_eq!(initial["session"]["id"], session_id);
 
-    let (output, _master) = open_shell(shell);
+    let (output, _master) = open_shell(&socket, &session, shell);
     let attach_deadline = Instant::now() + READY_WAIT;
     loop {
         let event = events.next(Duration::from_millis(500)).unwrap_or_default();
@@ -584,7 +616,7 @@ fn local_protocol_streams_events_and_controls_the_pty() {
     );
     assert_eq!(resize["result"]["accepted"], true);
     let command = rpc_with_params(
-        &socket,
+        &agent,
         "axo.terminal.input",
         json!({
             "sessionId": session_id,
@@ -595,7 +627,7 @@ fn local_protocol_streams_events_and_controls_the_pty() {
     );
     assert_eq!(command["result"]["accepted"], true);
     let duplicate = rpc_with_params(
-        &socket,
+        &agent,
         "axo.terminal.input",
         json!({
             "sessionId": session_id,
@@ -606,7 +638,7 @@ fn local_protocol_streams_events_and_controls_the_pty() {
     );
     assert_eq!(duplicate["result"]["accepted"], true);
     let out_of_order = rpc_with_params(
-        &socket,
+        &agent,
         "axo.terminal.input",
         json!({
             "sessionId": session_id,
@@ -670,7 +702,7 @@ fn local_protocol_streams_events_and_controls_the_pty() {
             assert_eq!(busy["foregroundProcess"], "sleep");
         }
         let accepted = rpc_with_params(
-            &socket,
+            &agent,
             "axo.terminal.input",
             json!({ "sessionId": session_id, "shellId": shell_id, "sequence": sequence, "data": data }),
         );
@@ -890,14 +922,15 @@ fn agents_can_find_transcripts_drive_panes_and_prompt_sessions() {
     let server_directory = directory.join("server");
     let socket = directory.join("axod.sock");
     std::fs::create_dir_all(&directory).unwrap();
-    // A Pi that records its environment, then waits like the usual fixture.
+    // A Pi that records its environment, then is the usual fixture.
     let environment = directory.join("pi-environment");
     let pi = directory.join("recording-pi");
     std::fs::write(
         &pi,
         format!(
-            "#!/bin/sh\nenv > {}\nexec /bin/sleep 60\n",
-            environment.display()
+            "#!/bin/sh\nenv > {}\nexec '{}'\n",
+            environment.display(),
+            fake_pi().display()
         ),
     )
     .unwrap();
@@ -921,11 +954,19 @@ fn agents_can_find_transcripts_drive_panes_and_prompt_sessions() {
         "{recorded}"
     );
 
-    // Typing into the terminal pane and reading its screen back as plain text.
+    // Typing into the terminal pane and reading its screen back as plain text. Only the person
+    // or the Session's own processes type into it (RFD0073); this test is neither.
     let terminal = terminal_shell(&session);
+    let agent = agent_socket(&socket, session["id"].as_str().unwrap());
     let ids = json!({ "sessionId": session["id"], "shellId": terminal["id"] });
-    let written = rpc_with_params(
+    let outside = rpc_with_params(
         &socket,
+        "axo.terminal.write",
+        json!({ "sessionId": session["id"], "shellId": terminal["id"], "text": "echo no\r" }),
+    );
+    assert_eq!(outside["error"]["code"], -32099, "{outside}");
+    let written = rpc_with_params(
+        &agent,
         "axo.terminal.write",
         json!({ "sessionId": session["id"], "shellId": terminal["id"], "text": "echo axo-$((6*7))\r" }),
     );
@@ -1219,7 +1260,7 @@ fn a_created_session_survives_a_restart_and_nothing_replaces_the_last_one() {
     assert!(shell["ptyDevice"].as_str().unwrap().starts_with("/dev/"));
     assert!(server_directory.join("axo.db").exists());
 
-    let (_attachment, master) = open_shell(shell);
+    let (_attachment, master) = open_shell(&socket, &session, shell);
     write_pty(master.as_raw_fd(), b"printf 'AXOD_PTY_E2E_OK\\n'\n");
     assert!(
         stream_contains(&_attachment, b"AXOD_PTY_E2E_OK", READY_WAIT),
@@ -1317,7 +1358,7 @@ fn a_created_session_survives_a_restart_and_nothing_replaces_the_last_one() {
     );
     cleanup.track(&restored[0]);
 
-    let (_attachment, restored_master) = open_shell(restored_shell);
+    let (_attachment, restored_master) = open_shell(&socket, &restored[0], restored_shell);
     write_pty(
         restored_master.as_raw_fd(),
         b"printf 'AXOD_RESTORED_OK\\n'\n",
@@ -1420,7 +1461,7 @@ fn new_panes_start_at_the_latest_clients_viewport_across_restarts() {
     );
     let session = create_session(&socket);
     cleanup.track(&session);
-    let (_control, master) = open_shell(terminal_shell(&session));
+    let (_control, master) = open_shell(&socket, &session, terminal_shell(&session));
     // 2000x1200 px minus Ghostty's scaled padding, in 16x34 px cells, halved beside Pi.
     assert_eq!(pty_size(&master), (34, 61));
     drop(daemon);
@@ -1430,6 +1471,6 @@ fn new_panes_start_at_the_latest_clients_viewport_across_restarts() {
     wait_for_socket(&socket, &mut daemon);
     let session = create_session(&socket);
     cleanup.track(&session);
-    let (_control, master) = open_shell(terminal_shell(&session));
+    let (_control, master) = open_shell(&socket, &session, terminal_shell(&session));
     assert_eq!(pty_size(&master), (34, 61));
 }

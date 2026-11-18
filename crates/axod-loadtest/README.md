@@ -14,7 +14,7 @@ bazel run -c opt //crates/axod-loadtest -- --profile smoke --seconds 5
 | `heavy` (default) | 8 Sessions × 3 terminals, 32 catalog and 4 stream subscribers, 4 flooders, 2 attach churners, 4 probes, 20 s | control-plane p99 < 10 ms, lifecycle p99 < 100 ms |
 | `smoke` | 2 × 2, light load, 3 s | p99 < 250 ms (guards against stalls on a busy machine) |
 
-`--axod` and `--pi-fixture` default to `$AXOD_BINARY` and `$AXO_TEST_PI_EXECUTABLE`; `bazel run` sets both.
+`--axod` and `--fake-pi` default to `$AXOD_BINARY` and `$AXO_TEST_FAKE_PI`; `bazel run` sets both. Input and attachments go through each Session's fake Pi, since only the person or a Session's own processes type into its panes (RFD0073).
 
 | Module | Owns |
 | --- | --- |

@@ -7,12 +7,12 @@ package(default_visibility = ["//visibility:public"])
 rust_binary(
     name = "axod-loadtest",
     srcs = glob(["src/*.rs"]),
-    data = ["//crates/axod", "//crates/axod:testdata/pi-fixture.sh", "//crates/axo-server:pi_extension_fixture"],
+    data = ["//crates/axod", "//crates/axod:fake_pi", "//crates/axo-server:pi_extension_fixture"],
     edition = "2024",
     env = {
         "AXOD_BINARY": "$(rootpath //crates/axod)",
         "AXO_PI_EXTENSION_PATH": "$(rootpath //crates/axo-server:pi_extension_fixture)",
-        "AXO_TEST_PI_EXECUTABLE": "$(rootpath //crates/axod:testdata/pi-fixture.sh)",
+        "AXO_TEST_FAKE_PI": "$(rootpath //crates/axod:fake_pi)",
     },
     testonly = True,
     deps = [
@@ -33,13 +33,13 @@ rust_test(
 rust_test(
     name = "smoke_test",
     srcs = ["tests/smoke.rs"],
-    data = [":axod-loadtest", "//crates/axod", "//crates/axod:testdata/pi-fixture.sh", "//crates/axo-server:pi_extension_fixture"],
+    data = [":axod-loadtest", "//crates/axod", "//crates/axod:fake_pi", "//crates/axo-server:pi_extension_fixture"],
     edition = "2024",
     env = {
         "AXOD_LOADTEST_BINARY": "$(rootpath :axod-loadtest)",
         "AXOD_BINARY": "$(rootpath //crates/axod)",
         "AXO_PI_EXTENSION_PATH": "$(rootpath //crates/axo-server:pi_extension_fixture)",
-        "AXO_TEST_PI_EXECUTABLE": "$(rootpath //crates/axod:testdata/pi-fixture.sh)",
+        "AXO_TEST_FAKE_PI": "$(rootpath //crates/axod:fake_pi)",
     },
     tags = ["exclusive"],
     timeout = "short",

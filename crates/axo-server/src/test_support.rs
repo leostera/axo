@@ -154,10 +154,17 @@ impl Fixture {
         fs::write(self.directory.join("startup-ms"), milliseconds.to_string()).unwrap();
     }
 
-    /// Serves the attach socket, as axod does.
+    /// Serves the attach socket, as axod does, to the test as if it were Axo.app: an unsigned
+    /// test process cannot be, and who may attach is tested on its own
+    /// (`attaching_needs_the_person_or_the_panes_own_session`).
     pub(crate) fn listen(&mut self) {
+        self.listen_admitting(|_, _, _| true);
+    }
+
+    /// Serves the attach socket to the callers `admit` lets in.
+    pub(crate) fn listen_admitting(&mut self, admit: crate::attachments::Admit) {
         let stop = axo_ipc::Stop::default();
-        crate::attachments::listen(&self.core, stop.clone()).unwrap();
+        crate::attachments::listen(&self.core, stop.clone(), admit).unwrap();
         self.attachments = Some(stop);
     }
 

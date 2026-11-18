@@ -88,7 +88,7 @@ pub async fn as_relay<F: Future>(request: F) -> F::Output {
 
 impl Peer {
     /// The peer of a connected Unix socket.
-    pub(crate) fn of(stream: &tokio::net::UnixStream) -> Self {
+    pub fn of(stream: &tokio::net::UnixStream) -> Self {
         Self::Socket {
             token: platform::audit_token(stream),
             connected_at: SystemTime::now(),

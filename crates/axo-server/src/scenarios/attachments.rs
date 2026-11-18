@@ -125,6 +125,33 @@ async fn a_stalled_client_is_released_without_blocking_the_shell() {
 }
 
 /// A shell that is not open is refused as such, so the client stops retrying.
+/// Attaching hands out a pane's PTY, which is typing into it (RFD0073): a process that is
+/// neither the person (the signed Axo.app) nor in the pane's Session, as this test is, is
+/// refused, and the pane keeps no attachment for it.
+#[tokio::test(flavor = "multi_thread")]
+async fn attaching_needs_the_person_or_the_panes_own_session() {
+    let mut fixture = Fixture::new().await;
+    fixture.listen_admitting(crate::callers::may_type_into);
+    let record = fixture.new_session().await;
+    let shell = record
+        .shells
+        .iter()
+        .find(|shell| shell.role == axo_protocol::PaneRole::Terminal)
+        .unwrap()
+        .id;
+    let socket = fixture.core.attach_socket_path.clone();
+    let refused = tokio::task::spawn_blocking(move || attach::open(&socket, shell.get()))
+        .await
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(
+        refused.kind(),
+        std::io::ErrorKind::PermissionDenied,
+        "{refused}"
+    );
+    assert_eq!(attachments(&fixture, record.id, shell).await, 0);
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn attaching_to_a_pane_that_is_gone_is_refused() {
     let mut fixture = Fixture::new().await;

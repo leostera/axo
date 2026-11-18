@@ -25,6 +25,9 @@
 //!   its tools would call axod: a test reaches axod there as this Session's agent (RFD0073).
 //!   On `<directory>/<AXO_SESSION_ID>.mcp.sock` it starts `$AXOD mcp` for each connection, as
 //!   pi-axo does, wired to it; when it exits, the last line is `{"fakePiMcpExit": <status>}`.
+//!   With `AXO_FAKE_PI_ATTACH_SOCKET` too, `<directory>/<AXO_SESSION_ID>.attach.sock` speaks
+//!   the attach protocol: each attachment is made from this Pi's process to that socket and
+//!   handed on, PTY descriptor and all.
 //!
 //! `AXO_FAKE_PI_FAIL=start` makes it exit at once with status 3, as a Pi that cannot start.
 //! `AXO_FAKE_PI_STUBBORN=1` makes it ignore SIGHUP and its lifeline, as a Pi from before the
@@ -476,6 +479,18 @@ fn serve_as_agent() {
             }
         });
     }
+    if let (Some(listener), Some(upstream)) = (
+        listen(format!("{session}.attach.sock")),
+        env("AXO_FAKE_PI_ATTACH_SOCKET"),
+    ) {
+        thread::spawn(move || {
+            for client in listener.incoming() {
+                let Ok(client) = client else { continue };
+                let upstream = upstream.clone();
+                thread::spawn(move || relay_attachment(client, &upstream));
+            }
+        });
+    }
     if let (Some(listener), Some(executable)) = (listen(format!("{session}.mcp.sock")), env("AXOD"))
     {
         thread::spawn(move || {
@@ -493,6 +508,110 @@ fn copy_then_close(mut from: impl Read + Send + 'static, mut to: UnixStream) {
         let _ = std::io::copy(&mut from, &mut to);
         let _ = to.shutdown(std::net::Shutdown::Write);
     });
+}
+
+/// Attaches from this process to the attach socket at `path`, and hands the attachment on: the
+/// request, the answer's header, the PTY descriptor, then the stream.
+fn relay_attachment(client: UnixStream, path: &str) {
+    let Ok(mut reader) = client.try_clone().map(BufReader::new) else {
+        return;
+    };
+    let Ok(mut upstream) = UnixStream::connect(path) else {
+        return;
+    };
+    // The request is one line: the shell ID.
+    let mut request = String::new();
+    if reader.read_line(&mut request).is_err() || upstream.write_all(request.as_bytes()).is_err() {
+        return;
+    }
+    let mut client = client;
+    let mut header = [0_u8; 8];
+    if upstream.read_exact(&mut header).is_err() || client.write_all(&header).is_err() {
+        return;
+    }
+    if u64::from_be_bytes(header) == u64::MAX {
+        // Refused: one code byte follows.
+        let _ = std::io::copy(&mut (&upstream).take(1), &mut client);
+        return;
+    }
+    let Some((byte, descriptor)) = receive_descriptor(&upstream) else {
+        return;
+    };
+    if !send_descriptor(&client, byte, descriptor) {
+        return;
+    }
+    // SAFETY: the descriptor was received above and is closed once, here.
+    unsafe { libc::close(descriptor) };
+    // Then the replay and live output, until either side hangs up.
+    if let Ok(to_upstream) = upstream.try_clone() {
+        copy_then_close(reader, to_upstream);
+    }
+    let _ = std::io::copy(&mut upstream, &mut client);
+    let _ = client.shutdown(std::net::Shutdown::Both);
+}
+
+/// One byte and one descriptor (SCM_RIGHTS) from `stream`.
+fn receive_descriptor(stream: &UnixStream) -> Option<(u8, i32)> {
+    use std::os::fd::AsRawFd;
+    let mut byte = 0_u8;
+    let mut vector = libc::iovec {
+        iov_base: (&mut byte as *mut u8).cast(),
+        iov_len: 1,
+    };
+    // SAFETY: CMSG_SPACE only computes a size.
+    let space = unsafe { libc::CMSG_SPACE(std::mem::size_of::<i32>() as u32) } as usize;
+    let mut control = vec![0_usize; space.div_ceil(std::mem::size_of::<usize>())];
+    // SAFETY: a zeroed msghdr is valid before its fields are set.
+    let mut message: libc::msghdr = unsafe { std::mem::zeroed() };
+    message.msg_iov = &mut vector;
+    message.msg_iovlen = 1;
+    message.msg_control = control.as_mut_ptr().cast();
+    message.msg_controllen = space as _;
+    // SAFETY: the message points at buffers of the sizes it states.
+    if unsafe { libc::recvmsg(stream.as_raw_fd(), &mut message, 0) } != 1 {
+        return None;
+    }
+    // SAFETY: recvmsg filled the control buffer; a null header means no descriptor came.
+    let header = unsafe { libc::CMSG_FIRSTHDR(&message) };
+    if header.is_null() {
+        return None;
+    }
+    // SAFETY: the header is SOL_SOCKET/SCM_RIGHTS with one descriptor, as attach sends it.
+    let descriptor = unsafe { std::ptr::read_unaligned(libc::CMSG_DATA(header).cast::<i32>()) };
+    Some((byte, descriptor))
+}
+
+/// Sends `byte` with `descriptor` (SCM_RIGHTS) on `stream`.
+fn send_descriptor(stream: &UnixStream, byte: u8, descriptor: i32) -> bool {
+    use std::os::fd::AsRawFd;
+    let mut byte = byte;
+    let mut vector = libc::iovec {
+        iov_base: (&mut byte as *mut u8).cast(),
+        iov_len: 1,
+    };
+    // SAFETY: CMSG_SPACE and CMSG_LEN only compute sizes.
+    let (space, length) = unsafe {
+        (
+            libc::CMSG_SPACE(std::mem::size_of::<i32>() as u32) as usize,
+            libc::CMSG_LEN(std::mem::size_of::<i32>() as u32),
+        )
+    };
+    let mut control = vec![0_usize; space.div_ceil(std::mem::size_of::<usize>())];
+    // SAFETY: a zeroed msghdr is valid before its fields are set.
+    let mut message: libc::msghdr = unsafe { std::mem::zeroed() };
+    message.msg_iov = &mut vector;
+    message.msg_iovlen = 1;
+    message.msg_control = control.as_mut_ptr().cast();
+    message.msg_controllen = space as _;
+    // SAFETY: the control buffer holds one header and one descriptor, as sized above.
+    unsafe {
+        let header = libc::CMSG_FIRSTHDR(&message);
+        (*header).cmsg_level = libc::SOL_SOCKET;
+        (*header).cmsg_type = libc::SCM_RIGHTS;
+        (*header).cmsg_len = length as _;
+        std::ptr::write_unaligned(libc::CMSG_DATA(header).cast::<i32>(), descriptor);
+        libc::sendmsg(stream.as_raw_fd(), &message, 0) == 1
+    }
 }
 
 /// `axod mcp` as this Pi's child, on `client`: its stdin from it, its stdout to it, then how it

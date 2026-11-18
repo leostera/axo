@@ -183,12 +183,15 @@ public enum TerminalAttachmentError: Error, Equatable, CustomStringConvertible {
   public enum Rejection: Equatable, Sendable {
     case shellNotOpen
     case daemonBusy
+    /// Only the person (the signed Axo.app) or the pane's own Session attaches (RFD0073).
+    case notAllowed
     case other(UInt8)
 
     init(code: UInt8) {
       switch code {
       case 2: self = .shellNotOpen
       case 4: self = .daemonBusy
+      case 5: self = .notAllowed
       default: self = .other(code)
       }
     }
@@ -218,6 +221,7 @@ public enum TerminalAttachmentError: Error, Equatable, CustomStringConvertible {
     return switch self {
     case .rejected(.shellNotOpen): "The shell is no longer open."
     case .rejected(.daemonBusy): "axod is busy attaching terminals."
+    case .rejected(.notAllowed): "axod only lets Axo or the pane's own Session attach to it."
     case .rejected(.other(let code)): "axod rejected the terminal attachment (code \(code))."
     case .closed: "axod closed the terminal attachment."
     case .missingDescriptor: "axod did not provide a terminal descriptor."

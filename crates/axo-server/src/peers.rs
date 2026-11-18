@@ -324,6 +324,15 @@ impl Peers {
             .map(|(id, view)| read(*id, &mut view.running))
     }
 
+    /// Each remote pane's process, with the remote Session it shows.
+    pub(crate) fn pane_processes(&self) -> Vec<(u32, SessionId)> {
+        lock(&self.views)
+            .by_session
+            .iter()
+            .map(|(id, view)| (view.running.child.id(), *id))
+            .collect()
+    }
+
     pub(crate) fn input(
         &self,
         session_id: SessionId,

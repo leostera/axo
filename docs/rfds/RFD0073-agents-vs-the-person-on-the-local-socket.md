@@ -1,7 +1,7 @@
 # RFD0073 - Axo: agents vs the person on the local socket
 
 - Feature Name: `agents-vs-the-person`
-- Status: Implemented (slices 1 and 2; slice 2 also binds an agent's questions to the person, `axo.elicitation.request`)
+- Status: Implemented (slices 1, 2 and 3)
 - Author: leostera
 - Start Date: 2026-11-18
 - Document Type: Proposal
@@ -58,7 +58,8 @@ The same call from the CLI inside a Session (`AXO_SESSION_ID` set) is labelled w
 | Answer an elicitation | yes (Axo.app, account) | no (already) | no (already) |
 | Request an OS permission | yes (Axo.app) | no (already) | no (already) |
 | Fetch assets, ask as a tool, computer input | via axod's own tools (`ThisBinary`, already) | via its MCP server | no (already) |
-| Act as Session X (MCP, timers, `fromSessionId`) | — | only X itself, from slice 2 | no, from slice 2 |
+| Act as Session X (MCP, timers, `fromSessionId`, questions to the person) | — | only X itself, from slice 2 | no, from slice 2 |
+| Type into Session X's panes (`axo.terminal.input`, `axo.terminal.write`, the attach socket, `axo.peer.command`) | yes (Axo.app, account) | only X's own panes, from slice 3 | no, from slice 3 |
 
 ## Reference-level explanation
 
@@ -74,11 +75,23 @@ The same call from the CLI inside a Session (`AXO_SESSION_ID` set) is labelled w
 
 The receiving agent can therefore trust an unlabelled prompt as the person's, and labels and limits hold for anything an agent sends, whichever path it takes.
 
-### Slice 2: a Session's agent is the Session it descends from (proposed)
+### Slice 2: a Session's agent is the Session it descends from (implemented)
 
 - On `axo.mcp.open`, and on any local request that names `fromSessionId` or a timer owner, axod reads the peer pid from the audit token and walks its parent chain (`proc_pidinfo`, `pbi_ppid`). It looks for a pane process axod started (Pi or terminal) and checks its start time, so a reused pid is not accepted.
 - The Session it finds is the caller's Session. A request naming a different Session is refused (`-32099`, "a Session acts only as itself"). A request from no Session's process tree is a local program: it may not name `fromSessionId` or own timers.
 - The conformance suite opens MCP from the test process today. It will open it through the fake Pi instead (a fake Pi command starts `axod mcp` as its child), so tests exercise the binding rather than bypass it.
+
+Slice 2 as built also binds `axo.elicitation.request`: an agent asks the person only as its own Session. Conformance tests reach axod as a Session's agent through its fake Pi, which relays its Session's calls and starts `axod mcp` as its child.
+
+### Slice 3: only the person or the Session itself types into its panes (implemented)
+
+Slice 2 left a way round it: typing into another Session's pane runs a command there, from that Session's own process tree (in a terminal, or with Pi's `!command`), and so as that Session. Typing into a pane is acting in its Session as the person at its keyboard. Each way in now admits only the person (`Peer::Relay`, or a peer signed as `Signer::AxoApp`) or a caller in that Session (`callers::may_type_into`):
+
+- `axo.terminal.input` and `axo.terminal.write`, by their `sessionId` (`-32099` otherwise). An agent's `terminal_write` reaches only its own Session's panes; it prompts another Session instead.
+- The attach socket, which hands out the pane's PTY master: refused with the new attach rejection `NotAllowed` (5; older clients read it as "other"), and the pane keeps no attachment for it.
+- `axo.peer.command`, which sends what a person at another Mac would type: only the person here, or the pane that shows that remote Session (pi-axo's remote view), which counts as a pane of the Session it shows.
+
+Reading panes (`axo.terminal.screen`) and resizing them stay open to local callers: neither acts in the Session. An axod built without the team's signature has no Axo.app, so only the account and the Sessions themselves type into its panes; shipped builds are signed (`axo-macos-packaging`).
 
 ### Out of scope
 

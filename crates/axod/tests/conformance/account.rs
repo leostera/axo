@@ -191,9 +191,11 @@ fn other_macs_are_none_without_an_account() {
     assert_eq!(watch["records"], json!([]), "{watch}");
     let command = axod.err(
         "axo.peer.command",
-        json!({ "hostId": host, "method": "axo.session.prompt", "params": { "sessionId": session, "text": "hi" } }),
+        json!({ "hostId": host, "method": "axo.remote.session.prompt", "params": { "sessionId": session, "text": "hi" } }),
     );
-    assert!(command.code < 0, "{command:?}");
+    // What a person at that Mac could type is sent only by the person here or the pane showing
+    // that Session (RFD0073); the test is neither.
+    assert_eq!(command.code, -32099, "{command:?}");
     // Closing what is not open is not an error: there is nothing to close.
     let closed = axod.ok(
         "axo.peer.session.close",

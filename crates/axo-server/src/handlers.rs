@@ -216,6 +216,7 @@ impl Extension for Sessions {
             method::TERMINAL_INPUT,
             "expected {sessionId, shellId, sequence, data}",
             |core, request: rpc::TerminalInput| async move {
+                crate::callers::type_into(&core, &axo_ipc::peer::current(), request.session_id)?;
                 ops::write_input(
                     &core,
                     request.session_id,
@@ -351,6 +352,21 @@ impl Extension for Sessions {
             method::PEER_COMMAND,
             "expected {hostId, method, params}",
             |core, request: rpc::PeerCommand| async move {
+                // What a person at that Mac could type: only the person here, or the pane that
+                // shows that Session, sends it (RFD0073).
+                let session = request
+                    .params
+                    .get("sessionId")
+                    .and_then(serde_json::Value::as_str)
+                    .and_then(axo_protocol::SessionId::parse);
+                let peer = axo_ipc::peer::current();
+                let allowed = match session {
+                    Some(session) => crate::callers::may_type_into(&core, &peer, session),
+                    None => crate::callers::is_the_person(&peer),
+                };
+                if !allowed {
+                    return Err(crate::callers::not_that_session());
+                }
                 core.peers.command(request).await.map_err(|error| RpcError {
                     code: ErrorCode::from(error.code),
                     message: error.message,
@@ -386,6 +402,7 @@ impl Extension for Sessions {
             method::TERMINAL_WRITE,
             "expected {sessionId, shellId, text}",
             |core, request: rpc::WriteTerminal| async move {
+                crate::callers::type_into(&core, &axo_ipc::peer::current(), request.session_id)?;
                 ops::write_text(&core, request.session_id, request.shell_id, request.text)
                     .await
                     .map(|()| rpc::WriteAccepted { accepted: true })
