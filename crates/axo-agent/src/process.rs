@@ -14,12 +14,21 @@ pub struct ProcessIdentity {
 impl ProcessIdentity {
     /// The running process `pid`, or `None` if there is none.
     pub fn of(pid: u32) -> Option<Self> {
-        start_time(pid).map(|started| Self { pid, started })
+        bsd_info(pid).map(|info| Self {
+            pid,
+            started: info.started,
+        })
+    }
+
+    /// This process's parent now, while this is still this process. An orphan's is launchd's.
+    pub fn parent(self) -> Option<Self> {
+        let info = bsd_info(self.pid).filter(|info| info.started == self.started)?;
+        Self::of(info.parent)
     }
 
     /// Whether this exact process is still running.
     pub fn is_running(self) -> bool {
-        start_time(self.pid) == Some(self.started)
+        bsd_info(self.pid).is_some_and(|info| info.started == self.started)
     }
 
     /// Kills this process and its process group if it is still this process; `false` when it
@@ -53,8 +62,15 @@ impl ProcessIdentity {
     }
 }
 
+/// What the kernel says of a running process: when it started, in microseconds since the
+/// epoch, and its parent's pid.
+struct BsdInfo {
+    started: u64,
+    parent: u32,
+}
+
 #[cfg(target_vendor = "apple")]
-fn start_time(pid: u32) -> Option<u64> {
+fn bsd_info(pid: u32) -> Option<BsdInfo> {
     let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
     let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
     // SAFETY: `info` is writable for `size` bytes.
@@ -67,19 +83,24 @@ fn start_time(pid: u32) -> Option<u64> {
             size,
         )
     };
-    (filled == size).then(|| info.pbi_start_tvsec * 1_000_000 + info.pbi_start_tvusec)
+    (filled == size).then(|| BsdInfo {
+        started: info.pbi_start_tvsec * 1_000_000 + info.pbi_start_tvusec,
+        parent: info.pbi_ppid,
+    })
 }
 
 #[cfg(target_os = "linux")]
-fn start_time(pid: u32) -> Option<u64> {
-    linux::start_time(pid)
+fn bsd_info(pid: u32) -> Option<BsdInfo> {
+    linux::info(pid)
 }
 
 #[cfg(target_os = "linux")]
 mod linux {
     use std::sync::OnceLock;
 
-    pub(super) fn start_time(pid: u32) -> Option<u64> {
+    use super::BsdInfo;
+
+    pub(super) fn info(pid: u32) -> Option<BsdInfo> {
         static BOOT_SECONDS: OnceLock<Option<u64>> = OnceLock::new();
         let boot = (*BOOT_SECONDS.get_or_init(|| {
             std::fs::read_to_string("/proc/stat")
@@ -90,40 +111,42 @@ mod linux {
                 .ok()
         }))?;
         let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-        let started = start_ticks(&stat)?;
+        let (parent, started) = fields(&stat)?;
         // SAFETY: sysconf takes no pointers; non-positive results are rejected.
         let ticks = u64::try_from(unsafe { libc::sysconf(libc::_SC_CLK_TCK) }).ok()?;
-        boot.checked_mul(1_000_000)?
-            .checked_add(started.checked_mul(1_000_000)?.checked_div(ticks)?)
+        let started = boot
+            .checked_mul(1_000_000)?
+            .checked_add(started.checked_mul(1_000_000)?.checked_div(ticks)?)?;
+        Some(BsdInfo { started, parent })
     }
 
-    fn start_ticks(stat: &str) -> Option<u64> {
-        // comm (field 2) may contain spaces and parentheses. Field 22 is the 20th after it.
-        stat.rsplit_once(") ")?
-            .1
-            .split_whitespace()
-            .nth(19)?
-            .parse()
-            .ok()
+    /// The parent's pid (field 4) and the start time in clock ticks (field 22).
+    fn fields(stat: &str) -> Option<(u32, u64)> {
+        // comm (field 2) may contain spaces and parentheses: fields count from after it.
+        let after = stat.rsplit_once(") ")?.1;
+        let mut fields = after.split_whitespace();
+        let parent = fields.nth(1)?.parse().ok()?;
+        let started = fields.nth(17)?.parse().ok()?;
+        Some((parent, started))
     }
 
     #[cfg(test)]
     mod tests {
         #[test]
-        fn command_names_cannot_shift_the_start_time_field() {
-            let mut fields = vec!["S"];
-            fields.extend(std::iter::repeat_n("0", 18));
+        fn command_names_cannot_shift_the_parent_or_start_time_fields() {
+            let mut fields = vec!["S", "7"];
+            fields.extend(std::iter::repeat_n("0", 17));
             fields.push("1234");
             let stat = format!("42 (name with ) parentheses) {}", fields.join(" "));
-            assert_eq!(super::start_ticks(&stat), Some(1234));
-            assert_eq!(super::start_ticks("42 (truncated) S"), None);
-            assert_eq!(super::start_ticks("invalid"), None);
+            assert_eq!(super::fields(&stat), Some((7, 1234)));
+            assert_eq!(super::fields("42 (truncated) S"), None);
+            assert_eq!(super::fields("invalid"), None);
         }
     }
 }
 
 #[cfg(not(any(target_vendor = "apple", target_os = "linux")))]
-fn start_time(_pid: u32) -> Option<u64> {
+fn bsd_info(_pid: u32) -> Option<BsdInfo> {
     None
 }
 
@@ -152,5 +175,31 @@ mod tests {
         assert!(!child.wait().unwrap().success());
         assert!(!identity.is_running());
         assert!(ProcessIdentity::parse("nope").is_err());
+    }
+
+    #[test]
+    fn a_process_knows_its_parent_only_while_it_is_that_process() {
+        let mut child = std::process::Command::new("/bin/sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let identity = ProcessIdentity::of(child.id()).unwrap();
+        assert_eq!(
+            identity.parent(),
+            ProcessIdentity::of(std::process::id()),
+            "the test started it"
+        );
+        let someone_else = ProcessIdentity {
+            started: identity.started + 1,
+            ..identity
+        };
+        assert_eq!(someone_else.parent(), None);
+        identity.kill();
+        child.wait().unwrap();
+        assert_eq!(
+            identity.parent(),
+            None,
+            "a process that has gone has no parent"
+        );
     }
 }
