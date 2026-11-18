@@ -11,13 +11,14 @@ main integration, push or publication without approval. One installed Axo only.
 - [x] Blocked-input pane/daemon teardown with bounded regression workers (`2d26f6a8`).
 - [x] Shared live catalog/readiness/reconnect policy (`49fa4499`).
 - [x] Native output-EOF retry, stale attachment cancellation, no input replay (`a2682177`).
+- [x] Exact-layout pane-state reconciliation: retain healthy native widgets/attachments and fence superseded slot callbacks.
 
 ## Ordered implementation
 
 - [x] Native viewport publication: actual metrics, coalescing, reconnect and unattached panes (RFD0058); source-only, no guessed metrics in an empty cold workbench.
 - [x] Session creation in current context/Home/native folder, one pending intent and explicit uncertain-write review (isolated source acceptance).
 - [x] Foreground-only dormant Pi wake; no background initiation, automatic uncertain retry or force fallback (isolated source acceptance).
-- [ ] Layout editing and ordered persistence; incremental per-pane reconciliation, focus/navigation and split/close availability.
+- [ ] Layout editing and ordered persistence; ratio/topology reconciliation, focus/navigation and split/close availability.
 - [ ] Busy-aware archive/close/reopen, captured IDs and unknown-busy refusal.
 - [ ] Grouping/order/seen policy, palette, peer hosts and remote-view/session distinctions.
 - [ ] Remaining general/appearance/agent/remote-access preferences; supported controls only.

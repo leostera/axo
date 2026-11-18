@@ -145,10 +145,14 @@ reconciles them; the Wake Pi button is a distinct explicit unavailable-only inte
 An admitted request can finish after leaving the view, but its reply cannot select
 its old target. A newer current selection can wake after that worker finishes.
 
-Same-Session availability updates preserve the available focused pane, so a new Pi
-does not take terminal typing focus. Availability changes still rebuild this Scene;
-incremental per-pane native-widget reuse is part of the next layout slice. Daemon
-children, PTYs and canonical replay remain authoritative throughout.
+For an exact unchanged layout and member IDs, availability/process changes replace
+only that pane's contents. Healthy siblings retain their actual Ghostty widget,
+attachment and focus; they are never reparented. Slot-local generations fence late
+attach/EOF/frame/focus callbacks. Authoritative replacement cancels obsolete retry
+state. Initial pane focus deferred behind Settings is fulfilled only on real main
+window activation, without rebuilding the terminal. Transport epochs and changed
+layouts/membership still use fresh-v3 Scene replacement; ratio/topology editing and
+ordered persistence remain separate. Daemon children, PTYs and replay stay authoritative.
 
 ## Native viewport publication
 
@@ -244,8 +248,15 @@ accessibility acceptance.
 background selection behind Settings, foreground-only wake, preserved terminal
 focus/input/PIDs, held/lost acknowledgements, no wake replay across epoch changes,
 missing auto capability without force fallback, explicit new intent and detach-only
-quit. This fixture's cold-restore scenario is not the full installation/runtime
+quit. Expanded checks retain scene/pane generations and sibling attachment/PID through
+owned Pi exit/recovery, hold a superseded handshake across a second replacement,
+and prove only current IO installs with terminal keyboard focus intact. This fixture's cold-restore scenario is not the full installation/runtime
 failure matrix, real Pi model behavior or real paired-data restart acceptance.
+`AXO_DESKTOP_TRACE=1` optionally traces only the fixture frontend's ioctl/close calls.
+The live-phase no-termios-error assertion remains strict. An intentional fixture Pi
+exit can race one last Ghostty mode poll with confirmed-exit `N_NULL` retirement;
+tracing verifies TCGETS2 success then EINVAL/EIO on that master, not a socket or
+closed descriptor. Only the known post-exit mode failure is permitted in that phase.
 
 Artifacts are retained in the reported private temporary directory. Diagnostic `--snapshot`/`--diagnostics` flags are optional; snapshots contain this window's terminal content and must not be committed from real Sessions.
 

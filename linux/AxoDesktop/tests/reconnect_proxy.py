@@ -32,6 +32,7 @@ class OwnedProxy:
         self.catalog_gate = threading.Event()
         self.catalog_gate.set()
         self.wake_requests = []
+        self.attach_requests = []
         self.wake_gate = threading.Event()
         self.wake_gate.set()
         self.create_gate = threading.Event()
@@ -144,6 +145,8 @@ class OwnedProxy:
             else:
                 request = self._line(client)
                 assert request.startswith(b'3:'), request
+                with self.lock:
+                    self.attach_requests.append(int(request[2:].strip()))
                 while not self.attach_gate.wait(.05):
                     if self.stopping:
                         return

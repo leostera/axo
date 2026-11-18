@@ -11,6 +11,7 @@ use axo_protocol::{
 };
 use gtk4::{glib, prelude::*};
 mod actions;
+mod panes;
 mod wake;
 use std::{
     cell::{Cell, RefCell},
@@ -183,6 +184,7 @@ pub fn create_window(
                 if let Some(model) = model.upgrade() {
                     let view = model.view.borrow().clone();
                     if let Some(view) = view {
+                        view.focus_deferred();
                         model.publish_viewport(&view);
                     }
                     model.wake_selected_pi();
@@ -690,11 +692,8 @@ impl Workbench {
                 session.manual_name.as_ref().unwrap_or(&session.name)
             )));
         }
-        if self.view.borrow().as_ref().is_some_and(|view| {
-            view.session.id == id
-                && view.session.shells == session.shells
-                && view.session.layout == session.layout
-        }) {
+        let current = self.view.borrow().clone();
+        if current.as_ref().is_some_and(|view| view.reconcile(session)) {
             self.wake_selected_pi();
             return;
         }
@@ -702,7 +701,7 @@ impl Workbench {
             .view
             .borrow()
             .as_ref()
-            .filter(|view| view.session.id == id)
+            .filter(|view| view.record().id == id)
             .and_then(|view| view.focused.get());
         self.cancel_retry();
         self.view.borrow_mut().take(); // Cancels pending attachments before replacing widgets.
@@ -721,12 +720,12 @@ impl Workbench {
             needs_retry: Cell::new(false),
             owner: Rc::downgrade(self),
             began: Instant::now(),
-            session: session.clone(),
+            session: RefCell::new(Rc::new(session.clone())),
             root: gtk4::Box::new(gtk4::Orientation::Vertical, 0),
             engine: self.engine.clone(),
             window: self.window.clone(),
             options: self.options.clone(),
-            pending: RefCell::new(Vec::new()),
+            slots: RefCell::new(std::collections::BTreeMap::new()),
             focused: Cell::new(None),
             grids: RefCell::new(std::collections::BTreeMap::new()),
             splits: RefCell::new(Vec::new()),
@@ -735,7 +734,7 @@ impl Workbench {
         });
         self.content.append(&view.root);
         *self.view.borrow_mut() = Some(view.clone());
-        if let Some(layout) = &view.session.layout {
+        if let Some(layout) = &session.layout {
             view.focused.set(
                 previous_focus
                     .filter(|id| {
@@ -746,7 +745,7 @@ impl Workbench {
                         })
                     })
                     .or_else(|| {
-                        view.session
+                        session
                             .shells
                             .iter()
                             .filter(|shell| {
@@ -875,12 +874,12 @@ struct SessionView {
     needs_retry: Cell<bool>,
     owner: std::rc::Weak<Workbench>,
     began: Instant,
-    session: SessionRecord,
+    session: RefCell<Rc<SessionRecord>>,
     root: gtk4::Box,
     engine: Rc<Engine>,
     window: glib::WeakRef<gtk4::ApplicationWindow>,
     options: Options,
-    pending: RefCell<Vec<AttachmentTask>>,
+    slots: RefCell<std::collections::BTreeMap<ShellId, Rc<panes::PaneSlot>>>,
     focused: Cell<Option<ShellId>>,
     grids: RefCell<std::collections::BTreeMap<ShellId, crate::ghostty::SurfaceStats>>,
     snapshot_observed: Cell<bool>,
@@ -947,157 +946,11 @@ impl SessionView {
             }
         }
     }
-    fn pane(self: &Rc<Self>, id: ShellId) -> gtk4::Box {
-        let pane = gtk4::Box::builder()
-            .orientation(gtk4::Orientation::Vertical)
-            .accessible_role(gtk4::AccessibleRole::Group)
-            .build();
-        pane.set_hexpand(true);
-        pane.set_vexpand(true);
-        pane.add_css_class("axo-pane");
-        let Some(shell) = self.session.shells.iter().find(|shell| shell.id == id) else {
-            pane.append(&gtk4::Label::new(Some(
-                "Pane does not belong to this Session",
-            )));
-            return pane;
-        };
-        // Name the group for accessibility without spending terminal rows on a caption.
-        pane.update_property(&[gtk4::accessible::Property::Label(match shell.role {
-            PaneRole::Pi => "Pi pane",
-            PaneRole::Terminal => "Terminal pane",
-        })]);
-        match &shell.availability {
-            Availability::Unavailable { reason } => {
-                pane.append(&notice(reason));
-                return pane;
-            }
-            Availability::Dormant => {
-                if let Some(owner) = self.owner.upgrade() {
-                    owner.dormant_pi(self.session.id, id, &pane);
-                }
-                return pane;
-            }
-            Availability::Available => {}
-        }
-        let message = gtk4::Label::new(Some("Connecting…"));
-        pane.append(&message);
-        let weak_view = Rc::downgrade(self);
-        let weak_pane = pane.downgrade();
-        let weak_message = message.downgrade();
-        let task =
-            AttachmentTask::start(shell.attach_socket_path.clone(), id.get(), move |result| {
-                let (Some(view), Some(pane)) = (weak_view.upgrade(), weak_pane.upgrade()) else {
-                    return;
-                };
-                if let Some(message) = weak_message.upgrade() {
-                    pane.remove(&message);
-                }
-                let retry = result.as_ref().err().is_some_and(|error| {
-                    matches!(
-                        error.kind(),
-                        std::io::ErrorKind::NotFound
-                            | std::io::ErrorKind::ConnectionRefused
-                            | std::io::ErrorKind::ConnectionReset
-                            | std::io::ErrorKind::UnexpectedEof
-                            | std::io::ErrorKind::TimedOut
-                            | std::io::ErrorKind::BrokenPipe
-                    )
-                });
-                let result = result
-                    .map_err(|error| error.to_string())
-                    .and_then(|prepared| view.engine.attached_surface(prepared));
-                match result {
-                    Ok(surface) => view.install_surface(id, &pane, &surface),
-                    Err(error) => {
-                        pane.append(&notice(&format!("Cannot attach: {error}")));
-                        view.needs_retry.set(true);
-                        if retry {
-                            view.retry();
-                        }
-                    }
-                }
-            });
-        match task {
-            Ok(task) => self.pending.borrow_mut().push(task),
-            Err(error) => {
-                pane.remove(&message);
-                pane.append(&notice(&error.to_string()));
-            }
-        }
-        pane
-    }
-
-    fn install_surface(
-        self: &Rc<Self>,
-        id: ShellId,
-        pane: &gtk4::Box,
-        surface: &crate::ghostty::Surface,
-    ) {
-        // Native EOF notification runs inside Ghostty's core dispatch. Never destroy that
-        // surface there: defer until it returns, then verify this view is still selected.
-        let weak = Rc::downgrade(self);
-        surface.on_output_ended(move || {
-            let weak = weak.clone();
-            glib::idle_add_local_once(move || {
-                if let Some(view) = weak.upgrade() {
-                    view.retry();
-                }
-            });
-        });
-        let focus = gtk4::EventControllerFocus::new();
-        focus.connect_enter({
-            let view = Rc::downgrade(self);
-            move |_| {
-                if let Some(view) = view.upgrade() {
-                    view.focused.set(Some(id));
-                }
-            }
-        });
-        surface.widget().add_controller(focus);
-        surface.widget().set_hexpand(true);
-        surface.widget().set_vexpand(true);
-        pane.append(surface.widget());
-        self.observe_surface(id, surface);
-        // An attachment completing behind Settings must not steal its typing focus.
-        if self.focused.get() == Some(id)
-            && self
-                .window
-                .upgrade()
-                .is_some_and(|window| window.is_active())
-        {
-            surface.focus();
-        }
-    }
-
-    fn observe_surface(self: &Rc<Self>, id: ShellId, surface: &crate::ghostty::Surface) {
-        let weak = Rc::downgrade(self);
-        let previous = Cell::new(crate::ghostty::SurfaceStats::default());
-        surface.on_frame(move |stats, _| {
-            let changed = stats != previous.replace(stats);
-            if let Some(view) = weak.upgrade() {
-                let geometry = crate::ghostty::widget_geometry(view.root.upcast_ref());
-                // Fractional pixel spans also change with the native origin, not just rows
-                // and columns. Capture origin-only changes without consuming any socket I/O.
-                let moved = view.geometry.replace(Some(geometry)) != Some(geometry);
-                if changed || moved {
-                    view.record_grid(id, stats);
-                }
-            }
-        });
-        // Readback follows the first installed surface, not focus timing. A slow
-        // Pi attachment or a user clicking another pane must not suppress it.
-        if self.options.snapshot.is_some() && !self.snapshot_observed.replace(true) {
-            if let Some(window) = self.window.upgrade() {
-                crate::observe_window(&window, surface, self.options.snapshot.clone(), None);
-            }
-        }
-    }
-
     fn native_viewport(&self, last_divider: Option<f64>) -> Option<(axo_protocol::Viewport, f64)> {
         let grids = self.grids.borrow();
-        let layout = self.session.layout.as_ref()?;
-        let expected = self
-            .session
+        let session = self.record();
+        let layout = session.layout.as_ref()?;
+        let expected = session
             .shells
             .iter()
             .filter(|shell| {
@@ -1177,6 +1030,9 @@ impl SessionView {
 
     fn record_grid(&self, id: ShellId, stats: crate::ghostty::SurfaceStats) {
         self.grids.borrow_mut().insert(id, stats);
+        self.publish_metrics();
+    }
+    fn publish_metrics(&self) {
         if let Some(owner) = self.owner.upgrade() {
             owner.publish_viewport(self);
         }
@@ -1184,6 +1040,7 @@ impl SessionView {
             let grids = self.grids.borrow();
             let panes: Vec<_> = grids.iter().map(|(id, stats)| serde_json::json!({
                 "shellId":id, "ready":stats.ready == 1, "columns":stats.columns, "rows":stats.rows,
+                "paneGeneration":self.slots.borrow().get(id).map(|slot|slot.generation()),
                 "cell":{"width":stats.cell_width,"height":stats.cell_height},
                 "scale":stats.scale_x
             })).collect();
@@ -1191,7 +1048,7 @@ impl SessionView {
                 .owner
                 .upgrade()
                 .and_then(|owner| self.native_viewport(owner.last_divider.get()).map(|v| v.0));
-            let data = serde_json::json!({"sessionId":self.session.id,"panes":panes,
+            let data = serde_json::json!({"sessionId":self.record().id,"panes":panes,
                 "catalogEpoch":self.epoch,"viewGeneration":self.generation,"viewport":viewport});
             if let Err(error) = std::fs::write(path, data.to_string()) {
                 eprintln!("diagnostics: {error}");
