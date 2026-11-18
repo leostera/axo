@@ -4,6 +4,7 @@
 //! [`Fixture`]: crate::test_support::Fixture
 
 mod attachments;
+mod claude;
 mod codex;
 mod opencode;
 mod idle_pis;

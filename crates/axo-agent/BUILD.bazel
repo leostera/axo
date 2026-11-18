@@ -12,6 +12,7 @@ rust_library(
         "//crates/axo-protocol:axo_protocol",
         "//crates/axo-pty:axo_pty",
         "@crates//:futures-util",
+        "@crates//:httparse",
         "@crates//:libc",
         "@crates//:log",
         "@crates//:reqwest",
@@ -28,11 +29,13 @@ rust_test(
     compile_data = ["//schemas/axo.leostera.dev/v1"] + glob(["testdata/atxf/*"]),
     crate = ":axo_agent",
     data = [
+        ":fake_claude",
         ":fake_codex",
         ":fake_opencode",
     ],
     edition = "2024",
     env = {
+        "AXO_TEST_FAKE_CLAUDE": "$(rootpath :fake_claude)",
         "AXO_TEST_FAKE_CODEX": "$(rootpath :fake_codex)",
         "AXO_TEST_FAKE_OPENCODE": "$(rootpath :fake_opencode)",
     },
@@ -57,4 +60,16 @@ rust_binary(
     srcs = ["testdata/fake_opencode.rs"],
     edition = "2024",
     deps = ["@crates//:serde_json"],
+)
+
+# A stand-in for Claude Code's TUI and its hooks, for the launch and link tests.
+rust_binary(
+    name = "fake_claude",
+    testonly = True,
+    srcs = ["testdata/fake_claude.rs"],
+    edition = "2024",
+    deps = [
+        "@crates//:libc",
+        "@crates//:serde_json",
+    ],
 )

@@ -286,6 +286,8 @@ pub(crate) enum LaunchedAgent {
     Codex(axo_agent::codex::CodexProcess),
     /// OpenCode's server, its TUI and their session (RFD0072).
     OpenCode(axo_agent::opencode::OpenCodeProcess),
+    /// Claude Code's TUI and the hooks it posts (RFD0072).
+    ClaudeCode(axo_agent::claude::ClaudeProcess),
 }
 
 pub(crate) struct LaunchedPi {
@@ -455,6 +457,45 @@ async fn launch_opencode(
         })
 }
 
+/// Launches a Session's Claude Code: finds `claude`, then starts its TUI on the blocking pool.
+async fn launch_claude(
+    core: Arc<Core>,
+    request: ServedRequest,
+    in_flight: LaunchInFlight,
+) -> io::Result<Launched> {
+    let places = SearchPlaces::from_environment(AgentKind::ClaudeCode, &request.home);
+    let installed =
+        discovery::discover(AgentKind::ClaudeCode, &places, discovery::VERSION_TIMEOUT).await?;
+    let launch = axo_agent::claude::ClaudeLaunch {
+        executable: installed.executable,
+        paths: axo_agent::claude::ClaudePaths::new(
+            &core.pi_directories.bridges,
+            &request.session_uuid,
+        ),
+        initial_pwd: request.folder,
+        // The conversation is named by axod: the Session's own id, until one is bound.
+        conversation: request
+            .conversation
+            .unwrap_or_else(|| request.session_uuid.clone()),
+        session_uuid: request.session_uuid,
+        pane_id: request.pane_id,
+        environment: pi_environment(&core.agent_socket),
+        config_dir: axo_agent::claude::config_directory(&request.home),
+        home: request.home,
+        brief: Some(agent_brief()),
+        mcp: Some(request.mcp),
+        previous: request.previous,
+        size: request.size,
+    };
+    tokio::task::spawn_blocking(move || axo_agent::claude::launch(&launch))
+        .await
+        .map_err(io::Error::other)?
+        .map(|process| Launched {
+            in_flight,
+            agent: LaunchedAgent::ClaudeCode(process),
+        })
+}
+
 /// A launched agent's pane process, with the link that follows it.
 struct Followed {
     running: Running,
@@ -608,7 +649,10 @@ impl Session {
         );
         self.publish();
         let agent = self.row.agent;
-        if matches!(agent, AgentKind::Codex | AgentKind::OpenCode) {
+        if matches!(
+            agent,
+            AgentKind::Codex | AgentKind::OpenCode | AgentKind::ClaudeCode
+        ) {
             let id = self.id;
             let previous = core
                 .store
@@ -642,6 +686,7 @@ impl Session {
             tokio::spawn(async move {
                 let result = match agent {
                     AgentKind::OpenCode => launch_opencode(core, request, in_flight).await,
+                    AgentKind::ClaudeCode => launch_claude(core, request, in_flight).await,
                     _ => launch_codex(core, request, in_flight).await,
                 };
                 match mailbox.upgrade() {
@@ -653,14 +698,6 @@ impl Session {
                     None => stop_unwanted(Message::Launched { attempt, result }),
                 }
             });
-            return;
-        }
-        if self.row.agent != AgentKind::Pi {
-            let error = io::Error::new(
-                io::ErrorKind::Unsupported,
-                format!("Axo cannot run {} yet", self.row.agent),
-            );
-            self.launched(attempt, Err(error)).await;
             return;
         }
         let id = self.id;
@@ -955,6 +992,49 @@ impl Session {
                     link: AgentCommands::OpenCode(link),
                     link_task,
                     thread_id: Some(session_id),
+                })
+            }
+            LaunchedAgent::ClaudeCode(launched) => {
+                let axo_agent::claude::ClaudeProcess {
+                    pty,
+                    writer_lock,
+                    hooks,
+                    identity,
+                    conversation,
+                } = launched;
+                let terminal = pty.master.try_clone()?;
+                let running = Running::new(
+                    PaneRole::Pi,
+                    Some(pane_id),
+                    self.row.folder.clone(),
+                    pty,
+                    Some(writer_lock),
+                )?;
+                let runtime_id = running.runtime_id;
+                let (link, requests) = axo_agent::claude::command_channel();
+                let config = axo_agent::claude::LinkConfig {
+                    conversation: conversation.clone(),
+                    terminal,
+                    log_context,
+                };
+                let mailbox = self.mailbox();
+                let link_task = tokio::spawn(axo_agent::claude::run(
+                    config,
+                    requests,
+                    hooks,
+                    move |event| {
+                        mailbox.upgrade().is_some_and(|mailbox| {
+                            mailbox.send(Message::Link { runtime_id, event }).is_ok()
+                        })
+                    },
+                ))
+                .abort_handle();
+                Ok(Followed {
+                    running,
+                    identity,
+                    link: AgentCommands::ClaudeCode(link),
+                    link_task,
+                    thread_id: Some(conversation),
                 })
             }
         }
@@ -1724,6 +1804,13 @@ pub(super) fn stop_unwanted(message: Message) {
             });
         }
         LaunchedAgent::OpenCode(mut process) => {
+            tokio::spawn(async move {
+                axo_pty::process::stop_async(&mut process.pty.child, grace).await;
+                drop(process);
+                drop(in_flight);
+            });
+        }
+        LaunchedAgent::ClaudeCode(mut process) => {
             tokio::spawn(async move {
                 axo_pty::process::stop_async(&mut process.pty.child, grace).await;
                 drop(process);

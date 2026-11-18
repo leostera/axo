@@ -835,10 +835,10 @@ impl McpServer {
         summarize_apps(&listed)
     }
 
-    /// The server's instructions, with what the account reaches now. OpenCode and Claude Code
-    /// have no pi-axo to put Axo's brief in their system prompt, and no launch option for one,
-    /// so the instructions open with it: both show a server's instructions to the model
-    /// (RFD0072). Codex gets it as the thread's developer instructions instead.
+    /// The server's instructions, with what the account reaches now. OpenCode has no pi-axo
+    /// to put Axo's brief in its system prompt, and no launch option for one, so the
+    /// instructions open with it: OpenCode shows a server's instructions to the model
+    /// (RFD0072). Codex and Claude Code get it at launch instead.
     async fn instructions(&self) -> String {
         let listed = self
             .call_within(
@@ -855,7 +855,7 @@ impl McpServer {
         let agent = self.own_session().await.ok().and_then(|session| {
             session["agent"].as_str().map(str::to_owned)
         });
-        if matches!(agent.as_deref(), Some("opencode" | "claude-code")) {
+        if agent.as_deref() == Some("opencode") {
             let account = match listed.as_ref().and_then(brief::AccountApps::parse) {
                 Some(apps) => brief::Account::Listed(apps),
                 None => brief::Account::Unreachable,
@@ -1949,8 +1949,8 @@ mod tests {
         assert_eq!(reply["result"]["structuredContent"]["result"], limits);
     }
 
-    /// OpenCode and Claude Code get Axo's brief at the top of the instructions (RFD0072); Pi
-    /// and Codex already have it in their system prompt.
+    /// OpenCode gets Axo's brief at the top of the instructions (RFD0072); Pi, Codex and
+    /// Claude Code already have it in their system prompt.
     #[test]
     fn the_instructions_carry_the_brief_for_agents_other_than_pi() {
         let instructions = |agent: Option<&'static str>| {
@@ -1975,7 +1975,7 @@ mod tests {
         let opencode = instructions(Some("opencode"));
         assert!(opencode.starts_with(&brief), "{opencode}");
         assert!(opencode.ends_with(INSTRUCTIONS), "{opencode}");
-        assert!(instructions(Some("claude-code")).starts_with(&brief));
+        assert_eq!(instructions(Some("claude-code")), INSTRUCTIONS);
         assert_eq!(instructions(None), INSTRUCTIONS);
         assert_eq!(instructions(Some("codex")), INSTRUCTIONS);
     }

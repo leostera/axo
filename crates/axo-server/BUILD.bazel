@@ -60,12 +60,15 @@ rust_test(
     srcs = glob(["src/**/*.rs"]),
     data = [
         ":pi_extension_fixture",
+        "//crates/axo-agent:fake_claude",
         "//crates/axo-agent:fake_codex",
         "//crates/axo-agent:fake_opencode",
         "//crates/axod:fake_pi",
     ],
     env = {
-        # Codex and OpenCode Sessions in the tests run fakes; nothing finds the user's own.
+        # Codex, OpenCode and Claude Code Sessions in the tests run fakes; nothing finds the
+        # user's own.
+        "AXO_CLAUDE_CODE_EXECUTABLE": "$(rootpath //crates/axo-agent:fake_claude)",
         "AXO_CODEX_EXECUTABLE": "$(rootpath //crates/axo-agent:fake_codex)",
         "AXO_OPENCODE_EXECUTABLE": "$(rootpath //crates/axo-agent:fake_opencode)",
         "AXO_PI_EXTENSION_PATH": "$(rootpath :pi_extension_fixture)",

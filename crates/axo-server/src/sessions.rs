@@ -201,25 +201,12 @@ fn new_session_folder(core: &Core, request: &rpc::CreateSession) -> io::Result<P
     Ok(folder)
 }
 
-/// The agents a Session can be created with: those with an adapter (RFD0072).
-const RUNNABLE_AGENTS: [axo_agent::AgentKind; 3] = [
-    axo_agent::AgentKind::Pi,
-    axo_agent::AgentKind::Codex,
-    axo_agent::AgentKind::OpenCode,
-];
-
 /// Creates a Session with its agent beside a terminal, and returns it once the agent has
 /// started.
 pub(crate) async fn create(
     core: &Arc<Core>,
     request: rpc::CreateSession,
 ) -> io::Result<SessionRecord> {
-    if !RUNNABLE_AGENTS.contains(&request.agent) {
-        return Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            format!("Axo cannot run {} yet", request.agent),
-        ));
-    }
     let folder = new_session_folder(core, &request)?;
     create_in(core, folder, None, request.name, request.agent).await
 }

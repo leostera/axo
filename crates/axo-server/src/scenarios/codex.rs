@@ -3,7 +3,6 @@
 //! and rejoins its thread after axod restarts.
 
 use std::fs;
-use std::io;
 
 use axo_protocol::agent::AgentKind;
 use axo_protocol::rpc::{CreateSession, PromptDelivery, PromptText, SessionLocation};
@@ -146,21 +145,4 @@ async fn after_a_restart_a_codex_session_rejoins_its_thread_instead_of_starting_
         2,
         "{log}"
     );
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn an_agent_axo_cannot_run_yet_is_refused_before_a_session_exists() {
-    let fixture = Fixture::new().await;
-    let refused = sessions::create(
-        &fixture.core,
-        CreateSession {
-            location: SessionLocation::InFolder(fixture.directory.clone()),
-            name: None,
-            agent: AgentKind::ClaudeCode,
-        },
-    )
-    .await
-    .unwrap_err();
-    assert_eq!(refused.kind(), io::ErrorKind::Unsupported);
-    assert!(fixture.core.catalog.records().is_empty());
 }

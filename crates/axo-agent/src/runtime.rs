@@ -107,6 +107,7 @@ pub enum AgentCommands {
     Pi(LinkCommands),
     Codex(codex::LinkCommands),
     OpenCode(crate::opencode::LinkCommands),
+    ClaudeCode(crate::claude::LinkCommands),
 }
 
 impl AgentCommands {
@@ -115,6 +116,7 @@ impl AgentCommands {
             AgentCommands::Pi(_) => AgentKind::Pi,
             AgentCommands::Codex(_) => AgentKind::Codex,
             AgentCommands::OpenCode(_) => AgentKind::OpenCode,
+            AgentCommands::ClaudeCode(_) => AgentKind::ClaudeCode,
         }
     }
 
@@ -133,7 +135,9 @@ impl AgentCommands {
                 link.send_message(text, delivery, command_id, attachments, timeout)
                     .await
             }
-            AgentCommands::Codex(link) | AgentCommands::OpenCode(link) => {
+            AgentCommands::Codex(link)
+            | AgentCommands::OpenCode(link)
+            | AgentCommands::ClaudeCode(link) => {
                 link.send_message(text, delivery, command_id, attachments, timeout)
                     .await
             }
@@ -148,7 +152,9 @@ impl AgentCommands {
     ) -> io::Result<CommandResult> {
         match self {
             AgentCommands::Pi(link) => link.stop_turn(stop, timeout).await,
-            AgentCommands::Codex(link) | AgentCommands::OpenCode(link) => link.stop_turn(stop, timeout).await,
+            AgentCommands::Codex(link)
+            | AgentCommands::OpenCode(link)
+            | AgentCommands::ClaudeCode(link) => link.stop_turn(stop, timeout).await,
         }
     }
 
@@ -156,7 +162,9 @@ impl AgentCommands {
     pub async fn resume_turn(&self, timeout: Duration) -> io::Result<CommandResult> {
         match self {
             AgentCommands::Pi(link) => link.resume_turn(timeout).await,
-            AgentCommands::Codex(link) | AgentCommands::OpenCode(link) => link.resume_turn(timeout).await,
+            AgentCommands::Codex(link)
+            | AgentCommands::OpenCode(link)
+            | AgentCommands::ClaudeCode(link) => link.resume_turn(timeout).await,
         }
     }
 
@@ -164,7 +172,9 @@ impl AgentCommands {
     pub async fn shutdown(&self, timeout: Duration) -> io::Result<CommandResult> {
         match self {
             AgentCommands::Pi(link) => link.shutdown(timeout).await,
-            AgentCommands::Codex(link) | AgentCommands::OpenCode(link) => link.shutdown(timeout).await,
+            AgentCommands::Codex(link)
+            | AgentCommands::OpenCode(link)
+            | AgentCommands::ClaudeCode(link) => link.shutdown(timeout).await,
         }
     }
 
@@ -177,7 +187,9 @@ impl AgentCommands {
     ) -> io::Result<CommandResult> {
         match self {
             AgentCommands::Pi(link) => link.set_model(model, thinking_level, timeout).await,
-            AgentCommands::Codex(link) | AgentCommands::OpenCode(link) => link.set_model(model, thinking_level, timeout).await,
+            AgentCommands::Codex(link)
+            | AgentCommands::OpenCode(link)
+            | AgentCommands::ClaudeCode(link) => link.set_model(model, thinking_level, timeout).await,
         }
     }
 

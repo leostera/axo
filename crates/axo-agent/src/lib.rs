@@ -10,6 +10,7 @@
 pub mod activity;
 pub mod axo_mcp;
 mod channel;
+pub mod claude;
 pub mod codex;
 mod command;
 pub mod discovery;
