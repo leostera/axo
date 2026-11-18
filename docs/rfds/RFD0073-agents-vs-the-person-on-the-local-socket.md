@@ -1,7 +1,7 @@
 # RFD0073 - Axo: agents vs the person on the local socket
 
 - Feature Name: `agents-vs-the-person`
-- Status: Accepted; slice 1 implemented
+- Status: Implemented (slices 1 and 2; slice 2 also binds an agent's questions to the person, `axo.elicitation.request`)
 - Author: leostera
 - Start Date: 2026-11-18
 - Document Type: Proposal

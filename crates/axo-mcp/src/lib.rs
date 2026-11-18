@@ -5,8 +5,9 @@
 //! server runs in axod, on that connection. Each tool is one `axo.*` method, called in process
 //! as the connection's peer (`axo_ipc::Local`); this server only translates. It
 //! knows which Session it serves, so tools accept `"self"` for a Session ID and
-//! every prompt it sends names its Session as the sender. Which Session that is, is still the
-//! opener's word; RFD0073 derives it from the process instead (its slice 2).
+//! every prompt it sends names its Session as the sender. axod opens it only for a process that
+//! runs in that Session (one of its panes, or under one), so no agent serves itself another
+//! Session's tools (RFD0073).
 
 use std::io::{self, BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
