@@ -8,6 +8,7 @@
 //! launch and when, and what its events mean for the catalog.
 
 pub mod activity;
+pub mod codex;
 mod command;
 pub mod discovery;
 mod history;

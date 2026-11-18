@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::AgentKind;
+use crate::codex;
 use crate::pi::link::LinkCommands;
 
 /// How a working agent takes a message: `steer` into the running turn, `followUp` once it ends,
@@ -101,12 +102,14 @@ pub enum AgentEvent {
 #[derive(Clone, Debug)]
 pub enum AgentCommands {
     Pi(LinkCommands),
+    Codex(codex::LinkCommands),
 }
 
 impl AgentCommands {
     pub fn kind(&self) -> AgentKind {
         match self {
             AgentCommands::Pi(_) => AgentKind::Pi,
+            AgentCommands::Codex(_) => AgentKind::Codex,
         }
     }
 
@@ -125,6 +128,10 @@ impl AgentCommands {
                 link.send_message(text, delivery, command_id, attachments, timeout)
                     .await
             }
+            AgentCommands::Codex(link) => {
+                link.send_message(text, delivery, command_id, attachments, timeout)
+                    .await
+            }
         }
     }
 
@@ -136,6 +143,7 @@ impl AgentCommands {
     ) -> io::Result<CommandResult> {
         match self {
             AgentCommands::Pi(link) => link.stop_turn(stop, timeout).await,
+            AgentCommands::Codex(link) => link.stop_turn(stop, timeout).await,
         }
     }
 
@@ -143,6 +151,7 @@ impl AgentCommands {
     pub async fn resume_turn(&self, timeout: Duration) -> io::Result<CommandResult> {
         match self {
             AgentCommands::Pi(link) => link.resume_turn(timeout).await,
+            AgentCommands::Codex(link) => link.resume_turn(timeout).await,
         }
     }
 
@@ -150,6 +159,7 @@ impl AgentCommands {
     pub async fn shutdown(&self, timeout: Duration) -> io::Result<CommandResult> {
         match self {
             AgentCommands::Pi(link) => link.shutdown(timeout).await,
+            AgentCommands::Codex(link) => link.shutdown(timeout).await,
         }
     }
 
@@ -162,6 +172,7 @@ impl AgentCommands {
     ) -> io::Result<CommandResult> {
         match self {
             AgentCommands::Pi(link) => link.set_model(model, thinking_level, timeout).await,
+            AgentCommands::Codex(link) => link.set_model(model, thinking_level, timeout).await,
         }
     }
 }
