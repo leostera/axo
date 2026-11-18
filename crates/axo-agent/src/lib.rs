@@ -9,6 +9,7 @@
 
 pub mod activity;
 mod command;
+pub mod discovery;
 mod history;
 mod kind;
 mod lock;

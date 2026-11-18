@@ -9,6 +9,7 @@ Today it holds Pi processes for axod: launching Pi for a Session, the transcript
 | `kind` | `AgentKind` (`pi`, `codex`, `opencode`, `claude-code`, as ATXF names them) and the `Capabilities` each declares |
 | `runtime` | The one shape every running agent presents to its Session: `AgentCommands` in, `CommandResult` back, `AgentEvent` out, in the event vocabulary pi-axo defined |
 | `command` | The configured `agent.command` |
+| `discovery` | Finding each agent's executable without relying on `PATH` (launchd gives axod almost none): an override variable, the configured command, `PATH`, the installers' directories, then the system's; each checked with `--version` against the oldest version its adapter supports |
 | `lock` | `WriterLock`: the exclusive `flock` on `<transcript>.jsonl.lock`. axod takes it and the agent inherits it, so holding it proves no agent for the Session is alive |
 | `lifeline` | Re-exports `axo_pty::lifeline`: the pipe every agent inherits (`AXO_LIFELINE_FD`), whose read end reaches end of file when axod exits, however it exits |
 | `process` | `ProcessIdentity`: a pid and its start time, stored per Session so axod can kill, at boot, an agent a previous axod left behind, and never a reused pid |
