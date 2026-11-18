@@ -87,11 +87,20 @@ fn authorization_script(source: &Path) -> Result<String, Failure> {
         applescript_quote(&command)
     ))
 }
-fn authorize(source: &Path) -> Result<(), Failure> {
+/// Runs one AppleScript and answers how it went: `osascript` itself, or a stand-in in tests,
+/// which never ask for administrator authorization (and whose `osascript` a Mac's security
+/// software may kill).
+type Osascript<'a> = &'a dyn Fn(&str) -> io::Result<std::process::Output>;
+
+fn osascript(script: &str) -> io::Result<std::process::Output> {
+    std::process::Command::new("/usr/bin/osascript")
+        .args(["-e", script])
+        .output()
+}
+
+fn authorize(source: &Path, osascript: Osascript) -> Result<(), Failure> {
     let script = authorization_script(source)?;
-    let result = std::process::Command::new("/usr/bin/osascript")
-        .args(["-e", &script])
-        .output()?;
+    let result = osascript(&script)?;
     if !result.status.success() && !same_link(&Path::new(SYSTEM_DIRECTORY).join("axo"), source) {
         let error = String::from_utf8_lossy(&result.stderr);
         let message = if error.contains("AXO_CLI_LINK_FAILED") {
@@ -133,7 +142,7 @@ pub(crate) fn install(matches: &ArgMatches) -> Result<(), Failure> {
     match create_link(&executable, &directory) {
         Ok(()) => {}
         Err(error) if system && error.kind() == io::ErrorKind::PermissionDenied => {
-            authorize(&executable)?
+            authorize(&executable, &osascript)?
         }
         Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
             return Err(Failure::input(
@@ -184,8 +193,123 @@ mod tests {
         assert!(!script.contains("sudo"));
         assert!(authorization_script(Path::new("relative")).is_err());
     }
+    /// What `osascript -e` would see in its string literal: `applescript_quote` undone.
+    fn applescript_literal(script: &str) -> String {
+        let quoted = script
+            .strip_prefix("do shell script \"")
+            .and_then(|rest| rest.strip_suffix("\" with administrator privileges"))
+            .expect("one do shell script, with administrator privileges");
+        let mut literal = String::new();
+        let mut characters = quoted.chars();
+        while let Some(character) = characters.next() {
+            if character != '\\' {
+                assert_ne!(character, '"', "an unescaped quote ends the literal early");
+                literal.push(character);
+                continue;
+            }
+            literal.push(match characters.next().expect("a whole escape") {
+                'n' => '\n',
+                'r' => '\r',
+                escaped => escaped,
+            });
+        }
+        literal
+    }
+
+    fn temporary_root(tag: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "axo-cli-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ))
+    }
+
+    fn finished(code: i32, stderr: &str) -> io::Result<std::process::Output> {
+        Ok(std::process::Output {
+            status: std::os::unix::process::ExitStatusExt::from_raw(code << 8),
+            stdout: Vec::new(),
+            stderr: stderr.as_bytes().to_vec(),
+        })
+    }
+
+    /// The script authorization runs, peeled layer by layer without running osascript: the
+    /// AppleScript literal, then the shell command (by `/bin/sh`, with the program's name
+    /// printed instead of run), then the JavaScript's literals. A hostile app location stays
+    /// one literal at every layer and runs nothing.
+    #[test]
+    fn os_filesystem_script_keeps_the_app_location_literal_at_every_layer() {
+        let root = temporary_root("script");
+        std::fs::create_dir_all(&root).unwrap();
+        let sentinel = root.join("must-not-exist");
+        let source = root.join(format!(
+            "Axo's \"$(touch {})\"`touch {}`\\test\n.app/Contents/Helpers/axo",
+            sentinel.display(),
+            sentinel.display()
+        ));
+        let asked = std::cell::RefCell::new(Vec::new());
+        let ran = |script: &str| {
+            asked.borrow_mut().push(script.to_owned());
+            finished(0, "")
+        };
+        // `install` checks the link itself once the script has run.
+        assert!(authorize(&source, &ran).is_ok());
+        let asked = asked.into_inner();
+        assert_eq!(asked.len(), 1, "authorization asks once");
+
+        let command = applescript_literal(&asked[0]);
+        let arguments = command
+            .strip_prefix("/usr/bin/osascript ")
+            .expect("the shell runs osascript by its full path");
+        let printed = std::process::Command::new("/bin/sh")
+            .args(["-c", &format!("printf '%s\\0' {arguments}")])
+            .output()
+            .unwrap();
+        assert!(printed.status.success(), "{printed:?}");
+        let printed = String::from_utf8(printed.stdout).unwrap();
+        let printed: Vec<&str> = printed.strip_suffix('\0').unwrap().split('\0').collect();
+        let javascript = filesystem_script(&source, Path::new(SYSTEM_DIRECTORY)).unwrap();
+        assert_eq!(printed, ["-l", "JavaScript", "-e", javascript.as_str()]);
+        assert!(!sentinel.exists(), "the shell ran part of the app location");
+
+        let constant = |name: &str| -> String {
+            let line = javascript
+                .lines()
+                .find_map(|line| line.strip_prefix(&format!("const {name} = ")))
+                .unwrap();
+            serde_json::from_str(line.strip_suffix(';').unwrap()).unwrap()
+        };
+        assert_eq!(Path::new(&constant("source")), source);
+        assert_eq!(constant("directory"), SYSTEM_DIRECTORY);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn authorization_failures_say_what_went_wrong() {
+        // Not this Mac's Axo: a failure with the link already in place is a success.
+        let root = temporary_root("authorization");
+        let source = &root.join("Axo.app/Contents/Helpers/axo");
+        let message = |stderr: &'static str| match authorize(source, &|_| finished(1, stderr)) {
+            Err(failure) => failure.message,
+            Ok(()) => panic!("a failed authorization succeeded"),
+        };
+        assert!(
+            message("execution error: Error: AXO_CLI_LINK_FAILED (-2700)")
+                .contains("check for another file or link there")
+        );
+        assert!(message("User canceled. (-128)").contains("cancelled"));
+        assert!(message("anything else").contains("choose a user bin directory"));
+        let refused = authorize(source, &|_| Err(io::ErrorKind::NotFound.into()));
+        assert!(refused.is_err());
+    }
+
+    /// The script against a real filesystem, by hand: it runs osascript, which a Mac's
+    /// security software may kill (`cargo test -- --ignored`).
     #[cfg(target_os = "macos")]
     #[test]
+    #[ignore = "runs osascript; the hermetic tests above check the script"]
     fn os_filesystem_script_is_literal_idempotent_and_refuses_every_existing_entry_kind() {
         let root = std::env::temp_dir().join(format!(
             "axo-cli-script-{}-{}",
