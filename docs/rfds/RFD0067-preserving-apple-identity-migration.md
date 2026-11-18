@@ -79,6 +79,24 @@ voice result or unsent recording/draft. Refuse progression when source recording
 outstanding transfers remain; do not cancel, delete or replay them to make the gate pass.
 Preserving a file is not proof that its original account/host/session ownership transferred.
 
+## Mobile-first probing with an existing canonical Watch
+
+The Watch can have both old-ID and canonical apps installed. An installed app inventory is not
+proof of that older canonical app's signed Keychain scope. Do not overwrite it with the new
+canonical Watch payload while that scope or its existing account/key state is unresolved.
+
+Use the explicit mobile-only destination probe to prove the iPhone/iPad primitive independently.
+It carries no Watch application or widget, retains the exclusive destination startup gate, and
+cannot build without the preservation switch. Its signed `AXOIdentityProbeScope=mobile-only`
+requires the separate `--mobile-probe-only` development/migration inspection gate. This exception
+must never weaken normal/full-family archive validation or qualify as a shipping delivery graph.
+Existing Watch apps remain intact; their preservation and companion transition are separate gates.
+
+A correlated `noExistingKey` on both sides preserves the absence of a saved approval identity;
+it is not Enclave restoration evidence. Do not create a key merely to make that test green. A
+source with a saved Enclave reference still requires the exact-key fresh-signature proof. A
+conflicting destination, malformed/locked reference or software identity remains a stop condition.
+
 ## Validation and rollout
 
 Before installation, inspect the actual installed identity and Keychain scope on each device.

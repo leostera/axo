@@ -255,6 +255,55 @@ ios_device_app(
     line = "AxoMobileDevice: skipped: " + REASONS.get("phone_device", ""),
 )
 
+# A probe-only mobile package must not update a pre-existing canonical Watch application.
+# It cannot build without the explicit staging switch and cannot run the normal startup root.
+genrule(
+    name = "mobile_probe_scope",
+    outs = ["mobile-probe-scope.plist"],
+    cmd = select({
+        "//bazel/config:identity_preservation_probe_enabled": "printf '%s' '<?xml version=\"1.0\"?><plist version=\"1.0\"><dict><key>AXOIdentityProbeScope</key><string>mobile-only</string></dict></plist>' > $@",
+        "//conditions:default": "echo 'Mobile preservation requires identity_preservation_probe=true' >&2; exit 1",
+    }),
+    tags = ["manual"],
+)
+
+ios_application(
+    name = "AxoMobilePreservationDevice",
+    app_icons = ["//assets:ios_app_icon"],
+    bundle_id = AXO["apple"]["bundle_ids"]["phone"],
+    entitlements = "AxoMobile-probe.entitlements",
+    families = ["iphone", "ipad"],
+    infoplists = ["Info.plist", ":phone_probe_info", ":mobile_probe_scope"],
+    minimum_os_version = AXO["apple"]["ios_min"],
+    resources = ["//assets:mascot", "//assets:fonts", ":app_logos"],
+    version = ":build_version",
+    provisioning_profile = ":AxoMobileProfile",
+    tags = ["manual"],
+    deps = [":AxoMobileMain"],
+) if CAN.phone_device else None
+
+ios_device_app(
+    name = "AxoMobilePreservation_ipa",
+    app = ":AxoMobilePreservationDevice",
+    tags = ["manual"],
+) if CAN.phone_device else status_line(
+    name = "AxoMobilePreservation_ipa",
+    line = "AxoMobilePreservationDevice: skipped: " + REASONS.get("phone_device", ""),
+)
+
+sh_test(
+    name = "mobile_preservation_archive_test",
+    srcs = ["//bazel/apple:distribution_preflight.sh"],
+    args = [
+        "$(rootpath //bazel/apple:distribution_preflight.py)",
+        "$(rootpath //:config.json)",
+        "--channel", "development", "--migration", "--mobile-probe-only",
+        "$(rootpath :AxoMobilePreservation_ipa)",
+    ],
+    data = ["//bazel/apple:distribution_preflight.py", "//:config.json", ":AxoMobilePreservation_ipa"],
+    tags = ["manual", "no-sandbox", "no-remote"],
+)
+
 # These signed graph gates fail rather than report a successful skip without local profiles.
 sh_test(
     name = "distribution_archive_test",

@@ -108,6 +108,13 @@ migration groups to match for each device role before installing either. Canonic
 signatures use exact default groups, never the profile wildcard or `com.apple.token` grant;
 this is not permission to narrow an already-installed Watch namespace without preservation proof.
 
+If the Watch already has a canonical app whose signed scope/state is unresolved, do not replace
+it as a side effect of a phone probe. `//apple/AxoMobile:AxoMobilePreservation_ipa` is a gated,
+mobile-only probe with no Watch/widget payload. Verify it with
+`//apple/AxoMobile:mobile_preservation_archive_test` and the preservation switch; direct inspection
+also requires `--migration --mobile-probe-only`. It fails to build without the staging switch and
+cannot pass the ordinary full-family distribution gate. It is not a shipping app or Watch migration.
+
 The source retains its default Keychain group first, adds only the migration group, and keeps
 its normal UI. The canonical probe has a separate read-only root: no account, workbench,
 companion activation or new signer. Invalid probe configuration stays gated. Shared envelope

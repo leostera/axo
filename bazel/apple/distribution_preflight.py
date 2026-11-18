@@ -217,14 +217,28 @@ def unpack_ipa(path, directory):
     return apps[0]
 
 
+def mobile_children(info, *, watch, channel, migration, existing, apns, mobile_only):
+    """Parse the signed probe scope; a mobile-only exception is never a delivery graph."""
+    if mobile_only:
+        require(channel == "development" and migration and not existing and not apns,
+                "Mobile-only scope requires a canonical development preservation probe")
+        require(info.get("AXOIdentityProbeScope") == "mobile-only" and
+                info.get("AXOIdentityProbeMode") == "destination",
+                "Missing mobile-only preservation scope")
+        return frozenset()
+    require("AXOIdentityProbeScope" not in info, "Mobile-only probes require the explicit scope gate")
+    return frozenset({watch, watch + ".complications"})
+
+
 def inspect(args, config):
     apple = config["apple"]
     team = apple["team"]
     require(bool(re.fullmatch(r"[A-Z0-9]{10}", team)), "Invalid configured signing team")
     for identifier in apple["bundle_ids"].values():
         require(bool(re.fullmatch(r"[A-Za-z0-9.-]+", identifier)), "Invalid configured bundle identity")
+    mobile_only = getattr(args, "mobile_probe_only", False)
     if args.channel == "developer-id":
-        require(not args.existing_installation and not args.migration and not args.require_apns, "Incompatible Mac preflight options")
+        require(not args.existing_installation and not args.migration and not args.require_apns and not mobile_only, "Incompatible Mac preflight options")
         app = args.artifact
         info = plist(app / "Contents" / "Info.plist")
         require(info.get("CFBundleSupportedPlatforms") == ["MacOSX"], "Developer ID requires a Mac app bundle")
@@ -249,9 +263,11 @@ def inspect(args, config):
     require(not args.migration or args.channel == "development", "Migration profiles are development-only")
     identifier = "dev.leostera.axo.phone" if args.existing_installation else apple["bundle_ids"]["phone"]
     watch = identifier + ".watchkitapp" if args.existing_installation else apple["bundle_ids"]["watch"]
-    expected = {watch, watch + ".complications"}
     with tempfile.TemporaryDirectory(prefix="axo-ipa-preflight-") as directory:
         app = unpack_ipa(args.artifact, directory)
+        expected = mobile_children(plist(app / "Info.plist"), watch=watch, channel=args.channel,
+                                   migration=args.migration, existing=args.existing_installation,
+                                   apns=args.require_apns, mobile_only=mobile_only)
         mobile_bundle(app, team=team, identifier=identifier, channel=args.channel, apns=args.require_apns, migration=args.migration, root=True)
         children = sorted(path for path in app.rglob("*") if path.suffix in (".app", ".appex") and path.is_dir())
         found = set()
@@ -272,6 +288,7 @@ def main():
     parser.add_argument("--existing-installation", action="store_true")
     parser.add_argument("--require-apns", action="store_true")
     parser.add_argument("--migration", action="store_true")
+    parser.add_argument("--mobile-probe-only", action="store_true")
     parser.add_argument("artifact", type=Path)
     args = parser.parse_args()
     try:

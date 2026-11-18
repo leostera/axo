@@ -45,6 +45,31 @@ def fixture(channel="development", apns=False, migration=False):
     return info, entitlements, profile
 
 
+class MobileGraphScopeTests(unittest.TestCase):
+    def parse(self, info, **changes):
+        values = dict(watch=BUNDLE + ".watch", channel="development", migration=True,
+                      existing=False, apns=False, mobile_only=True)
+        values.update(changes)
+        return policy.mobile_children(info, **values)
+
+    def test_mobile_only_is_an_explicit_read_only_destination_probe(self):
+        info = {"AXOIdentityProbeScope": "mobile-only", "AXOIdentityProbeMode": "destination"}
+        self.assertEqual(self.parse(info), frozenset())
+        for change in [dict(channel="ad-hoc"), dict(channel="app-store-connect"),
+                       dict(migration=False), dict(existing=True), dict(apns=True), dict(mobile_only=False)]:
+            with self.assertRaises(policy.GateError):
+                self.parse(info, **change)
+        for info in [{}, {"AXOIdentityProbeScope": "mobile-only", "AXOIdentityProbeMode": "source"},
+                     {"AXOIdentityProbeScope": "unknown", "AXOIdentityProbeMode": "destination"}]:
+            with self.assertRaises(policy.GateError):
+                self.parse(info)
+
+    def test_normal_and_full_preservation_graphs_still_require_watch_and_widget(self):
+        for migration in [False, True]:
+            self.assertEqual(self.parse({}, mobile_only=False, migration=migration),
+                             frozenset({BUNDLE + ".watch", BUNDLE + ".watch.complications"}))
+
+
 class MobilePolicyTests(unittest.TestCase):
     def check(self, values, channel="development", apns=False, migration=False):
         policy.mobile_policy(*values, bundle_id=BUNDLE, team=TEAM, channel=channel, apns=apns, migration=migration, now=NOW)
