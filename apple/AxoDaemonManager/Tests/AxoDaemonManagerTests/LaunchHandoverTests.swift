@@ -19,6 +19,20 @@ final class LaunchHandoverTests: XCTestCase {
       .startAgent)
   }
 
+  func testAnOlderAxoOpenedWithNothingRunningAsksBeforeTakingOverLogin() {
+    XCTAssertEqual(
+      LaunchHandover.decide(
+        isAgentJob: false, replaceRequested: false, current: current, others: [], registeredBuild: 261),
+      .startOlderAgent(registeredBuild: 261))
+    for registered in [nil, 259, 260] {
+      XCTAssertEqual(
+        LaunchHandover.decide(
+          isAgentJob: false, replaceRequested: false, current: current, others: [],
+          registeredBuild: registered),
+        .startAgent, "registered \(String(describing: registered))")
+    }
+  }
+
   func testOpeningTheRunningAxoShowsIt() {
     let running = AxoInstance(pid: 9, bundlePath: "/dist/Axo.app", build: "260")
     XCTAssertEqual(

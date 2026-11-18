@@ -19,7 +19,8 @@ enum AppLaunchHandover {
       isAgentJob: AppAgentController.isAgentJob,
       replaceRequested: CommandLine.arguments.contains(AppAgentController.replaceRunningArgument),
       current: current,
-      others: agent.otherInstances())
+      others: agent.otherInstances(),
+      registeredBuild: agent.registeredBuild())
     logger.info("event=app_launch.handover decision=\(String(describing: decision), privacy: .public)")
 
     switch decision {
@@ -37,6 +38,9 @@ enum AppLaunchHandover {
       }
       handOver(agent, replacing: running)
     case .startAgent:
+      handOver(agent, replacing: [])
+    case .startOlderAgent(let registeredBuild):
+      guard confirmStartingOlder(current, registeredBuild: registeredBuild) else { exit(0) }
       handOver(agent, replacing: [])
     }
   }
@@ -79,6 +83,19 @@ enum AppLaunchHandover {
       "Axo \(describing) is running. Replacing it restarts axod if its build changed, including terminals and Pi processes. Conversation histories are kept; automatic continuation requires a compatible Pi SDK."
     alert.addButton(withTitle: "Replace")
     alert.addButton(withTitle: "Keep the Running Axo")
+    activate()
+    return alert.runModal() == .alertFirstButtonReturn
+  }
+
+  private static func confirmStartingOlder(_ current: AxoInstance, registeredBuild: Int) -> Bool {
+    let alert = NSAlert()
+    alert.alertStyle = .warning
+    alert.messageText = "Open an older Axo?"
+    let location = current.bundlePath.map { " at \(($0 as NSString).abbreviatingWithTildeInPath)" } ?? ""
+    alert.informativeText =
+      "This is Axo build \(current.build ?? "unknown")\(location), older than build \(registeredBuild), which last opened at login. Opening it makes it the Axo that opens at login. The newer axod keeps running until you choose to restart it, which stops every terminal and Pi process."
+    alert.addButton(withTitle: "Open Build \(current.build ?? "unknown")")
+    alert.addButton(withTitle: "Cancel")
     activate()
     return alert.runModal() == .alertFirstButtonReturn
   }
@@ -130,18 +147,31 @@ enum AppQuit {
 /// app already running.
 @MainActor
 enum InstalledUpdateCheck {
-  private static var declinedBuild: String?
+  private static var declinedBuild: Int?
+
+  /// The installed build to offer, if it is newer than the running one and not declined. An
+  /// older build over this bundle (a rollback) is never offered as an update.
+  static func buildToOffer(running: String?, installed: String?, declined: Int?) -> Int? {
+    guard let running = running.flatMap(Int.init),
+      case .installed(let build, _, _) = AppUpgrade.choose(
+        running: running, installed: installed.flatMap(Int.init), installedAxod: nil,
+        published: nil, canVerifyDownloads: false),
+      build != declined
+    else { return nil }
+    return build
+  }
 
   static func offerRestartIfUpdated() {
-    let bundle = Bundle.main.bundleURL
-    guard let running = Bundle.main.infoDictionary?["CFBundleVersion"] as? String,
-      let installed = AppAgentController.installedBuild(of: bundle),
-      installed != running, installed != declinedBuild
+    let running = Bundle.main.infoDictionary?["CFBundleVersion"] as? String
+    guard
+      let installed = buildToOffer(
+        running: running, installed: AppAgentController.installedBuild(of: Bundle.main.bundleURL),
+        declined: declinedBuild)
     else { return }
     let alert = NSAlert()
     alert.messageText = "Restart into Axo build \(installed)?"
     alert.informativeText =
-      "Build \(installed) is installed; this is build \(running). Restarting restarts axod if its build changed, including terminals and Pi processes. Conversation histories are kept; automatic continuation requires a compatible Pi SDK."
+      "Build \(installed) is installed; this is build \(running ?? "unknown"). Restarting restarts axod if its build changed, including terminals and Pi processes. Conversation histories are kept; automatic continuation requires a compatible Pi SDK."
     alert.addButton(withTitle: "Restart")
     alert.addButton(withTitle: "Not Now")
     guard alert.runModal() == .alertFirstButtonReturn else {
@@ -149,6 +179,6 @@ enum InstalledUpdateCheck {
       return
     }
     // The new Axo replaces this one (and asks it to quit) without asking again.
-    AppUpgradeModel.shared.restart(into: Int(installed) ?? 0)
+    AppUpgradeModel.shared.restart(into: installed)
   }
 }

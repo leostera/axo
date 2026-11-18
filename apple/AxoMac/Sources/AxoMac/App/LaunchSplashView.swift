@@ -106,6 +106,7 @@ struct LaunchSplashView: View {
     case .approveInLoginItems: daemon.openLoginItemsSettings()
     case .turnOn: daemon.enableDaemon()
     case .retry: daemon.startIfNeeded()
+    case .newerDaemonRunning: daemon.restartDaemon()
     }
   }
 

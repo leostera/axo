@@ -55,12 +55,16 @@ enum LaunchSplashGate {
     case approveInLoginItems
     case turnOn
     case retry(reason: String)
+    /// A newer axod than this Axo's runs; replacing it stops every terminal, so only on request.
+    case newerDaemonRunning(running: UInt64)
 
     var message: String {
       switch self {
       case .approveInLoginItems: "axod needs your approval in Login Items."
       case .turnOn: "axod is turned off."
       case .retry(let reason): "axod couldn’t start: \(reason)"
+      case .newerDaemonRunning(let running):
+        "A newer axod (build \(running)) is running. Open the newer Axo, or restart axod with this older one, which stops every terminal and Pi process."
       }
     }
 
@@ -69,6 +73,7 @@ enum LaunchSplashGate {
       case .approveInLoginItems: "Open Login Items"
       case .turnOn: "Turn On axod"
       case .retry: "Try Again"
+      case .newerDaemonRunning: "Restart axod with This Axo"
       }
     }
   }
@@ -78,6 +83,7 @@ enum LaunchSplashGate {
     case .requiresApproval: .approveInLoginItems
     case .disabled: .turnOn
     case .failed(let reason): .retry(reason: reason)
+    case .newerDaemonRunning(let running, _): .newerDaemonRunning(running: running)
     case .starting, .running, .updating: nil
     }
   }

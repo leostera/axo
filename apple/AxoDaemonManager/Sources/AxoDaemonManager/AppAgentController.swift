@@ -79,6 +79,11 @@ public final class AppAgentController {
     return info["CFBundleVersion"] as? String
   }
 
+  /// The build of the Axo that last registered launchd's agent; `nil` before any recorded it.
+  public func registeredBuild() -> Int? {
+    defaults.object(forKey: DaemonPreferenceKey.appAgentRegisteredBuild) as? Int
+  }
+
   // MARK: - Handing over
 
   /// Makes launchd's Axo run from this bundle and returns its pid. Stops `replacing` first; they
@@ -162,6 +167,9 @@ public final class AppAgentController {
     }
     if let definition = currentDefinition(), let data = try? JSONEncoder().encode(definition) {
       defaults.set(data, forKey: DaemonPreferenceKey.appAgentRegisteredDefinition)
+    }
+    if let build = currentInstance().build.flatMap(Int.init) {
+      defaults.set(build, forKey: DaemonPreferenceKey.appAgentRegisteredBuild)
     }
     logger.info("event=app_agent.registered")
   }

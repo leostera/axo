@@ -1,5 +1,6 @@
 import AppKit
 import AxoDaemonManager
+import AxoProtocol
 import XCTest
 
 @testable import AxoMac
@@ -19,6 +20,9 @@ final class LaunchSplashGateTests: XCTestCase {
     XCTAssertEqual(LaunchSplashGate.attention(for: .requiresApproval), .approveInLoginItems)
     XCTAssertEqual(LaunchSplashGate.attention(for: .disabled), .turnOn)
     XCTAssertEqual(LaunchSplashGate.attention(for: .failed("boom")), .retry(reason: "boom"))
+    XCTAssertEqual(
+      LaunchSplashGate.attention(for: .newerDaemonRunning(running: 88, bundled: BuildNumber(87)!)),
+      .newerDaemonRunning(running: 88))
     XCTAssertNil(LaunchSplashGate.attention(for: .starting))
     XCTAssertNil(LaunchSplashGate.attention(for: .updating))
   }
@@ -107,5 +111,18 @@ final class TerminalSplashHoldTests: XCTestCase {
     try await settle()
     XCTAssertFalse(window.isVisible)
     XCTAssertEqual(splashOpens, 1)
+  }
+}
+
+@MainActor
+final class InstalledUpdateCheckTests: XCTestCase {
+  func testOnlyANewerInstalledBuildIsOffered() {
+    XCTAssertEqual(InstalledUpdateCheck.buildToOffer(running: "260", installed: "261", declined: nil), 261)
+    XCTAssertNil(InstalledUpdateCheck.buildToOffer(running: "260", installed: "260", declined: nil))
+    XCTAssertNil(
+      InstalledUpdateCheck.buildToOffer(running: "260", installed: "259", declined: nil),
+      "an older build over this bundle is a rollback, not an update")
+    XCTAssertNil(InstalledUpdateCheck.buildToOffer(running: "260", installed: "261", declined: 261))
+    XCTAssertNil(InstalledUpdateCheck.buildToOffer(running: nil, installed: "261", declined: nil))
   }
 }

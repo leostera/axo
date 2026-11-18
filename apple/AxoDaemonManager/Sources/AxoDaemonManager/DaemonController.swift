@@ -15,6 +15,8 @@ public final class DaemonController {
     case requiresApproval
     case disabled
     case failed(String)
+    /// An axod newer than this app's is running and was left running: see `DaemonBuildChange`.
+    case newerDaemonRunning(running: UInt64, bundled: BuildNumber)
 
     public var isRunning: Bool {
       if case .running = self { true } else { false }
@@ -28,6 +30,7 @@ public final class DaemonController {
       case .requiresApproval: "axod: Needs Approval"
       case .disabled: "axod: Disabled"
       case .failed: "axod: Unavailable"
+      case .newerDaemonRunning: "axod: Newer Than This Axo"
       }
     }
 
@@ -39,6 +42,8 @@ public final class DaemonController {
       case .requiresApproval: "Approval required in Login Items settings"
       case .disabled: "Not enabled"
       case .failed(let message): "Unavailable — \(message)"
+      case .newerDaemonRunning(let running, let bundled):
+        "Build \(running) is running, newer than this Axo’s build \(bundled). Open the newer Axo, or restart axod to use this one."
       }
     }
   }
@@ -270,10 +275,18 @@ public final class DaemonController {
     // (`copy_bundle_path` fails, exit 78) although the definition looks unchanged.
     let definitionChanged = registeredDefinition().map { $0 != currentDefinition() } ?? false
     let launchdState = await LaunchdJobState.read(label: Self.serviceLabel)
-    if definitionChanged || launchdState.isFailingToRun {
+    if launchdState.isFailingToRun || definitionChanged {
       logger.info(
         "event=daemon.reregister_needed definition_changed=\(definitionChanged, privacy: .public) launchd=\(launchdState.description, privacy: .public)"
       )
+      // Another copy of Axo registered axod. If it was a newer one, its axod is still running and
+      // registering this app's would downgrade it (and stop every terminal).
+      if !launchdState.isFailingToRun, let running = await probeDaemon(at: socketPath),
+        case .downgrade = DaemonBuildChange.between(running: running.buildNumber, bundled: daemonBuildNumber)
+      {
+        keepNewerDaemon(running: running.buildNumber, bundled: daemonBuildNumber)
+        return
+      }
       setStatus(.updating)
       guard
         let restartedDaemon =
@@ -291,17 +304,30 @@ public final class DaemonController {
     let daemon = try await waitForDaemon(at: socketPath, expectedBuild: nil)
 
     logger.info("event=daemon.health_check_succeeded build=\(daemon.buildNumber, privacy: .public)")
-    guard daemon.buildNumber != daemonBuildNumber.value else {
+    switch DaemonBuildChange.between(running: daemon.buildNumber, bundled: daemonBuildNumber) {
+    case .none:
       setRunning(daemon, buildNumber: daemonBuildNumber)
-      return
+    case .downgrade(let running):
+      keepNewerDaemon(running: running, bundled: daemonBuildNumber)
+    case .upgrade:
+      setStatus(.updating)
+      guard
+        let restartedDaemon =
+          try await restartDaemon(at: socketPath, expectedBuild: daemonBuildNumber)
+      else { return }
+      setRunning(restartedDaemon, buildNumber: daemonBuildNumber)
     }
+  }
 
-    setStatus(.updating)
-    guard
-      let restartedDaemon =
-        try await restartDaemon(at: socketPath, expectedBuild: daemonBuildNumber)
-    else { return }
-    setRunning(restartedDaemon, buildNumber: daemonBuildNumber)
+  private func keepNewerDaemon(running: UInt64, bundled: BuildNumber) {
+    logger.warning(
+      "event=daemon.newer_running running=\(running, privacy: .public) bundled=\(bundled.value, privacy: .public)")
+    setStatus(.newerDaemonRunning(running: running, bundled: bundled))
+  }
+
+  /// One health check, for whether an axod is up at all; `nil` when none answers.
+  private func probeDaemon(at socketPath: UnixSocketPath) async -> DaemonHealth? {
+    try? await AxodConnection.withFreshConnection(to: socketPath) { try await $0.health() }
   }
 
   private func restartDaemon(

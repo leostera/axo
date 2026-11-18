@@ -33,6 +33,7 @@ struct AboutSettingsView: View {
     case .requiresApproval: "Approval required"
     case .disabled: "Not enabled"
     case .failed(let message): "Unavailable — \(message)"
+    case .newerDaemonRunning(let running, _): "Build \(running), newer than this Axo"
     }
   }
 

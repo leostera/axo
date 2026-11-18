@@ -35,15 +35,26 @@ public enum LaunchHandover: Equatable {
   case replace([AxoInstance], askFirst: Bool)
   /// No Axo is running: start launchd's Axo from this bundle, hand over and exit.
   case startAgent
+  /// No Axo is running, but this one is older than the build launchd last started at login (an
+  /// old copy in Downloads, or `.Axo.app.previous`). Ask before it takes over: it would become
+  /// the login item and bring its older axod with it.
+  case startOlderAgent(registeredBuild: Int)
 
+  /// `registeredBuild` is the build of the Axo launchd's agent was last registered from, if known.
   public static func decide(
     isAgentJob: Bool,
     replaceRequested: Bool,
     current: AxoInstance,
-    others: [AxoInstance]
+    others: [AxoInstance],
+    registeredBuild: Int? = nil
   ) -> LaunchHandover {
     if isAgentJob { return .runHere }
-    if others.isEmpty { return .startAgent }
+    if others.isEmpty {
+      if let registeredBuild, let build = current.build.flatMap(Int.init), build < registeredBuild {
+        return .startOlderAgent(registeredBuild: registeredBuild)
+      }
+      return .startAgent
+    }
     if !replaceRequested, others.allSatisfy({ $0.runsSameApp(as: current) }),
       let running = others.first
     {

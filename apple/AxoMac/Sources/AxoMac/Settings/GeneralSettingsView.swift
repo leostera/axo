@@ -82,7 +82,7 @@ struct GeneralSettingsView: View {
           Button("Check Status") {
             daemon.startIfNeeded()
           }
-        case .failed:
+        case .failed, .newerDaemonRunning:
           Button("Retry daemon") {
             daemon.startIfNeeded()
           }
