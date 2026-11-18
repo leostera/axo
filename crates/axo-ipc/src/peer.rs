@@ -15,11 +15,17 @@
 //! exits and whose pid is reused cannot pass for it. The kernel validates the peer's code
 //! signature as it runs, so a modified binary fails. Off macOS nothing passes.
 
+use std::time::SystemTime;
+
 /// Who sent the request being handled.
 #[derive(Clone, Copy, Debug)]
 pub enum Peer {
-    /// A program connected to the socket, with its audit token if the kernel gave one.
-    Socket { token: Option<[u8; 32]> },
+    /// A program connected to the socket, with its audit token if the kernel gave one, and
+    /// when it connected.
+    Socket {
+        token: Option<[u8; 32]>,
+        connected_at: SystemTime,
+    },
     /// The account, through this process's relay connection.
     Relay,
 }
@@ -27,8 +33,19 @@ pub enum Peer {
 impl Default for Peer {
     /// Outside any request: a socket peer nobody can verify.
     fn default() -> Self {
-        Self::Socket { token: None }
+        Self::Socket {
+            token: None,
+            connected_at: SystemTime::UNIX_EPOCH,
+        }
     }
+}
+
+/// The process that connected, as the kernel named it then (RFD0073). Its pid may since have
+/// been given to a later process: one started after `connected_at` is not it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ConnectedProcess {
+    pub pid: u32,
+    pub connected_at: SystemTime,
 }
 
 /// Whom a method answers.
@@ -74,13 +91,28 @@ impl Peer {
     pub(crate) fn of(stream: &tokio::net::UnixStream) -> Self {
         Self::Socket {
             token: platform::audit_token(stream),
+            connected_at: SystemTime::now(),
+        }
+    }
+
+    /// The local process on the other end, if the kernel said which.
+    pub fn process(&self) -> Option<ConnectedProcess> {
+        match self {
+            Self::Socket {
+                token: Some(token),
+                connected_at,
+            } => Some(ConnectedProcess {
+                pid: pid_of(token),
+                connected_at: *connected_at,
+            }),
+            Self::Socket { token: None, .. } | Self::Relay => None,
         }
     }
 
     /// Whether the peer is a local program running code signed as `signer`, checked now.
     pub fn is(&self, signer: Signer) -> bool {
         match self {
-            Self::Socket { token } => {
+            Self::Socket { token, .. } => {
                 token.is_some_and(|token| platform::satisfies(&token, signer))
             }
             Self::Relay => false,
@@ -221,6 +253,12 @@ mod platform {
     }
 }
 
+/// The pid in an `audit_token_t`, eight `u32`s of which the sixth is the pid, as libbsm's
+/// `audit_token_to_pid` reads it.
+fn pid_of(token: &[u8; 32]) -> u32 {
+    u32::from_ne_bytes([token[20], token[21], token[22], token[23]])
+}
+
 /// Axo.app's bundle identifier (`config.json` `bundleIds.mac`).
 const APP_IDENTIFIER: &str = "dev.leostera.axo";
 
@@ -237,15 +275,31 @@ mod tests {
     #[tokio::test]
     async fn the_peer_is_seen_in_its_request_and_only_there() {
         let token = |peer: Peer| match peer {
-            Peer::Socket { token } => token,
+            Peer::Socket { token, .. } => token,
             Peer::Relay => panic!("not a socket peer"),
         };
         let peer = Peer::Socket {
             token: Some([7; 32]),
+            connected_at: SystemTime::UNIX_EPOCH,
         };
         let seen = scope(peer, async { token(current()) }).await;
         assert_eq!(seen, Some([7; 32]));
         assert_eq!(token(current()), None);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn a_socket_peer_names_the_process_that_connected() {
+        let (ours, theirs) = tokio::net::UnixStream::pair().unwrap();
+        let before = SystemTime::now();
+        let process = Peer::of(&ours)
+            .process()
+            .expect("the kernel names the peer");
+        assert_eq!(process.pid, std::process::id());
+        assert!(process.connected_at >= before);
+        drop(theirs);
+        assert_eq!(Peer::default().process(), None);
+        assert_eq!(Peer::Relay.process(), None);
     }
 
     #[tokio::test]
@@ -284,7 +338,7 @@ mod tests {
         let (left, right) = tokio::net::UnixStream::pair().unwrap();
         let peer = Peer::of(&left);
         drop(right);
-        assert!(matches!(peer, Peer::Socket { token: Some(_) }));
+        assert!(matches!(peer, Peer::Socket { token: Some(_), .. }));
         assert!(!peer.is_caller(Caller::Relay));
         // The test binary connects to itself: the same program, and not Axo.app.
         assert!(peer.is(Signer::ThisBinary));
