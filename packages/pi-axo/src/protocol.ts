@@ -1,4 +1,5 @@
 import { isAbsolute } from "node:path";
+import type { PiElicitation } from "./elicitations.js";
 import { parseAttachments, type PromptAttachment } from "./attachments.js";
 import { isThinkingLevel, type ThinkingLevel } from "./pi-state.js";
 
@@ -28,6 +29,8 @@ export type PiControlAction =
    * for the turn to end (`followUp`, the default) or joins it (`steer`, RFD0033).
    */
   | { kind: "send"; text: string; delivery?: "steer" | "followUp" | "interrupt"; commandId?: string; attachments?: PromptAttachment[] }
+  | ({ kind: "elicitation" } & PiElicitation)
+  | { kind: "dismissElicitation"; id: string }
   | { kind: "cancel" }
   /** Stops the running turn if `turnId`, the id of one of its user records, belongs to it. */
   | { kind: "stop"; turnId?: string; seen?: string; commandIds?: string[] }
@@ -103,6 +106,19 @@ function isRequestId(value: unknown): value is string {
 
 function parseAction(value: unknown): PiControlAction | null {
   if (!isRecord(value) || typeof value.kind !== "string") return null;
+
+  if (value.kind === "dismissElicitation") {
+    return hasOnlyKeys(value, ["kind", "id"]) && typeof value.id === "string" && UUID_PATTERN.test(value.id)
+      ? { kind: "dismissElicitation", id: value.id } : null;
+  }
+  if (value.kind === "elicitation") {
+    if (!hasOnlyKeys(value, ["kind", "id", "title", "message", "expiresAt"])
+      || typeof value.id !== "string" || !UUID_PATTERN.test(value.id)
+      || typeof value.title !== "string" || !value.title.trim() || value.title.length > 160 || Array.from(value.title).length > 80
+      || typeof value.message !== "string" || !value.message.trim() || value.message.length > 2000 || Array.from(value.message).length > 1000
+      || typeof value.expiresAt !== "number" || !Number.isSafeInteger(value.expiresAt) || value.expiresAt <= 0) return null;
+    return { kind: "elicitation", id: value.id, title: value.title, message: value.message, expiresAt: value.expiresAt };
+  }
 
   if (value.kind === "send") {
     if (!hasOnlyKeys(value, ["kind", "text", "delivery", "commandId", "attachments"]) || typeof value.text !== "string") return null;

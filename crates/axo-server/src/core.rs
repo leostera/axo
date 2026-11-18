@@ -185,7 +185,17 @@ impl QuestionsHost for Core {
         if let Event::ElicitationRequested { elicitation } = &event
             && let Some(session) = self.registry.get(elicitation.session_id)
         {
-            session.post(|session| session.protect_human_turn());
+            let question = elicitation.clone();
+            session.post(move |session| {
+                session.protect_human_turn();
+                session.show_pi_agent_question(question);
+            });
+        }
+        if let Event::ElicitationResolved { session_id, id, .. } = &event
+            && let Some(session) = self.registry.get(*session_id)
+        {
+            let id = id.clone();
+            session.post(move |session| session.dismiss_pi_agent_question(&id));
         }
         self.events.publish(event);
     }

@@ -65,6 +65,16 @@ pub enum Outgoing<'a> {
 pub enum Action<'a> {
     /// Start a turn from saved context without adding a user/custom message.
     ResumeTurn,
+    /// Display an advisory agent question in the owning Pi. Never a protected tool/form gate.
+    Elicitation {
+        id: &'a str,
+        title: &'a str,
+        message: &'a str,
+        expires_at: u64,
+    },
+    DismissElicitation {
+        id: &'a str,
+    },
     /// Exit now, aborting any turn in progress.
     Shutdown,
     /// Submit `text` as a user message. An idle Pi starts a turn with it; a working Pi queues

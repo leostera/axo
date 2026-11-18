@@ -322,6 +322,36 @@ impl Questions {
         Ok(())
     }
 
+    /// Terminal acknowledgements apply only to this Pi's advisory agent questions. Pi is an
+    /// agent-controlled process, not a security-grade person credential: computer-use and input
+    /// gates must continue through the existing trusted app/device path.
+    pub fn resolve_pi_agent_question(
+        &self,
+        host: &dyn QuestionsHost,
+        session: SessionId,
+        id: &str,
+        action: ElicitationAction,
+    ) -> Result<(), MethodError> {
+        let refused = || {
+            MethodError::new(
+                NOT_A_PERSON,
+                "Pi can acknowledge only its own agent questions, never protected tool or input requests",
+            )
+        };
+        let asked = self.pending.get(id).ok_or_else(refused)?;
+        if asked.session_id != session
+            || asked.asked_by != Asker::Agent
+            || asked.input.is_some()
+            || asked.kind != ElicitationKind::Confirm
+            || asked.expires_at <= unix_millis()
+        {
+            return Err(refused());
+        }
+        let settled = self.pending.settle(id, action).ok_or_else(refused)?;
+        publish_resolved(host, &settled, action);
+        Ok(())
+    }
+
     /// The questions waiting, oldest first.
     pub fn pending(&self) -> Vec<Elicitation> {
         self.pending.pending()
@@ -734,6 +764,81 @@ mod tests {
             code(questions.resolve(host, &id, ElicitationAnswer::Accept, Reply::Bare)),
             NOT_PENDING
         );
+    }
+
+    #[test]
+    fn pi_acknowledges_only_its_own_live_agent_confirmation_once() {
+        let host = Host::default();
+        let questions = Questions::default();
+        let mut asked = elicitation("pi-question");
+        asked.expires_at = u64::MAX;
+        let owner = asked.session_id;
+        let mut answer = questions.pending.open(asked).unwrap();
+        assert!(
+            questions
+                .resolve_pi_agent_question(
+                    &host,
+                    SessionId::from_u128(2),
+                    "pi-question",
+                    ElicitationAction::Accept
+                )
+                .is_err()
+        );
+        assert_eq!(questions.pending().len(), 1);
+        questions
+            .resolve_pi_agent_question(&host, owner, "pi-question", ElicitationAction::Decline)
+            .unwrap();
+        assert_eq!(
+            answer.try_recv().unwrap().action,
+            ElicitationAction::Decline
+        );
+        assert!(
+            questions
+                .resolve_pi_agent_question(&host, owner, "pi-question", ElicitationAction::Accept)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn pi_cannot_answer_computer_use_input_or_expired_requests() {
+        for case in ["tool", "input", "input_metadata", "expired"] {
+            let host = Host::default();
+            let questions = Questions::default();
+            let mut asked = elicitation(case);
+            asked.expires_at = u64::MAX;
+            if case == "tool" {
+                asked.asked_by = Asker::ComputerUse;
+            }
+            if case == "input" {
+                asked.kind = ElicitationKind::Input;
+            }
+            if case == "input_metadata" {
+                asked.input = Some(InputRequest {
+                    app: "Test".into(),
+                    window: "Test".into(),
+                    origin: None,
+                    fields: vec![],
+                    submit: None,
+                    key: host.input_key().unwrap().public_key(),
+                });
+            }
+            if case == "expired" {
+                asked.expires_at = 1;
+            }
+            let owner = asked.session_id;
+            let _answer = questions.pending.open(asked).unwrap();
+            assert!(
+                questions
+                    .resolve_pi_agent_question(&host, owner, case, ElicitationAction::Accept)
+                    .is_err(),
+                "{case}"
+            );
+            assert_eq!(
+                questions.pending().len(),
+                1,
+                "refusal must not settle {case}"
+            );
+        }
     }
 
     #[tokio::test(flavor = "multi_thread")]

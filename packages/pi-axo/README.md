@@ -27,6 +27,26 @@ The extension starts listening during extension initialization, then binds only 
 
 When Axod also passes `AXOD` (its executable) and `AXO_SOCKET` (its local socket), the extension registers `axod mcp` for this Session as the `axo` MCP server with `codemode` exposure (`src/mcp.ts`). Its tools are not declared to the model; codemode scripts call them as `tools.mcp__axo__<tool>(...)` and read their instructions with `describeNamespace("mcp__axo")`. See RFD0015. The registration is independent of the bridge, and nothing is registered outside Axo.
 
+## Questions in Pi
+
+With the matching daemon and extension, an agent's own elicitation appears in its Pi terminal:
+
+```text
+Agent asks                 (bold)
+<the full question / description>
+
+> Yes
+  No
+```
+
+Use arrow keys and Enter; Escape cancels. Questions queue rather than overlap, and answering
+on another device dismisses the terminal prompt. Expired, disconnected, or stale-session prompts
+cannot approve anything; headless Pi leaves the question on the existing Axo clients.
+
+These are advisory agent questions, not protected tool approvals. Computer-use gates and secret
+input still require the existing trusted Axo app/device path. No model-callable answer tool or
+unsigned resolve RPC is added. See [RFD0069](../../docs/rfds/RFD0069-pi-agent-question-ui.md).
+
 ## Local bridge v1
 
 Records are UTF-8 JSON objects terminated by LF. Each direction is full-duplex. The server accepts one Axod connection at a time and can accept a replacement connection after disconnect.
@@ -38,7 +58,7 @@ Pi-to-Axod records:
 - `commandResult`: the result for a control command.
 - `protocolError`: a bounded framing/validation error without session content.
 
-Axod-to-Pi records use `type: "command"`, a request ID, and the matching Axo Session ID. V1 supports `send` (normal, steer, or follow-up delivery) and `cancel`. A `send` is taken as if typed into Pi's editor (`expandPromptTemplates`), so `/axo-share` and other extension commands sent from the app, the phone or the web run instead of reaching the model; Pi's built-in commands (`/reload`, `/model`, …) exist only in its terminal editor. Commands for a different Session are rejected. Duplicate request IDs return the cached result while this Pi process remains alive; after an ambiguous disconnect, Axod must not blindly replay a command.
+Axod-to-Pi records use `type: "command"`, a request ID, and the matching Axo Session ID. V1 supports `send` (normal, steer, or follow-up delivery), `cancel`, and additive scoped controls including `elicitation` / `dismissElicitation` for advisory agent questions. A `send` is taken as if typed into Pi's editor (`expandPromptTemplates`), so `/axo-share` and other extension commands sent from the app, the phone or the web run instead of reaching the model; Pi's built-in commands (`/reload`, `/model`, …) exist only in its terminal editor. Commands for a different Session are rejected. Duplicate request IDs return the cached result while this Pi process remains alive; after an ambiguous disconnect, Axod must not blindly replay a command.
 
 The extension forwards structured Pi events to Axod only. Its `/resume` request includes a selected transcript path but is consumed locally by Axod and is never relayed. `/axo-import <path.jsonl>` asks Axod to copy that Pi transcript into a new Session in the current Session's folder, then focus the new Session; the source and current Session remain unchanged. Axod validates the Pi session header and copies it into its private history directory with that folder as its working directory. If Axod is disconnected, live events are not buffered in memory; Axod must reconcile from Pi's durable local session history. Terminal bytes never enter this channel. Pi remains the sole writer of its session file.
 
@@ -64,4 +84,4 @@ The extension also forwards Pi's public agent-settled and blocking-UI-prompt lif
 
 The extension prevents Pi from switching or forking a transcript behind Axod. `/resume` is forwarded as a local resume request; Axod accepts only an exact transcript path already owned by an Axo Session, reopens its archived Session record, and starts Pi against that same file. When the target is ready, Axod archives the Session that issued `/resume` and the Mac app switches to the resumed Session; if the target cannot be safely opened, the current Session remains open. The Pi switch itself remains canceled so Axod keeps sole ownership. Unknown or missing files are not adopted. `/new` and `/fork` remain blocked and must be initiated through Axo. Branch navigation within the current Pi file remains Pi-owned.
 
-The Unix socket is local to the host. Axod must place it in a private per-session directory and verify the `hello` identity against its stored Pane/Session binding. Mode `0600` excludes other local user accounts, but does not authenticate a different process running as the same user; v1 has no challenge/capability handshake, so the first local peer must be treated as trusted. Do not expose or forward this socket to remote clients, and do not relay Pi event content to server-side storage until Axod implements the host/session authorization and the event retention/sharing policy.
+The Unix socket is local to the host. Axod must place it in a private per-session directory and verify the `hello` identity against its stored Pane/Session binding. Mode `0600` excludes other local user accounts. The bridge also requires its per-session token and validates the launched Pi identity, but an agent-controlled Pi process is still not a person credential: protected tool/input approvals never use terminal replies. Do not expose or forward this socket to remote clients, and do not relay Pi event content to server-side storage until Axod implements the host/session authorization and the event retention/sharing policy.

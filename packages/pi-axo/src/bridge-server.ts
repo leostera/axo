@@ -36,6 +36,7 @@ export class AxoPiBridgeServer {
     private readonly axoSessionId: string,
     private readonly bridgeToken: string,
     private readonly handleCommand: CommandHandler,
+    private readonly onDisconnect: () => void = () => {},
   ) {}
 
   async start(): Promise<void> {
@@ -104,9 +105,17 @@ export class AxoPiBridgeServer {
     }
   }
 
+  /** Unlike replayable progress, a human reply requires a live authenticated transport. */
+  async publishElicitationAnswer(id: string, action: "accept" | "decline" | "cancel"): Promise<void> {
+    const socket = this.socket as SocketWithInput | undefined;
+    if (!this.identity || !socket || socket.destroyed || socket.axoAuthenticated !== true) throw new Error("Axo UI channel unavailable");
+    await this.sendEvent("elicitation.answer", { id, action }, socket);
+  }
+
   async close(): Promise<void> {
     const socket = this.socket;
     this.socket = undefined;
+    if (socket) this.onDisconnect();
     socket?.destroy();
 
     const server = this.server;
@@ -293,7 +302,10 @@ export class AxoPiBridgeServer {
   }
 
   private disconnect(socket: Socket): void {
-    if (this.socket === socket) this.socket = undefined;
+    if (this.socket === socket) {
+      this.socket = undefined;
+      this.onDisconnect();
+    }
   }
 
   private async removeSocketFile(): Promise<void> {

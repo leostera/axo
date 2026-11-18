@@ -11,6 +11,7 @@ import { commandList, modelList, piState } from "./pi-state.js";
 import { promptContent, showAttachmentLines, type PromptContent } from "./attachments.js";
 import type { ThinkingLevel } from "./pi-state.js";
 import { ResumeTurnControl } from "./resume-turn.js";
+import { PiElicitations } from "./elicitations.js";
 
 export interface AxoPiExtensionConfig {
   socketPath: string;
@@ -101,12 +102,27 @@ export async function installAxoPiExtension(pi: ExtensionAPI, config: AxoPiExten
       if (context?.hasUI) context.ui.notify("Automatic restart continuation requires a Pi build exposing resumeTurn. This build does not support it.", "warning");
     },
   });
+  const elicitations = new PiElicitations(async (id, action) => {
+    await bridge.publishElicitationAnswer(id, action);
+  });
   const handleCommand = async (command: PiControlCommand) => {
     const activeContext = context;
     if (activeContext === undefined || identity?.axoSessionId !== command.axoSessionId) {
       return { accepted: false as const, reason: "stale" as const };
     }
 
+    if (command.action.kind === "dismissElicitation") {
+      elicitations.dismiss(command.action.id);
+      return { accepted: true as const };
+    }
+    if (command.action.kind === "elicitation") {
+      const expected = identity;
+      const result = elicitations.present(command.action, activeContext,
+        () => identity === expected && context === activeContext
+          && activeContext.sessionManager.getSessionId() === expected?.piSessionId);
+      return result === "shown" ? { accepted: true as const }
+        : { accepted: false as const, reason: result };
+    }
     if (command.action.kind === "resumeTurn") return continuation.take();
 
     if (command.action.kind === "shutdown") {
@@ -174,7 +190,7 @@ export async function installAxoPiExtension(pi: ExtensionAPI, config: AxoPiExten
     pi.registerMarkdownTransformer((markdown, context) => context.messageType === "user" ? showAttachmentLines(markdown) : markdown);
   }
 
-  const bridge = new AxoPiBridgeServer(config.socketPath, config.axoSessionId, config.bridgeToken, handleCommand);
+  const bridge = new AxoPiBridgeServer(config.socketPath, config.axoSessionId, config.bridgeToken, handleCommand, () => elicitations.disconnect());
   let bridgeAvailable = false;
   traceBridge("factory initialization started");
   const bridgeStarted = bridge.start().then(() => {
@@ -268,6 +284,7 @@ export async function installAxoPiExtension(pi: ExtensionAPI, config: AxoPiExten
   });
 
   pi.on("session_shutdown", async event => {
+    elicitations.close();
     traceBridge(`shutdown (${event.reason})`);
     context = undefined;
     progress.finishAll();

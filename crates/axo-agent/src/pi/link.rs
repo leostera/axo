@@ -78,6 +78,15 @@ enum OwnedAction {
     },
     Stop(StopTarget),
     ResumeTurn,
+    Elicitation {
+        id: String,
+        title: String,
+        message: String,
+        expires_at: u64,
+    },
+    DismissElicitation {
+        id: String,
+    },
     Shutdown,
     SetModel {
         model: Option<(String, String)>,
@@ -102,6 +111,18 @@ impl OwnedAction {
             Self::Stop(stop) => Action::Stop(stop),
             Self::Shutdown => Action::Shutdown,
             Self::ResumeTurn => Action::ResumeTurn,
+            Self::Elicitation {
+                id,
+                title,
+                message,
+                expires_at,
+            } => Action::Elicitation {
+                id,
+                title,
+                message,
+                expires_at: *expires_at,
+            },
+            Self::DismissElicitation { id } => Action::DismissElicitation { id },
             Self::SetModel {
                 model,
                 thinking_level,
@@ -188,6 +209,33 @@ impl LinkCommands {
                 thinking_level: thinking_level.map(str::to_owned),
             },
             timeout,
+        )
+        .await
+    }
+
+    pub async fn show_elicitation(
+        &self,
+        id: &str,
+        title: &str,
+        message: &str,
+        expires_at: u64,
+    ) -> io::Result<CommandResult> {
+        self.command(
+            OwnedAction::Elicitation {
+                id: id.to_owned(),
+                title: title.to_owned(),
+                message: message.to_owned(),
+                expires_at,
+            },
+            Duration::from_secs(5),
+        )
+        .await
+    }
+
+    pub async fn dismiss_elicitation(&self, id: &str) -> io::Result<CommandResult> {
+        self.command(
+            OwnedAction::DismissElicitation { id: id.to_owned() },
+            Duration::from_secs(5),
         )
         .await
     }

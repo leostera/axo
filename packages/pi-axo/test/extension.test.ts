@@ -85,9 +85,17 @@ test("bridges Pi events and remote commands without owning the Pi process", asyn
       return true;
     },
   } as unknown as ExtensionAPI;
+  let hasUI = false;
+  const displayedQuestions: string[] = [];
   const context = {
     cwd: "/projects/axo",
-    hasUI: false,
+    mode: "rpc",
+    get hasUI() { return hasUI; },
+    ui: { select: async (title: string, choices: string[]) => {
+      displayedQuestions.push(title);
+      assert.deepEqual(choices, ["Yes", "No"]);
+      return "No";
+    }, notify: () => {} },
     isIdle: () => idle,
     get model() {
       return model;
@@ -156,6 +164,18 @@ test("bridges Pi events and remote commands without owning the Pi process", asyn
         { provider: "anthropic", id: "claude-opus-4-1", name: "Opus 4.1", thinkingLevels: ["off", "minimal", "low", "medium", "high", "xhigh"] },
       ],
     }]);
+
+    // A bridge command displays the question; only the user selection emits an answer event.
+    hasUI = true;
+    const questionId = "01c5800b-405d-4e4d-b617-c608e7731e84";
+    socket.write(`${JSON.stringify({ type: "command", requestId: "question-1", axoSessionId,
+      action: { kind: "elicitation", id: questionId, title: "Agent asks", message: "Deploy the tested relay?", expiresAt: Date.now() + 60_000 } })}\n`);
+    const questionRecords = [await next(), await next()];
+    assert.ok(questionRecords.some(record => record.type === "commandResult" && record.requestId === "question-1" && record.result.accepted));
+    assert.ok(questionRecords.some(record => record.type === "event" && record.name === "elicitation.answer"
+      && JSON.stringify(record.data) === JSON.stringify({ id: questionId, action: "decline" })));
+    assert.deepEqual(displayedQuestions, ["Agent asks\nDeploy the tested relay?"]);
+    hasUI = false;
 
     const importSession = commands.get("axo-import");
     assert.ok(importSession);

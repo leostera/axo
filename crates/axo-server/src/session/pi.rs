@@ -130,6 +130,8 @@ pub(crate) struct Pi {
     recovery: Recovery,
     /// A normal Send must not abort a request or the work approved during this run.
     human_turn_protected: bool,
+    /// Questions actually dispatched to this runtime, never a replacement Pi.
+    ui_questions: std::collections::HashMap<String, RuntimeId>,
 }
 
 use axo_protocol::ShellId;
@@ -149,6 +151,7 @@ impl Pi {
             attempts: 0,
             recovery: Recovery::None,
             human_turn_protected: false,
+            ui_questions: std::collections::HashMap::new(),
         }
     }
 
@@ -853,6 +856,60 @@ impl Session {
         }
     }
 
+    pub(crate) fn show_pi_agent_question(
+        &mut self,
+        question: axo_protocol::elicitation::Elicitation,
+    ) {
+        use axo_protocol::elicitation::{Asker, ElicitationKind};
+        if question.session_id != self.id
+            || question.asked_by != Asker::Agent
+            || question.kind != ElicitationKind::Confirm
+            || question.input.is_some()
+        {
+            return;
+        }
+        let Some(pi) = &mut self.pi else { return };
+        let PiState::Running {
+            runtime_id, link, ..
+        } = &pi.state
+        else {
+            return;
+        };
+        pi.ui_questions.insert(question.id.clone(), *runtime_id);
+        let link = link.clone();
+        tokio::spawn(async move {
+            let _ = link
+                .show_elicitation(
+                    &question.id,
+                    "Agent asks",
+                    &question.message,
+                    question.expires_at,
+                )
+                .await;
+        });
+    }
+
+    pub(crate) fn dismiss_pi_agent_question(&mut self, id: &str) {
+        let Some(pi) = &mut self.pi else { return };
+        let Some(owner) = pi.ui_questions.remove(id) else {
+            return;
+        };
+        let PiState::Running {
+            runtime_id, link, ..
+        } = &pi.state
+        else {
+            return;
+        };
+        if owner != *runtime_id {
+            return;
+        }
+        let link = link.clone();
+        let id = id.to_owned();
+        tokio::spawn(async move {
+            let _ = link.dismiss_elicitation(&id).await;
+        });
+    }
+
     /// The input of the running Pi's pane.
     pub(crate) fn pi_input(&self) -> io::Result<Arc<crate::terminal_input::TerminalInput>> {
         let not_running = || io::Error::new(io::ErrorKind::NotFound, "Pi is not running");
@@ -919,7 +976,7 @@ impl Session {
                 data,
             } => {
                 self.pi_event(runtime_id, &name, &data).await;
-                if name == "session.import.requested" {
+                if name == "session.import.requested" || name == "elicitation.answer" {
                     return;
                 }
                 self.core.events.publish(Event::PiEvent {
@@ -994,6 +1051,31 @@ impl Session {
     }
 
     async fn pi_event(&mut self, runtime_id: RuntimeId, name: &str, data: &Value) {
+        if name == "elicitation.answer" {
+            #[derive(serde::Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct Reply {
+                id: String,
+                action: axo_protocol::elicitation::ElicitationAction,
+            }
+            let Ok(reply) = serde_json::from_value::<Reply>(data.clone()) else {
+                return;
+            };
+            if !self
+                .pi
+                .as_ref()
+                .is_some_and(|pi| pi.ui_questions.get(&reply.id) == Some(&runtime_id))
+            {
+                return;
+            }
+            let _ = self.core.questions.resolve_pi_agent_question(
+                self.core.as_ref(),
+                self.id,
+                &reply.id,
+                reply.action,
+            );
+            return;
+        }
         if name == "session.import.requested" {
             let Some(source) = data["sourcePath"]
                 .as_str()
