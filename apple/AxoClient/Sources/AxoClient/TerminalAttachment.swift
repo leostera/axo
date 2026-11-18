@@ -38,10 +38,13 @@ public final class TerminalAttachment: @unchecked Sendable {
   }
 
   /// Opens an attachment. Blocks for at most `timeout` per step; call it off the main thread.
+  /// Nothing is sent until the listener is checked to be `peer` (RFD0069): the PTY carries what
+  /// the person types.
   public static func open(
     socketPath: UnixSocketPath,
     shellID: ShellID,
-    timeout: Duration = .seconds(3)
+    timeout: Duration = .seconds(3),
+    peer: AxodPeer = .axod
   ) throws -> TerminalAttachment {
     let socket = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
     guard socket >= 0 else { throw TerminalAttachmentError.system("socket", errno) }
@@ -58,6 +61,7 @@ public final class TerminalAttachment: @unchecked Sendable {
     setsockopt(socket, SOL_SOCKET, SO_SNDTIMEO, &receiveTimeout, socklen_t(MemoryLayout<timeval>.size))
 
     try connect(socket, to: socketPath)
+    try peer.check(socket)
     try writeAll(socket, Array("\(shellID.rawValue)\n".utf8))
 
     var header = [UInt8](repeating: 0, count: 8)

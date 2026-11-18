@@ -430,7 +430,7 @@ public final class DaemonController {
         switch error {
         case .connectionFailed, .connectionClosed, .requestTimedOut:
           break
-        case .invalidSocketPath, .invalidResponse, .serverRejected:
+        case .invalidSocketPath, .invalidResponse, .serverRejected, .untrustedPeer:
           throw error
         }
       }

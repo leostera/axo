@@ -127,8 +127,12 @@ public final class AxodConnection: Sendable {
   /// The person's answer, from this app. axod takes it only from Axo.app, by code signature;
   /// a question answered already fails with `ElicitationError.notPending`.
   /// An input request's `values` go in the clear: this socket is axod's own, and it takes answers
-  /// on it only from Axo.app.
+  /// on it only from Axo.app. They go only to a listener checked to be axod (RFD0069); a build
+  /// that cannot check one sends none.
   public func resolveElicitation(_ id: String, action: ElicitationAnswer, values: [String: String]? = nil) async throws {
+    if values != nil, let local = transport as? UnixSocketTransport, !local.peer.isVerified {
+      throw AxoClientError.untrustedPeer("this build of Axo cannot check that it is axod, so it sends no typed values")
+    }
     let result = try await call(
       AxodMethods.elicitationResolve, LocalElicitationAnswer(elicitationId: id, action: action, values: values))
     guard result.resolved else {

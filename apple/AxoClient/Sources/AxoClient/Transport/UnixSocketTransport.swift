@@ -1,16 +1,19 @@
 import Foundation
-import Network
 
-/// Apps to a local axod: newline-delimited JSON over a Unix socket.
+/// Apps to a local axod: newline-delimited JSON over a Unix socket, to a listener checked to be
+/// axod before anything is sent (RFD0069).
 public struct UnixSocketTransport: AxoTransport {
   public let socketPath: UnixSocketPath
+  /// Who must be listening.
+  public let peer: AxodPeer
 
-  public init(socketPath: UnixSocketPath) {
+  public init(socketPath: UnixSocketPath, peer: AxodPeer = .axod) {
     self.socketPath = socketPath
+    self.peer = peer
   }
 
   public func connect() async throws -> any AxoMessageChannel {
-    let channel = UnixSocketChannel(socketPath: socketPath)
+    let channel = UnixSocketChannel(socketPath: socketPath, peer: peer)
     try await channel.connect()
     return channel
   }
@@ -18,57 +21,48 @@ public struct UnixSocketTransport: AxoTransport {
 
 /// One Unix-socket connection, framing messages by newline.
 ///
-/// `@unchecked Sendable` invariants: `pendingData` is touched only from NWConnection callbacks on
-/// the serial `queue`; `readiness` only under `stateLock`; `NWConnection` and the stream
-/// continuation are themselves thread-safe.
+/// `@unchecked Sendable` invariants: `pendingData` is touched only from the connection's read
+/// callbacks on the serial `queue`; `UnixSocketConnection` and the stream continuation are
+/// themselves thread-safe.
 final class UnixSocketChannel: AxoMessageChannel, @unchecked Sendable {
   /// The largest single message accepted; a longer line ends the connection. Whole-catalog
   /// replies (`axo.session.list`, the first `axo.session.events` batch) grow with every
   /// Session, so this must stay far above any realistic catalog. At 64 KiB, sixty Sessions with
   /// UUID IDs no longer fit and Axo could never get past its launch splash.
   static let maximumMessageBytes = 16 * 1024 * 1024
-  /// How much one socket read asks for; messages larger than this span several reads.
-  private static let readChunkBytes = 64 * 1024
-  private static let connectionTimeout: DispatchTimeInterval = .seconds(1)
 
-  private let connection: NWConnection
+  private let socketPath: UnixSocketPath
+  private let peer: AxodPeer
+  private let connection = UnixSocketConnection()
   private let queue = DispatchQueue(label: "dev.leostera.axo.rpc")
-  private let stateLock = NSLock()
   private let dataContinuation: AsyncStream<Data>.Continuation
-  private var readiness: CheckedContinuation<Void, Error>?
   private var pendingData = Data()
 
   let messages: AsyncStream<Data>
 
-  init(socketPath: UnixSocketPath) {
+  init(socketPath: UnixSocketPath, peer: AxodPeer) {
     let (messages, dataContinuation) = AsyncStream<Data>.makeStream()
     self.messages = messages
     self.dataContinuation = dataContinuation
-    self.connection = NWConnection(
-      to: .unix(path: socketPath.value),
-      using: .tcp
-    )
+    self.socketPath = socketPath
+    self.peer = peer
   }
 
+  /// Connects and checks the listener; a missing or refusing socket fails at once.
   func connect() async throws {
     try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-      stateLock.lock()
-      readiness = continuation
-      stateLock.unlock()
-
-      connection.stateUpdateHandler = { [weak self] state in
-        self?.handle(state: state)
-      }
-      connection.start(queue: queue)
-      queue.asyncAfter(deadline: .now() + Self.connectionTimeout) { [weak self] in
-        guard let self,
-          self.finishReadiness(
-            .failure(AxoClientError.connectionFailed("connection timed out")))
-        else {
+      queue.async { [self] in
+        do {
+          try connection.open(path: socketPath, peer: peer)
+        } catch {
+          dataContinuation.finish()
+          continuation.resume(throwing: error)
           return
         }
-        self.connection.cancel()
-        self.dataContinuation.finish()
+        connection.startReading(
+          on: queue, received: { [weak self] in self?.receive($0) },
+          ended: { [dataContinuation] in dataContinuation.finish() })
+        continuation.resume()
       }
     }
   }
@@ -76,64 +70,6 @@ final class UnixSocketChannel: AxoMessageChannel, @unchecked Sendable {
   func close() {
     connection.cancel()
     dataContinuation.finish()
-  }
-
-  private func handle(state: NWConnection.State) {
-    switch state {
-    case .ready:
-      guard finishReadiness(.success(())) else { return }
-      receiveNext()
-    case .failed(let error):
-      finishReadiness(.failure(AxoClientError.connectionFailed(error.localizedDescription)))
-      dataContinuation.finish()
-    case .cancelled:
-      finishReadiness(.failure(AxoClientError.connectionFailed("connection was cancelled")))
-      dataContinuation.finish()
-    case .waiting(let error):
-      // A missing or refusing Unix socket is reported as waiting for a better network path,
-      // which never comes; fail now instead of at the connection timeout (axod probes during
-      // a restart would each stall for a second).
-      guard finishReadiness(.failure(AxoClientError.connectionFailed(error.localizedDescription)))
-      else { return }
-      connection.cancel()
-      dataContinuation.finish()
-    case .setup, .preparing:
-      break
-    @unknown default:
-      finishReadiness(.failure(AxoClientError.connectionFailed("unknown connection state")))
-      dataContinuation.finish()
-    }
-  }
-
-  @discardableResult
-  private func finishReadiness(_ result: Result<Void, Error>) -> Bool {
-    stateLock.lock()
-    let continuation = readiness
-    readiness = nil
-    stateLock.unlock()
-    guard let continuation else { return false }
-    continuation.resume(with: result)
-    return true
-  }
-
-  private func receiveNext() {
-    connection.receive(minimumIncompleteLength: 1, maximumLength: Self.readChunkBytes) {
-      [weak self] data, _, isComplete, error in
-      guard let self else { return }
-      if error != nil {
-        self.dataContinuation.finish()
-        self.connection.cancel()
-        return
-      }
-      if let data, !data.isEmpty {
-        self.receive(data)
-      }
-      if isComplete {
-        self.dataContinuation.finish()
-      } else {
-        self.receiveNext()
-      }
-    }
   }
 
   private func receive(_ data: Data) {
@@ -161,17 +97,6 @@ final class UnixSocketChannel: AxoMessageChannel, @unchecked Sendable {
   func send(_ message: Data) async throws {
     var framedMessage = message
     framedMessage.append(0x0A)
-
-    try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-      connection.send(
-        content: framedMessage,
-        completion: .contentProcessed { error in
-          if error != nil {
-            continuation.resume(throwing: AxoClientError.connectionClosed)
-          } else {
-            continuation.resume()
-          }
-        })
-    }
+    try await connection.send(framedMessage)
   }
 }

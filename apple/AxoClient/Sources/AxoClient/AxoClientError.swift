@@ -12,6 +12,8 @@ public enum AxoClientError: Error, Equatable, LocalizedError {
   /// The host answered with a JSON-RPC error.
   case serverRejected(code: Int, message: String)
   case requestTimedOut
+  /// The program listening on axod's socket is not axod, or could not be checked (RFD0069).
+  case untrustedPeer(String)
 
   public var errorDescription: String? {
     switch self {
@@ -21,6 +23,7 @@ public enum AxoClientError: Error, Equatable, LocalizedError {
     case .invalidResponse(let message): "Invalid response from Axo: \(message)"
     case .serverRejected(let code, let message): "Axo rejected the request (\(code)): \(message)"
     case .requestTimedOut: "Axo did not respond before the request timed out."
+    case .untrustedPeer(let reason): "Axo refused to talk to axod's socket: \(reason)."
     }
   }
 }
