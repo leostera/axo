@@ -496,6 +496,7 @@ fn record(core: &Core, views: &Views, listed: &Listed<'_>) -> PeerSession {
             shells,
             layout: None,
             pi: None,
+            agent: Default::default(),
         },
     }
 }

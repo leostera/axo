@@ -201,13 +201,24 @@ fn new_session_folder(core: &Core, request: &rpc::CreateSession) -> io::Result<P
     Ok(folder)
 }
 
-/// Creates a Session with Pi beside a terminal, and returns it once its Pi has started.
+/// The agents a Session can be created with: those with an adapter (RFD0072).
+const RUNNABLE_AGENTS: [axo_agent::AgentKind; 2] =
+    [axo_agent::AgentKind::Pi, axo_agent::AgentKind::Codex];
+
+/// Creates a Session with its agent beside a terminal, and returns it once the agent has
+/// started.
 pub(crate) async fn create(
     core: &Arc<Core>,
     request: rpc::CreateSession,
 ) -> io::Result<SessionRecord> {
+    if !RUNNABLE_AGENTS.contains(&request.agent) {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            format!("Axo cannot run {} yet", request.agent),
+        ));
+    }
     let folder = new_session_folder(core, &request)?;
-    create_in(core, folder, None, request.name).await
+    create_in(core, folder, None, request.name, request.agent).await
 }
 
 /// Creates a Session in `folder` (canonical, an existing directory). Its transcript is
@@ -217,6 +228,7 @@ async fn create_in(
     folder: PathBuf,
     import: Option<PathBuf>,
     name: Option<rpc::SessionName>,
+    agent: axo_agent::AgentKind,
 ) -> io::Result<SessionRecord> {
     if core.is_stopping() {
         return Err(io::Error::new(
@@ -255,6 +267,7 @@ async fn create_in(
                         bridge_socket: &bridge_socket,
                         pane_id: &pane_id,
                         split_id: &split_id,
+                        agent,
                     },
                 )
             })
@@ -417,7 +430,7 @@ async fn import_now(
             "Pi Session is no longer current",
         ));
     }
-    let session = create_in(core, folder, Some(source), None).await?;
+    let session = create_in(core, folder, Some(source), None, axo_agent::AgentKind::Pi).await?;
     core.events.publish(Event::SessionFocus {
         session_id: session.id,
     });

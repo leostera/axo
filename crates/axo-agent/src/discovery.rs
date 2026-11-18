@@ -103,11 +103,13 @@ pub fn candidates(kind: AgentKind, places: &SearchPlaces) -> Vec<PathBuf> {
     candidates
 }
 
-/// The first candidate that is an executable file.
+/// The first candidate that is an executable file, made absolute: the agent runs in the
+/// Session's folder, not axod's.
 pub fn find(kind: AgentKind, places: &SearchPlaces) -> Result<PathBuf, DiscoveryError> {
     candidates(kind, places)
         .into_iter()
         .find(|candidate| is_executable_file(candidate))
+        .and_then(|found| std::path::absolute(found).ok())
         .ok_or(DiscoveryError::NotInstalled(kind))
 }
 

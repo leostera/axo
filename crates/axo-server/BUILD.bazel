@@ -58,8 +58,14 @@ rust_library(
 rust_test(
     name = "axo_server_tests",
     srcs = glob(["src/**/*.rs"]),
-    data = [":pi_extension_fixture", "//crates/axod:fake_pi"],
+    data = [
+        ":pi_extension_fixture",
+        "//crates/axo-agent:fake_codex",
+        "//crates/axod:fake_pi",
+    ],
     env = {
+        # Codex Sessions in the tests run the fake; nothing finds the user's codex.
+        "AXO_CODEX_EXECUTABLE": "$(rootpath //crates/axo-agent:fake_codex)",
         "AXO_PI_EXTENSION_PATH": "$(rootpath :pi_extension_fixture)",
         "AXO_TEST_FAKE_PI": "$(rootpath //crates/axod:fake_pi)",
     },

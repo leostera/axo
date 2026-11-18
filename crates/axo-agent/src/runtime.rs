@@ -175,4 +175,34 @@ impl AgentCommands {
             AgentCommands::Codex(link) => link.set_model(model, thinking_level, timeout).await,
         }
     }
+
+    /// Shows an agent's question to the person in the agent's own UI. Only Pi can; the others
+    /// answer `Unsupported`, and the question is still asked on the person's devices.
+    pub async fn show_elicitation(
+        &self,
+        id: &str,
+        title: &str,
+        message: &str,
+        expires_at: u64,
+    ) -> io::Result<CommandResult> {
+        match self {
+            AgentCommands::Pi(link) => link.show_elicitation(id, title, message, expires_at).await,
+            _ => Err(no_elicitations(self.kind())),
+        }
+    }
+
+    /// Takes down a question `show_elicitation` showed.
+    pub async fn dismiss_elicitation(&self, id: &str) -> io::Result<CommandResult> {
+        match self {
+            AgentCommands::Pi(link) => link.dismiss_elicitation(id).await,
+            _ => Err(no_elicitations(self.kind())),
+        }
+    }
+}
+
+fn no_elicitations(kind: AgentKind) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::Unsupported,
+        format!("{kind} cannot show Axo's questions in its own UI"),
+    )
 }

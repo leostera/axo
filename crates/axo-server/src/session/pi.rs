@@ -18,9 +18,10 @@ use std::time::{Duration, Instant};
 use axo_agent::pi::link::{self, LinkConfig};
 use axo_agent::pi::{BridgeSocketPath, PiLaunch, PiProcess, SocketCleanup};
 use axo_agent::process::ProcessIdentity;
+use axo_agent::discovery::{self, SearchPlaces};
 use axo_agent::{
-    Activity, AgentCommand, AgentCommands, AgentEvent, CommandResult, FORK_EXEC_WINDOW,
-    RejectReason, WriterLock,
+    Activity, AgentCommand, AgentCommands, AgentEvent, AgentKind, CommandResult,
+    FORK_EXEC_WINDOW, RejectReason, WriterLock,
 };
 use axo_protocol::{Event, PaneRole, PiCommandInfo, PiModelInfo, SessionStatus, ThinkingLevel};
 use axo_pty::WindowSize;
@@ -259,10 +260,20 @@ impl Drop for LaunchInFlight {
     }
 }
 
-/// A Pi a launch started.
+/// An agent a launch started.
 pub(crate) struct Launched {
-    /// Dropped once this Pi is installed or stopped.
+    /// Dropped once this agent is installed or stopped.
     in_flight: LaunchInFlight,
+    agent: LaunchedAgent,
+}
+
+pub(crate) enum LaunchedAgent {
+    Pi(LaunchedPi),
+    /// Codex's server, its TUI and their thread (RFD0072).
+    Codex(axo_agent::codex::CodexProcess),
+}
+
+pub(crate) struct LaunchedPi {
     process: PiProcess,
     bridge_token: String,
     session_file: PathBuf,
@@ -339,11 +350,72 @@ fn launch(core: &Core, request: LaunchRequest, in_flight: LaunchInFlight) -> io:
     )?;
     Ok(Launched {
         in_flight,
+        agent: LaunchedAgent::Pi(LaunchedPi {
         process,
         bridge_token,
         session_file,
         bridge_socket,
+    }),
     })
+}
+
+/// Launches a Session's Codex: finds `codex`, starts its server on the blocking pool, then
+/// starts or confirms the thread and the TUI.
+async fn launch_codex(
+    core: Arc<Core>,
+    request: CodexRequest,
+    in_flight: LaunchInFlight,
+) -> io::Result<Launched> {
+    let places = SearchPlaces::from_environment(AgentKind::Codex, &request.home);
+    let installed = discovery::discover(AgentKind::Codex, &places, discovery::VERSION_TIMEOUT).await?;
+    let launch = axo_agent::codex::CodexLaunch {
+        executable: installed.executable,
+        paths: axo_agent::codex::CodexPaths::new(&core.pi_directories.bridges, &request.session_uuid)?,
+        initial_pwd: request.folder,
+        session_uuid: request.session_uuid,
+        pane_id: request.pane_id,
+        environment: pi_environment(&core.agent_socket),
+        home: request.home,
+        thread_id: request.thread_id,
+        thread_name: request.thread_name,
+        instructions: None,
+        size: request.size,
+    };
+    let (lock, server) = {
+        let (core, launch) = (Arc::clone(&core), launch.clone());
+        tokio::task::spawn_blocking(move || axo_agent::codex::start_server(&launch, &core.lifeline))
+            .await
+            .map_err(io::Error::other)??
+    };
+    axo_agent::codex::attach(launch, lock, server)
+        .await
+        .map(|process| Launched {
+            in_flight,
+            agent: LaunchedAgent::Codex(process),
+        })
+}
+
+/// A launched agent's pane process, with the link that follows it.
+struct Followed {
+    running: Running,
+    /// Who the Pi is, for a later axod to kill should it outlive this one.
+    identity: Option<ProcessIdentity>,
+    link: AgentCommands,
+    link_task: tokio::task::AbortHandle,
+    /// The conversation an agent other than Pi named at launch.
+    thread_id: Option<String>,
+}
+
+/// What a Codex launch needs, owned.
+struct CodexRequest {
+    folder: PathBuf,
+    home: PathBuf,
+    session_uuid: String,
+    pane_id: String,
+    size: WindowSize,
+    /// The Session's thread, once it has one.
+    thread_id: Option<String>,
+    thread_name: String,
 }
 
 fn invalid_data(message: &str) -> io::Error {
@@ -449,6 +521,46 @@ impl Session {
             shell_id.get()
         );
         self.publish();
+        if self.row.agent == AgentKind::Codex {
+            let request = crate::current_user_home_directory().map(|home| CodexRequest {
+                folder: self.row.folder.clone(),
+                home,
+                session_uuid: self.id.to_string(),
+                pane_id,
+                size: self.pane_size(shell_id),
+                thread_id: self.row.agent_conversation.clone(),
+                thread_name: self.row.manual_name.clone().unwrap_or_else(|| self.row.name.clone()),
+            });
+            let request = match request {
+                Ok(request) => request,
+                Err(error) => {
+                    self.launched(attempt, Err(error)).await;
+                    return;
+                }
+            };
+            let mailbox = self.mailbox();
+            let in_flight = core.pi_launches.begin();
+            tokio::spawn(async move {
+                let result = launch_codex(core, request, in_flight).await;
+                match mailbox.upgrade() {
+                    Some(mailbox) => {
+                        if let Err(unsent) = mailbox.send(Message::Launched { attempt, result }) {
+                            stop_unwanted(unsent.0);
+                        }
+                    }
+                    None => stop_unwanted(Message::Launched { attempt, result }),
+                }
+            });
+            return;
+        }
+        if self.row.agent != AgentKind::Pi {
+            let error = io::Error::new(
+                io::ErrorKind::Unsupported,
+                format!("Axo cannot run {} yet", self.row.agent),
+            );
+            self.launched(attempt, Err(error)).await;
+            return;
+        }
         let id = self.id;
         let stored = core
             .store
@@ -518,25 +630,14 @@ impl Session {
             return;
         };
         let (shell_id, pane_id) = (pi.shell_id, pi.pane_id.clone());
-        let started = result.and_then(|launched| {
-            log_socket_cleanup(self.id, launched.process.socket_cleanup);
-            let identity = launched.process.identity;
-            let running = Running::new(
-                PaneRole::Pi,
-                Some(pane_id.clone()),
-                self.row.folder.clone(),
-                launched.process.pty,
-                Some(launched.process.writer_lock),
-            )?;
-            Ok((
-                running,
-                identity,
-                launched.bridge_token,
-                launched.session_file,
-                launched.bridge_socket,
-            ))
-        });
-        let (running, identity, token, session_file, bridge_socket) = match started {
+        let started = result.and_then(|launched| self.follow(launched, shell_id, pane_id));
+        let Followed {
+            running,
+            identity,
+            link,
+            link_task,
+            thread_id,
+        } = match started {
             Ok(started) => started,
             Err(error) => {
                 log::warn!(
@@ -558,34 +659,21 @@ impl Session {
         };
         let runtime_id = running.runtime_id;
         let process_id = running.child.id();
-        let (link, requests) = link::command_channel();
-        let config = LinkConfig {
-            session_uuid: self.id.to_string(),
-            pane_id,
-            initial_pwd: self.row.folder.clone(),
-            session_file,
-            bridge_socket,
-            bridge_token: token,
-            process_id,
-            log_context: format!("session_id={} shell_id={}", self.id, shell_id.get()),
-        };
-        let mailbox = self.mailbox();
-        let link_task = tokio::spawn(link::run(
-            config,
-            requests,
-            Arc::clone(&self.core.bridges_changed),
-            move |event| {
-                mailbox.upgrade().is_some_and(|mailbox| {
-                    mailbox.send(Message::Link { runtime_id, event }).is_ok()
-                })
-            },
-        ))
-        .abort_handle();
+        if let Some(thread_id) = thread_id {
+            let id = self.id;
+            self.row.agent_conversation = Some(thread_id.clone());
+            if let Err(error) = self
+                .write(move |database| axo_store::bind_agent_conversation(database, id, &thread_id))
+                .await
+            {
+                log::warn!("event=session.agent_bind_failed session_id={id} reason={error}");
+            }
+        }
         self.install(shell_id, running);
         if let Some(pi) = &mut self.pi {
             pi.state = PiState::Running {
                 runtime_id,
-                link: AgentCommands::Pi(link),
+                link,
                 link_task,
             };
             pi.activity = None;
@@ -609,6 +697,113 @@ impl Session {
         self.publish();
         for waiter in waiters {
             let _ = waiter.send(Ok(()));
+        }
+    }
+
+    /// The pane process and the link of a launched agent, the link already following it; and
+    /// the thread it runs, for an agent that names its conversation at launch.
+    fn follow(
+        &self,
+        launched: Launched,
+        shell_id: ShellId,
+        pane_id: String,
+    ) -> io::Result<Followed> {
+        let log_context = format!("session_id={} shell_id={}", self.id, shell_id.get());
+        // Counted until it is installed, as this returns.
+        let Launched {
+            in_flight: _in_flight,
+            agent,
+        } = launched;
+        match agent {
+            LaunchedAgent::Pi(launched) => {
+                log_socket_cleanup(self.id, launched.process.socket_cleanup);
+                let identity = launched.process.identity;
+                let running = Running::new(
+                    PaneRole::Pi,
+                    Some(pane_id.clone()),
+                    self.row.folder.clone(),
+                    launched.process.pty,
+                    Some(launched.process.writer_lock),
+                )?;
+                let runtime_id = running.runtime_id;
+                let (link, requests) = link::command_channel();
+                let config = LinkConfig {
+                    session_uuid: self.id.to_string(),
+                    pane_id,
+                    initial_pwd: self.row.folder.clone(),
+                    session_file: launched.session_file,
+                    bridge_socket: launched.bridge_socket,
+                    bridge_token: launched.bridge_token,
+                    process_id: running.child.id(),
+                    log_context,
+                };
+                let mailbox = self.mailbox();
+                let link_task = tokio::spawn(link::run(
+                    config,
+                    requests,
+                    Arc::clone(&self.core.bridges_changed),
+                    move |event| {
+                        mailbox.upgrade().is_some_and(|mailbox| {
+                            mailbox.send(Message::Link { runtime_id, event }).is_ok()
+                        })
+                    },
+                ))
+                .abort_handle();
+                Ok(Followed {
+                    running,
+                    identity,
+                    link: AgentCommands::Pi(link),
+                    link_task,
+                    thread_id: None,
+                })
+            }
+            LaunchedAgent::Codex(launched) => {
+                let axo_agent::codex::CodexProcess {
+                    pty,
+                    writer_lock,
+                    server,
+                    thread_id,
+                } = launched;
+                let socket = axo_agent::codex::CodexPaths::new(
+                    &self.core.pi_directories.bridges,
+                    &self.id.to_string(),
+                )?;
+                let running = Running::new(
+                    PaneRole::Pi,
+                    Some(pane_id),
+                    self.row.folder.clone(),
+                    pty,
+                    Some(writer_lock),
+                )?;
+                let runtime_id = running.runtime_id;
+                let (link, requests) = axo_agent::codex::command_channel();
+                let config = axo_agent::codex::LinkConfig {
+                    socket: socket.socket().to_owned(),
+                    thread_id: thread_id.clone(),
+                    instructions: None,
+                    log_context,
+                };
+                let mailbox = self.mailbox();
+                // The link owns the server: it stops when the link is let go.
+                let link_task = tokio::spawn(axo_agent::codex::run(
+                    config,
+                    requests,
+                    Some(server),
+                    move |event| {
+                        mailbox.upgrade().is_some_and(|mailbox| {
+                            mailbox.send(Message::Link { runtime_id, event }).is_ok()
+                        })
+                    },
+                ))
+                .abort_handle();
+                Ok(Followed {
+                    running,
+                    identity: None,
+                    link: AgentCommands::Codex(link),
+                    link_task,
+                    thread_id: Some(thread_id),
+                })
+            }
         }
     }
 
@@ -1041,9 +1236,11 @@ impl Session {
 
     async fn bound(&mut self, pi_session_id: String) {
         let id = self.id;
-        if let Err(error) = self
-            .write(move |database| axo_store::bind_pi_session_id(database, id, &pi_session_id))
-            .await
+        // Another agent's conversation was bound when it launched.
+        if self.row.agent == AgentKind::Pi
+            && let Err(error) = self
+                .write(move |database| axo_store::bind_pi_session_id(database, id, &pi_session_id))
+                .await
         {
             log::warn!("event=session.pi_bind_failed session_id={id} reason={error}");
         }
@@ -1096,7 +1293,7 @@ impl Session {
     }
 
     /// Sends `queued` to the running Pi in order, then takes whatever queued behind it meanwhile.
-    fn flush(&mut self, runtime_id: RuntimeId, link: LinkCommands, queued: Vec<QueuedPrompt>) {
+    fn flush(&mut self, runtime_id: RuntimeId, link: AgentCommands, queued: Vec<QueuedPrompt>) {
         let Some(pi) = &mut self.pi else { return };
         pi.flushing = true;
         log::info!(
@@ -1119,7 +1316,7 @@ impl Session {
     }
 
     /// A flush ended: what queued behind it goes next, unless that Pi is going.
-    fn flushed(&mut self, runtime_id: RuntimeId, link: LinkCommands) {
+    fn flushed(&mut self, runtime_id: RuntimeId, link: AgentCommands) {
         if !self.pi_is_current(runtime_id) {
             return;
         }
@@ -1281,22 +1478,32 @@ impl Session {
 
 /// A Pi started for a Session that no longer wants it is stopped.
 pub(super) fn stop_unwanted(message: Message) {
-    if let Message::Launched {
+    let Message::Launched {
         result: Ok(launched),
         ..
     } = message
-    {
-        let Launched {
-            in_flight,
-            mut process,
-            ..
-        } = launched;
-        let grace = axo_agent::pi::STOP_GRACE;
-        tokio::spawn(async move {
-            axo_pty::process::stop_async(&mut process.pty.child, grace).await;
-            drop(process);
-            drop(in_flight);
-        });
+    else {
+        return;
+    };
+    let Launched { in_flight, agent } = launched;
+    let grace = axo_agent::pi::STOP_GRACE;
+    match agent {
+        LaunchedAgent::Pi(launched) => {
+            let mut process = launched.process;
+            tokio::spawn(async move {
+                axo_pty::process::stop_async(&mut process.pty.child, grace).await;
+                drop(process);
+                drop(in_flight);
+            });
+        }
+        // Dropping the server stops it; the TUI is stopped like a Pi.
+        LaunchedAgent::Codex(mut process) => {
+            tokio::spawn(async move {
+                axo_pty::process::stop_async(&mut process.pty.child, grace).await;
+                drop(process);
+                drop(in_flight);
+            });
+        }
     }
 }
 

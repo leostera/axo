@@ -412,6 +412,7 @@ impl Session {
             shells,
             layout: row.layout.clone(),
             pi: self.pi.as_ref().and_then(|pi| pi.controls.runtime.clone()),
+            agent: row.agent,
         }
     }
 

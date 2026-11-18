@@ -449,6 +449,7 @@ async fn a_creation_name_is_visible_immediately_and_survives_auto_titles_and_res
     let request = axo_protocol::rpc::CreateSession {
         location: axo_protocol::rpc::SessionLocation::InFolder(fixture.directory.clone()),
         name: Some(axo_protocol::rpc::SessionName::parse("Preset helper".into()).unwrap()),
+        agent: axo_protocol::agent::AgentKind::Pi,
     };
     let created = sessions::create(&fixture.core, request).await.unwrap();
     assert_eq!(created.manual_name.as_deref(), Some("Preset helper"));

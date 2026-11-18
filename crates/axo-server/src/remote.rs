@@ -134,6 +134,8 @@ impl Extension for Remote {
                             .like
                             .map_or(rpc::SessionLocation::AtHome, rpc::SessionLocation::Like),
                         name: request.name,
+                        // Another agent from the phone or the web waits for its picker (RFD0072).
+                        agent: axo_agent::AgentKind::Pi,
                     },
                 )
                 .await

@@ -2,7 +2,8 @@
 //! (initialize, thread/start, thread/name/set, thread/resume and model/list, answered as the
 //! real server answers them, trimmed) and the TUI's `--remote unix://PATH resume THREAD`, which
 //! only says what it was asked to resume. Every request and the TUI's start are appended to
-//! `$AXO_FAKE_CODEX_LOG`, one line each.
+//! `$AXO_FAKE_CODEX_LOG`, or `fake-codex.log` in the working directory (the Session's folder),
+//! one line each.
 
 use std::io::Write;
 use std::os::unix::net::UnixListener;
@@ -13,10 +14,10 @@ use tungstenite::Message;
 const THREAD: &str = "01a1eea8-952a-7271-8b55-c2708a01c6ff";
 
 fn log(line: &str) {
-    if let Some(path) = std::env::var_os("AXO_FAKE_CODEX_LOG") {
-        let mut file = std::fs::OpenOptions::new().create(true).append(true).open(path).unwrap();
-        writeln!(file, "{line}").unwrap();
-    }
+    let path = std::env::var_os("AXO_FAKE_CODEX_LOG")
+        .map_or_else(|| std::path::PathBuf::from("fake-codex.log"), std::path::PathBuf::from);
+    let mut file = std::fs::OpenOptions::new().create(true).append(true).open(path).unwrap();
+    writeln!(file, "{line}").unwrap();
 }
 
 fn main() {
