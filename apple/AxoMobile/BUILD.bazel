@@ -3,6 +3,7 @@ load("@rules_apple//apple:ios.bzl", "ios_application", "ios_ui_test")
 load("@rules_apple//apple:versioning.bzl", "apple_bundle_version")
 load("@rules_apple//apple/testing/default_runner:ios_xctestrun_runner.bzl", "ios_xctestrun_runner")
 load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
 load("@rules_swift//swift:swift_library.bzl", "swift_library")
 load("@rules_swift//swift:swift_test.bzl", "swift_test")
 load("@axo_config//:defs.bzl", "AXO", "CAN", "REASONS")
@@ -252,6 +253,36 @@ ios_device_app(
 ) if CAN.phone_device else status_line(
     name = "AxoMobile_ipa",
     line = "AxoMobileDevice: skipped: " + REASONS.get("phone_device", ""),
+)
+
+# These signed graph gates fail rather than report a successful skip without local profiles.
+sh_test(
+    name = "distribution_archive_test",
+    srcs = ["//bazel/apple:distribution_preflight.sh"],
+    args = [
+        "$(rootpath //bazel/apple:distribution_preflight.py)",
+        "$(rootpath //:config.json)",
+        "--channel",
+        "development",
+        "$(rootpath :AxoMobile_ipa)",
+    ],
+    data = ["//bazel/apple:distribution_preflight.py", "//:config.json", ":AxoMobile_ipa"],
+    tags = ["manual", "no-sandbox", "no-remote"],
+)
+
+sh_test(
+    name = "preservation_archive_test",
+    srcs = ["//bazel/apple:distribution_preflight.sh"],
+    args = [
+        "$(rootpath //bazel/apple:distribution_preflight.py)",
+        "$(rootpath //:config.json)",
+        "--channel",
+        "development",
+        "--migration",
+        "$(rootpath :AxoMobile_ipa)",
+    ],
+    data = ["//bazel/apple:distribution_preflight.py", "//:config.json", ":AxoMobile_ipa"],
+    tags = ["manual", "no-sandbox", "no-remote"],
 )
 
 # Installs and opens each new device build on the phone in config.local.json (phone.device), when

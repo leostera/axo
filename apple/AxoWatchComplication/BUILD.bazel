@@ -5,7 +5,7 @@ load("@axo_config//:defs.bzl", "AXO", "CAN")
 
 package(default_visibility = ["//visibility:public"])
 
-exports_files(["Info.plist"])
+exports_files(["Info.plist", "AxoWatchComplication.entitlements"])
 
 swift_library(
     name = "AxoWatchComplication",
@@ -20,6 +20,7 @@ watchos_extension(
     application_extension = True,
     bundle_id = AXO["apple"]["bundle_ids"]["watch"] + ".complications",
     infoplists = ["Info.plist"],
+    entitlements = "AxoWatchComplication.entitlements" if CAN.watch_device else None,
     minimum_os_version = AXO["apple"]["watchos_min"],
     provisioning_profile = ":AxoWatchComplicationProfile" if CAN.watch_device else None,
     version = "//apple/AxoWatch:build_version",

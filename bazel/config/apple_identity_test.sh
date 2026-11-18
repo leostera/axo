@@ -7,9 +7,9 @@ with open(sys.argv[1]) as f:
 ids = apple["bundle_ids"]
 assert ids["mac"] == ids["phone"] == "dev.leostera.axo"
 assert ids["watch"] == ids["phone"] + ".watch"
-assert apple["phone_profile"] == "iOS Team Provisioning Profile: " + ids["phone"]
-assert apple["watch_profile"] == "iOS Team Provisioning Profile: " + ids["watch"]
-assert apple["watch_complication_profile"] == "iOS Team Provisioning Profile: " + ids["watch"] + ".complications"
+assert apple["phone_profile"] == "Axo canonical mobile development"
+assert apple["watch_profile"] == "Axo canonical watch development"
+assert apple["watch_complication_profile"] == "Axo canonical complications development"
 for path, group in [(sys.argv[2], ids["phone"]), (sys.argv[3], "$(AppIdentifierPrefix)" + ids["phone"])]:
     with open(path, "rb") as f:
         entitlement = plistlib.load(f)
@@ -17,5 +17,9 @@ for path, group in [(sys.argv[2], ids["phone"]), (sys.argv[3], "$(AppIdentifierP
 with open(sys.argv[4], "rb") as f:
     companion = plistlib.load(f)
 assert companion["WKCompanionAppBundleIdentifier"] == ids["phone"]
-print("Canonical phone/Mac identity, watch hierarchy, profiles and Keychain entitlements agree.")
+for path, identifier in [(sys.argv[5], ids["watch"]), (sys.argv[6], ids["watch"] + ".complications")]:
+    with open(path, "rb") as f:
+        entitlement = plistlib.load(f)
+    assert entitlement["keychain-access-groups"] == ["$(AppIdentifierPrefix)" + identifier]
+print("Canonical phone/Mac identity, watch hierarchy, profiles and exact Keychain entitlements agree.")
 PY

@@ -7,7 +7,7 @@ load("//bazel/apple:preservation_probe.bzl", "preservation_probe_info")
 
 package(default_visibility = ["//visibility:public"])
 
-exports_files(["Info.plist"])
+exports_files(["Info.plist", "AxoWatch.entitlements"])
 
 swift_library(
     name = "AxoWatch",
@@ -43,7 +43,7 @@ watchos_application(
     infoplists = ["Info.plist", ":companion_info"] + ([":watch_probe_info"] if CAN.watch_device else []),
     entitlements = select({
         "//bazel/config:identity_preservation_probe_enabled": "AxoWatch-probe.entitlements",
-        "//conditions:default": None,
+        "//conditions:default": "AxoWatch.entitlements",
     }) if CAN.watch_device else None,
     minimum_os_version = AXO["apple"]["watchos_min"],
     version = ":build_version",

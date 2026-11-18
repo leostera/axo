@@ -96,10 +96,17 @@ bazel test //apple/ExistingPhoneUpdate:preservation_archive_test \
   --//bazel/config:identity_preservation_probe=true --test_output=errors
 ```
 
-The corresponding canonical device target is `//apple/AxoMobile:AxoMobile_ipa` with the
-same switch, but requires actual matching canonical development profiles. A skipped target
-or missing IPA is not a successful build. Inspect both signed graphs and require the source
-and destination migration groups to match for each device role before installing either.
+The canonical development profile names in `config.json` are **Axo canonical mobile development**,
+**Axo canonical watch development** and **Axo canonical complications development**. Download
+these privately from the approved team; profiles and their device lists never belong in Git.
+The canonical device target is `//apple/AxoMobile:AxoMobile_ipa`. Its executable signing gate is
+`//apple/AxoMobile:preservation_archive_test` with the same probe switch; use
+`--watchos_cpus=device_arm64` for the owned Watch graph. The normal, non-probe signing gate is
+`//apple/AxoMobile:distribution_archive_test` without that switch. A skipped target or missing
+IPA is not a successful build. Inspect both signed graphs and require the source and destination
+migration groups to match for each device role before installing either. Canonical Watch/widget
+signatures use exact default groups, never the profile wildcard or `com.apple.token` grant;
+this is not permission to narrow an already-installed Watch namespace without preservation proof.
 
 The source retains its default Keychain group first, adds only the migration group, and keeps
 its normal UI. The canonical probe has a separate read-only root: no account, workbench,

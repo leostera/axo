@@ -27,12 +27,16 @@ sh_test(
         "$(rootpath //apple/AxoMobile:AxoMobile.entitlements)",
         "$(rootpath //apple/AxoMobile:AxoMobile-device.entitlements)",
         "$(rootpath //apple/AxoWatch:companion_info)",
+        "$(rootpath //apple/AxoWatch:AxoWatch.entitlements)",
+        "$(rootpath //apple/AxoWatchComplication:AxoWatchComplication.entitlements)",
     ],
     data = [
         "//:config.json",
         "//apple/AxoMobile:AxoMobile.entitlements",
         "//apple/AxoMobile:AxoMobile-device.entitlements",
         "//apple/AxoWatch:companion_info",
+        "//apple/AxoWatch:AxoWatch.entitlements",
+        "//apple/AxoWatchComplication:AxoWatchComplication.entitlements",
     ],
 )
 
