@@ -13,8 +13,11 @@
 
 use serde_json::{Value, json};
 
+pub mod filled;
 pub mod form;
 pub mod gate;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+mod scripts;
 
 /// Cua tools agents may call. Left out: process killing, updates, extensions, configuration,
 /// recordings and replays, the clipboard, and attaching to the person's logged-in browser.
@@ -116,49 +119,6 @@ fn request_input_definition() -> Value {
     })
 }
 
-/// Hides values in a computer tool's result: every string, quoted part or word for which
-/// `hidden` is true becomes `•••• (filled by you)`. Image data is left alone.
-pub fn redact(result: &mut Value, hidden: &dyn Fn(&str) -> bool) {
-    match result {
-        Value::String(text) => {
-            if let Some(redacted) = redact_text(text, hidden) {
-                *text = redacted;
-            }
-        }
-        Value::Array(items) => items.iter_mut().for_each(|item| redact(item, hidden)),
-        Value::Object(object) => {
-            let image = object.get("type") == Some(&json!("image"));
-            for (key, value) in object.iter_mut() {
-                if !(image && key == "data") {
-                    redact(value, hidden);
-                }
-            }
-        }
-        _ => {}
-    }
-}
-
-const FILLED: &str = "\u{2022}\u{2022}\u{2022}\u{2022} (filled by you)";
-
-fn redact_text(text: &str, hidden: &dyn Fn(&str) -> bool) -> Option<String> {
-    let mut candidates: Vec<&str> = text.split('"').skip(1).step_by(2).collect();
-    candidates.extend(text.split(|c: char| c.is_whitespace() || "\"'()[]{},;".contains(c)));
-    candidates.push(text);
-    let mut found: Vec<&str> = candidates
-        .into_iter()
-        .filter(|candidate| candidate.chars().count() >= 4 && hidden(candidate))
-        .collect();
-    if found.is_empty() {
-        return None;
-    }
-    found.sort_by_key(|candidate| std::cmp::Reverse(candidate.len()));
-    let mut redacted = text.to_owned();
-    for candidate in found {
-        redacted = redacted.replace(candidate, FILLED);
-    }
-    Some(redacted)
-}
-
 /// Whether this build can do computer use at all.
 pub const AVAILABLE: bool = cfg!(any(target_os = "macos", target_os = "linux"));
 
@@ -177,8 +137,10 @@ pub fn tool_definitions() -> Vec<Value> {
 }
 
 /// Calls one allowlisted tool and returns its MCP result (`content`, optional
-/// `structuredContent` and `isError`). Images come back inline as `image` content.
-pub fn call(tool: &str, args: Value) -> Value {
+/// `structuredContent` and `isError`). Images come back inline as `image` content. The caller has
+/// already had `gate` check the call; `gate` checks every action inside a `run_script` itself
+/// (RFD0070), learns the elements of every read, and filled values are hidden from the result.
+pub fn call(gate: &'static gate::Gate, tool: &str, args: Value) -> Value {
     if !TOOLS.contains(&tool) {
         return error(&format!(
             "{tool} is not a computer tool; available: {}, {REQUEST_INPUT}",
@@ -188,7 +150,40 @@ pub fn call(tool: &str, args: Value) -> Value {
     if let Some(refusal) = refusal_while(tool, imp::screen_locked) {
         return refusal;
     }
-    imp::call(cua_name(tool), args)
+    imp::call(gate, cua_name(tool), args)
+}
+
+/// Whether a read's elements were added for the gate, and so are taken out again.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Read {
+    AsAsked,
+    ElementsAdded,
+}
+
+/// Cua's `get_window_state` answers Markdown only by default, which names no element for the gate.
+/// A read that asked for no format asks for both, so the gate learns each element's role and
+/// label; the caller still gets Cua's default shape (RFD0070).
+fn ask_for_elements(tool: &str, args: &mut Value) -> Read {
+    let asked = !args["tree_format"].is_null() || args["full_output"] == json!(true);
+    match (tool, args.as_object_mut()) {
+        ("get_window_state", Some(object)) if !asked => {
+            object.insert("tree_format".into(), json!("both"));
+            Read::ElementsAdded
+        }
+        _ => Read::AsAsked,
+    }
+}
+
+/// What every result goes through before anyone sees it: the gate learns from it, the elements
+/// it asked for are taken out again, and filled values are hidden.
+fn settle_structured(gate: &gate::Gate, tool: &str, read: Read, structured: &mut Value) {
+    gate.remember(tool, structured);
+    if read == Read::ElementsAdded {
+        if let Some(object) = structured.as_object_mut() {
+            object.remove("elements");
+        }
+    }
+    filled::hide(structured);
 }
 
 /// The refusal for `tool` if the Mac is locked now; the lock is only looked at for tools that
@@ -275,19 +270,28 @@ mod tests {
     }
 
     #[test]
-    fn a_filled_value_is_hidden_wherever_it_shows_but_not_in_images() {
-        let hidden = |candidate: &str| candidate == "me@example.com";
-        let mut result = json!({ "content": [
-            { "type": "text", "text": "[16] AXTextField = \"me@example.com\" (to me@example.com)" },
-            { "type": "image", "data": "me@example.com", "mimeType": "image/png" },
-        ], "structuredContent": { "tree_markdown": "me@example.com" } });
-        redact(&mut result, &hidden);
-        assert_eq!(
-            result["content"][0]["text"],
-            format!("[16] AXTextField = \"{FILLED}\" (to {FILLED})")
+    fn a_read_that_named_no_format_carries_elements_for_the_gate_only() {
+        let gate = gate::Gate::new(None);
+        let mut args = json!({ "pid": 7, "window_id": 9 });
+        let read = ask_for_elements("get_window_state", &mut args);
+        assert_eq!((read, &args["tree_format"]), (Read::ElementsAdded, &json!("both")));
+        let mut structured = json!({ "pid": 7, "window_id": 9, "tree_markdown": "[4] AXButton \"Delete account\"",
+            "elements": [{ "element_token": "s1:4", "role": "AXButton", "label": "Delete account" }] });
+        settle_structured(&gate, "get_window_state", read, &mut structured);
+        assert!(structured.get("elements").is_none(), "the agent gets Cua's default read");
+        let verdict = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(
+            gate.check("click", &json!({ "pid": 7, "window_id": 9, "element_token": "s1:4" }), false),
         );
-        assert_eq!(result["content"][1]["data"], "me@example.com");
-        assert_eq!(result["structuredContent"]["tree_markdown"], FILLED);
+        let gate::Verdict::Ask(question) = verdict else { panic!("{verdict:?}") };
+        assert!(question.contains("Delete account"), "{question}");
+
+        for asked in [json!({ "tree_format": "markdown" }), json!({ "full_output": true })] {
+            let mut args = asked.clone();
+            assert_eq!(ask_for_elements("get_window_state", &mut args), Read::AsAsked);
+            assert_eq!(args, asked);
+        }
+        let mut click = json!({ "element_token": "s1:4" });
+        assert_eq!(ask_for_elements("click", &mut click), Read::AsAsked);
     }
 
     #[test]
@@ -333,7 +337,8 @@ mod tests {
             ),
             ("run_script", json!({"script":"return 'harmless fixture';"})),
         ] {
-            let result = call(tool, args);
+            let gate: &'static gate::Gate = Box::leak(Box::new(gate::Gate::new(None)));
+            let result = call(gate, tool, args);
             assert_eq!(result["isError"], true);
             assert!(
                 result["content"][0]["text"]
@@ -360,7 +365,7 @@ mod imp {
         Vec::new()
     }
 
-    pub fn call(_tool: &str, _args: Value) -> Value {
+    pub fn call(_gate: &'static crate::gate::Gate, _tool: &str, _args: Value) -> Value {
         super::error("computer use is only available on macOS")
     }
 

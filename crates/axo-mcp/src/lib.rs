@@ -1237,6 +1237,10 @@ impl McpServer {
         let verdict = gate.check(tool, &args, asked_for).await;
         let asked = match verdict {
             axo_computer::gate::Verdict::Allow => false,
+            axo_computer::gate::Verdict::Refuse(why) => {
+                log::info!("event=mcp.computer_called tool={tool} outcome=refused");
+                return tool_error(&why);
+            }
             axo_computer::gate::Verdict::Ask(question) => {
                 if let Err(message) = self.ask_the_person(&question).await {
                     log::info!("event=mcp.computer_called tool={tool} outcome=not_allowed");
@@ -1245,19 +1249,11 @@ impl McpServer {
                 true
             }
         };
-        let called = {
-            let (socket, tool) = (self.socket.clone(), tool.to_owned());
-            tokio::task::spawn_blocking(move || {
-                let result = axo_computer::call(&tool, args);
-                axo_computer::gate::for_socket(&socket).remember(&tool, &result);
-                result
-            })
-            .await
-        };
-        let Ok(mut result) = called else {
+        let tool_name = tool.to_owned();
+        let called = tokio::task::spawn_blocking(move || axo_computer::call(gate, &tool_name, args)).await;
+        let Ok(result) = called else {
             return tool_error("the computer call failed");
         };
-        self.redact(&mut result).await;
         log::info!(
             "event=mcp.computer_called tool={tool} outcome={}{}",
             if result["isError"] == json!(true) {
@@ -1268,37 +1264,6 @@ impl McpServer {
             if asked { " allowed_by=person" } else { "" }
         );
         result
-    }
-
-    /// Hides what the person filled in through `request_input` from a result: axod keeps the
-    /// salted hashes of those values; this process never sees the values themselves.
-    async fn redact(&self, result: &mut Value) {
-        let Ok(known) = self.call(method::COMPUTER_REDACTIONS, json!({})).await else {
-            return;
-        };
-        let hashes: Vec<&str> = known["hashes"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(Value::as_str)
-            .collect();
-        if hashes.is_empty() {
-            return;
-        }
-        let salt = (0..known["salt"].as_str().unwrap_or("").len() / 2)
-            .filter_map(|index| {
-                u8::from_str_radix(known["salt"].as_str()?.get(index * 2..index * 2 + 2)?, 16).ok()
-            })
-            .collect::<Vec<u8>>();
-        axo_computer::redact(result, &|candidate| {
-            use sha2::Digest;
-            let digest = sha2::Sha256::new()
-                .chain_update(&salt)
-                .chain_update(candidate.as_bytes())
-                .finalize();
-            let hex: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
-            hashes.contains(&hex.as_str())
-        });
     }
 
     /// Asks the person on their own devices and waits; `Ok` only if they allowed it. The answer

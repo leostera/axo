@@ -758,10 +758,6 @@ pub const EXCLUDED: &[(&str, &str)] = &[
     ),
     (method::ASSETS_FETCH, "Restricted to axod's own binary"),
     (method::COMPUTER_INPUT, "Restricted protected-input channel"),
-    (
-        method::COMPUTER_REDACTIONS,
-        "Restricted redaction internals",
-    ),
 ];
 
 fn typed<T: for<'de> Deserialize<'de> + Serialize>(

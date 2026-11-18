@@ -125,8 +125,6 @@ pub mod method {
     pub const ASSETS_FETCH: &str = "axo.assets.fetch";
     /// `request_input` from axod's own `axod mcp`: axod asks for the values and fills them in.
     pub const COMPUTER_INPUT: &str = "axo.computer.input";
-    /// Salted hashes of values the person filled in, which `axod mcp` hides from its reads.
-    pub const COMPUTER_REDACTIONS: &str = "axo.computer.redactions";
     /// What a Session's agent can do through Axo, for pi-axo to put in its system prompt.
     pub const SESSION_BRIEF: &str = "axo.session.brief";
 
@@ -180,7 +178,6 @@ pub mod method {
         ELICITATION_LIST,
         ASSETS_FETCH,
         COMPUTER_INPUT,
-        COMPUTER_REDACTIONS,
         SESSION_BRIEF,
     ];
 }

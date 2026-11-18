@@ -1,21 +1,23 @@
-//! The risk gate in front of computer use (RFD0029, Tools ask; agents cannot approve): an action
-//! that may be destructive or hard to undo (deleting, sending, paying, publishing...) runs only
-//! if a local check finds it harmless or the person allows it. The gate asks the person itself;
-//! the agent cannot approve. `confirm: true` from the agent only asks for more: the person is
-//! asked without the check.
+//! The risk gate in front of computer use (RFD0029, Tools ask; agents cannot approve; RFD0070):
+//! an action that may be destructive or hard to undo (deleting, sending, paying, publishing...)
+//! runs only if a local check finds it harmless or the person allows it. The gate asks the person
+//! itself; the agent cannot approve. `confirm: true` from the agent only asks for more: the person
+//! is asked without the check.
 //!
-//! The check is two-stage, so most actions cost nothing:
+//! Each action a call performs is described from the gate's own reading, then checked:
 //! 1. A word filter over what the action does: the target element's role and label (remembered
-//!    from the agent's last `get_window_state` of that window), the text it types, the keys it
-//!    presses, the script it runs. Nothing flagged, nothing checked.
+//!    from this process's reads of that window), the text it types, the keys it presses (named as
+//!    Cua names them), the URLs an app is opened with. Nothing flagged, nothing checked.
 //! 2. A flagged action goes to Clef on this Mac ([`axod_infer`]), text only (about a second).
 //!    If Clef is not installed or fails, the flag alone decides: the person is asked.
+//! 3. An action the gate cannot describe, such as a click on an element token it never read, is
+//!    put to the person without Clef: nothing can judge an unknown target.
 //!
-//! A flagged action reaches the app only after the person allows it. Clicks at bare coordinates
-//! name no element, so only their window is known; they pass the filter unless their text says
-//! otherwise.
+//! Inside `run_script` every action is checked the same way, one by one (`crate::scripts`); a
+//! top-level `run_script` is not judged by its source. Clicks at bare coordinates name no element,
+//! so only their window is known; they pass the filter unless their text says otherwise.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::future::Future;
 use std::path::Path;
 use std::pin::Pin;
@@ -30,7 +32,8 @@ const RISK_QUESTION: &str = "Would doing `action` in `window` do something destr
 /// Clef's probability at or above which the person is asked about a flagged action.
 const RISKY_AT: f64 = 0.5;
 
-/// Words that make an action worth a check. Matched as whole words, case-insensitively.
+/// Words that make an action worth a check. Matched as whole words, case-insensitively, after
+/// key names are canonicalised ([`canonical_key`]).
 const RISK_WORDS: &[&str] = &[
     "delete",
     "deleted",
@@ -80,10 +83,14 @@ const RISK_WORDS: &[&str] = &[
     "force",
     "permanently",
     "rm",
+    // Keys that delete what is selected: Backspace deletes a mail, cmd+Backspace trashes a file.
+    "backspace",
+    "del",
+    "forwarddelete",
 ];
 
-/// Keys that commit what was typed, such as sending a message.
-const COMMIT_KEYS: &[&str] = &["return", "enter", "kp_enter", "keypad_enter"];
+/// Keys that commit what was typed, such as sending a message, as [`canonical_key`] names them.
+const COMMIT_KEYS: &[&str] = &["return", "enter"];
 
 /// Tools that only look.
 const READ_ONLY: &[&str] = &[
@@ -98,12 +105,17 @@ const READ_ONLY: &[&str] = &[
     "get_guide",
 ];
 
+/// Element labels remembered at most; the oldest go first.
+const MAX_LABELS: usize = 20_000;
+
 /// The verdict on one `computer` call.
 #[derive(Debug, PartialEq)]
 pub enum Verdict {
     Allow,
     /// Run only if the person allows it; the question, from the gate's own reading of the call.
     Ask(String),
+    /// Never run, whatever anyone answers; why.
+    Refuse(String),
 }
 
 /// This process's gate, with Clef beside axod when installed. It runs in axod for every caller,
@@ -164,10 +176,50 @@ impl Judge for Infer {
     }
 }
 
+/// One thing a call does, as the gate read it.
+#[derive(Debug)]
+struct Action {
+    /// What it does, such as `click AXButton "Send"`.
+    what: String,
+    /// Where, such as `Mail — Inbox`.
+    place: String,
+    check: Check,
+}
+
+/// How an action is checked.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Check {
+    /// Nothing about it is risky.
+    Pass,
+    /// Its words may be risky: Clef decides, or the person if Clef can't.
+    Judge,
+    /// The gate cannot tell what it does: the person decides, and this is why.
+    Person(&'static str),
+}
+
+/// Element token -> `role "label"`, the oldest forgotten first.
+#[derive(Default)]
+struct Labels {
+    by_token: HashMap<String, String>,
+    order: VecDeque<String>,
+}
+
+impl Labels {
+    fn insert(&mut self, token: String, label: String) {
+        if self.by_token.insert(token.clone(), label).is_none() {
+            self.order.push_back(token);
+        }
+        while self.order.len() > MAX_LABELS {
+            if let Some(oldest) = self.order.pop_front() {
+                self.by_token.remove(&oldest);
+            }
+        }
+    }
+}
+
 pub struct Gate {
     judge: Option<Box<dyn Judge>>,
-    /// Element token -> `role "label"`, from the latest reads.
-    elements: Mutex<HashMap<String, String>>,
+    elements: Mutex<Labels>,
     /// `pid:window_id` -> `App — window title`.
     windows: Mutex<HashMap<String, String>>,
 }
@@ -176,17 +228,17 @@ impl Gate {
     pub fn new(judge: Option<Box<dyn Judge>>) -> Self {
         Self {
             judge,
-            elements: Mutex::new(HashMap::new()),
+            elements: Mutex::new(Labels::default()),
             windows: Mutex::new(HashMap::new()),
         }
     }
 
-    /// Learns the elements and window a `get_window_state` result shows.
-    pub fn remember(&self, tool: &str, result: &Value) {
+    /// Learns the elements and window a read shows, from its `structuredContent`. Reads carry
+    /// their elements because `crate::call` asks Cua for them.
+    pub fn remember(&self, tool: &str, structured: &Value) {
         if tool != "get_window_state" {
             return;
         }
-        let structured = &result["structuredContent"];
         if let (Some(pid), Some(window)) =
             (structured["pid"].as_u64(), structured["window_id"].as_u64())
         {
@@ -199,14 +251,10 @@ impl Gate {
             );
             lock(&self.windows).insert(format!("{pid}:{window}"), name);
         }
-        let mut elements = lock(&self.elements);
-        // Tokens die when a newer read supersedes them; keep memory bounded.
-        if elements.len() > 20_000 {
-            elements.clear();
-        }
+        let mut labels = lock(&self.elements);
         for element in structured["elements"].as_array().into_iter().flatten() {
             if let Some(token) = element["element_token"].as_str() {
-                elements.insert(token.to_string(), describe_element(element));
+                labels.insert(token.to_string(), describe_element(element));
             }
         }
     }
@@ -214,6 +262,10 @@ impl Gate {
     /// Decides one call. `asked_for` is the agent's `confirm: true`: it can only make the gate
     /// ask, never let a call through.
     pub async fn check(&self, tool: &str, args: &Value, asked_for: bool) -> Verdict {
+        if let Some(refusal) = refusal(tool, args) {
+            log::info!("event=computer.gate_refused tool={tool}");
+            return Verdict::Refuse(refusal.into());
+        }
         let actions = self.describe(tool, args);
         if asked_for {
             log::info!("event=computer.gate_asked reason=agent");
@@ -222,46 +274,52 @@ impl Gate {
                 "The agent asked to check with you first.",
             ));
         }
-        if READ_ONLY.contains(&tool) {
+        // A script is not judged by its source: each of its actions is (`crate::scripts`).
+        if READ_ONLY.contains(&tool) || tool == "run_script" {
             return Verdict::Allow;
         }
-        let flagged: Vec<&(String, String)> =
-            actions.iter().filter(|(action, _)| flags(action)).collect();
-        for (action, window) in flagged {
-            let judged = match &self.judge {
-                Some(judge) => judge.risky(action, window).await,
-                None => Err(InferError::Unavailable("no local model".into())),
-            };
-            match judged {
-                Ok(p) if p < RISKY_AT => {
-                    log::info!("event=computer.gate_passed p={p:.3}");
+        for action in &actions {
+            match action.check {
+                Check::Pass => {}
+                Check::Person(why) => {
+                    log::info!("event=computer.gate_asked reason=unreadable");
+                    return Verdict::Ask(question(&actions, &format!("Stopped because {why}.")));
                 }
-                Ok(p) => {
-                    log::info!("event=computer.gate_asked reason=clef p={p:.3}");
-                    return Verdict::Ask(question(
-                        &actions,
-                        &format!(
-                            "Stopped because \"{action}\" may be destructive or hard to undo: Clef, on this Mac, rates it {:.0}% likely.",
-                            p * 100.0
-                        ),
-                    ));
-                }
-                Err(error) => {
-                    log::info!("event=computer.gate_asked reason=unjudged error={error}");
-                    return Verdict::Ask(question(
-                        &actions,
-                        &format!(
-                            "Stopped because the words in \"{action}\" suggest it may be destructive or hard to undo, and it could not be checked on this Mac."
-                        ),
-                    ));
+                Check::Judge => {
+                    let judged = match &self.judge {
+                        Some(judge) => judge.risky(&action.what, &action.place).await,
+                        None => Err(InferError::Unavailable("no local model".into())),
+                    };
+                    match judged {
+                        Ok(p) if p < RISKY_AT => {
+                            log::info!("event=computer.gate_passed p={p:.3}");
+                        }
+                        Ok(p) => {
+                            log::info!("event=computer.gate_asked reason=clef p={p:.3}");
+                            return Verdict::Ask(question(
+                                &actions,
+                                &format!(
+                                    "Stopped because Clef, on this Mac, rates it {:.0}% likely to be destructive or hard to undo.",
+                                    p * 100.0
+                                ),
+                            ));
+                        }
+                        Err(error) => {
+                            log::info!("event=computer.gate_asked reason=unjudged error={error}");
+                            return Verdict::Ask(question(
+                                &actions,
+                                "Stopped because its words suggest it may be destructive or hard to undo, and it could not be checked on this Mac.",
+                            ));
+                        }
+                    }
                 }
             }
         }
         Verdict::Allow
     }
 
-    /// Each action a call performs, as (what it does, where).
-    fn describe(&self, tool: &str, args: &Value) -> Vec<(String, String)> {
+    /// Each action a call performs.
+    fn describe(&self, tool: &str, args: &Value) -> Vec<Action> {
         match tool {
             "run_steps" => args["steps"]
                 .as_array()
@@ -279,25 +337,29 @@ impl Gate {
                     self.describe(&step_tool, &merged)
                 })
                 .collect(),
-            "run_script" => vec![(
-                format!(
+            "run_script" => vec![Action {
+                what: format!(
                     "run a script: {}",
                     args["script"].as_str().unwrap_or_default()
                 ),
-                "this Mac".into(),
-            )],
-            _ => vec![(self.describe_one(tool, args), self.window(args))],
+                place: "this Mac".into(),
+                check: Check::Pass,
+            }],
+            "launch_app" => vec![describe_launch(args)],
+            _ => vec![self.describe_one(tool, args)],
         }
     }
 
-    fn describe_one(&self, tool: &str, args: &Value) -> String {
+    fn describe_one(&self, tool: &str, args: &Value) -> Action {
+        let mut unreadable = None;
         let target = args["element_token"]
             .as_str()
-            .map(|token| {
-                lock(&self.elements)
-                    .get(token)
-                    .cloned()
-                    .unwrap_or_else(|| format!("element {token}"))
+            .map(|token| match lock(&self.elements).by_token.get(token) {
+                Some(label) => label.clone(),
+                None => {
+                    unreadable = Some("Axo has not read the element it acts on");
+                    format!("element {token} (not read by Axo)")
+                }
             })
             .or_else(|| {
                 let role = args["role"].as_str();
@@ -315,26 +377,34 @@ impl Gate {
                     .as_f64()
                     .map(|x| format!("the point ({x}, {})", args["y"].as_f64().unwrap_or(0.0)))
             });
-        let mut action = tool.replace('_', " ");
+        let mut what = tool.replace('_', " ");
         if let Some(target) = target {
-            action = format!("{action} {target}");
+            what = format!("{what} {target}");
         }
-        for (key, label) in [
-            ("text", "typing"),
-            ("value", "setting the value to"),
-            ("key", "key"),
-        ] {
+        for (key, label) in [("text", "typing"), ("value", "setting the value to")] {
             if let Some(text) = args[key].as_str() {
-                action = format!("{action}, {label} {text:?}");
+                what = format!("{what}, {label} {text:?}");
             }
         }
-        if let Some(keys) = args["keys"].as_array() {
-            action = format!("{action}, keys {}", Value::Array(keys.clone()));
+        if let Some(key) = args["key"].as_str() {
+            what = format!("{what}, key {}", canonical_key(key));
         }
-        if let Some(modifiers) = args["modifiers"].as_array() {
-            action = format!("{action} with {}", Value::Array(modifiers.clone()));
+        if let Some(keys) = key_list(&args["keys"]) {
+            what = format!("{what}, keys {keys}");
         }
-        action
+        if let Some(modifiers) = key_list(&args["modifiers"]) {
+            what = format!("{what} with {modifiers}");
+        }
+        let check = match unreadable {
+            Some(why) => Check::Person(why),
+            None if flags(&what) => Check::Judge,
+            None => Check::Pass,
+        };
+        Action {
+            place: self.window(args),
+            what,
+            check,
+        }
     }
 
     fn window(&self, args: &Value) -> String {
@@ -346,6 +416,78 @@ impl Gate {
             .or_else(|| args["app"].as_str().map(str::to_string))
             .unwrap_or_else(|| "an app on this Mac".into())
     }
+}
+
+/// Calls no answer makes safe, and why. Cua already refuses remote debugging; a WebKit inspector
+/// port would hand a logged-in app's pages to whoever connects.
+fn refusal(tool: &str, args: &Value) -> Option<&'static str> {
+    (tool == "launch_app" && !args["webkit_inspector_port"].is_null()).then_some(
+        "Not done: computer use does not open an app's web inspector (webkit_inspector_port).",
+    )
+}
+
+/// `launch_app`: the app, and everything it is opened with. A URL may run an action (a
+/// Shortcuts link, a deep link), and arguments change what the app does, so either is judged.
+fn describe_launch(args: &Value) -> Action {
+    let app = args["bundle_id"]
+        .as_str()
+        .or_else(|| args["name"].as_str())
+        .unwrap_or("an app");
+    let mut what = format!("launch app {app}");
+    let mut judged = false;
+    for url in args["urls"].as_array().into_iter().flatten() {
+        let url = url.as_str().unwrap_or_default();
+        what = format!("{what}, opening {url:?}");
+        judged |= !is_file_path(url);
+    }
+    if let Some(arguments) = args["additional_arguments"].as_array().filter(|list| !list.is_empty()) {
+        what = format!("{what}, with arguments {}", Value::Array(arguments.clone()));
+        judged = true;
+    }
+    let check = if judged || flags(&what) {
+        Check::Judge
+    } else {
+        Check::Pass
+    };
+    Action {
+        what,
+        place: "this Mac".into(),
+        check,
+    }
+}
+
+fn is_file_path(url: &str) -> bool {
+    url.starts_with('/') || url.starts_with("~/") || url == "~" || url.starts_with("file://")
+}
+
+/// A key's name as Cua resolves it (`platform-macos` `canonical_key_name`): lowercase, without
+/// spaces, `_` or `-`, with the keypad's Enter folded onto `enter`. So `Re-turn`, `e_n_t_e_r`
+/// and `numpad enter` read as the Return they press.
+fn canonical_key(key: &str) -> String {
+    let lower = key.trim().to_lowercase();
+    if lower.chars().count() < 2 {
+        return lower;
+    }
+    let compact: String = lower
+        .chars()
+        .filter(|c| !matches!(c, ' ' | '_' | '-'))
+        .collect();
+    match compact.as_str() {
+        "kpenter" | "numpadenter" => "enter".into(),
+        "forwarddelete" | "fwddelete" | "deleteforward" => "forwarddelete".into(),
+        "bksp" => "backspace".into(),
+        _ => compact,
+    }
+}
+
+/// A list of key names, canonicalised: `[cmd, backspace]`.
+fn key_list(keys: &Value) -> Option<String> {
+    let keys = keys.as_array()?;
+    let names: Vec<String> = keys
+        .iter()
+        .map(|key| key.as_str().map_or_else(|| key.to_string(), canonical_key))
+        .collect();
+    Some(format!("[{}]", names.join(", ")))
 }
 
 /// `{tool, args}` or `{<tool>: args}`.
@@ -382,15 +524,33 @@ fn flags(action: &str) -> bool {
         || lower.contains("\\r")
 }
 
-/// What the person is asked: every action the call performs, where, and why the gate stopped,
-/// all from the gate's reading of the call, never the agent's words. Fits an elicitation.
-fn question(actions: &[(String, String)], why: &str) -> String {
-    let mut text = String::from("Computer use wants to:");
-    for (action, window) in actions {
-        text.push_str(&format!("\n• {action} — in {window}"));
-    }
-    text.push_str(&format!("\n{why}"));
+/// What the person is asked, all from the gate's reading of the call, never the agent's words:
+/// why it stopped, then every action that made it stop, then the others while they fit. Fits an
+/// elicitation; only the tail is ever cut, so the reason and the first flagged action always
+/// show.
+fn question(actions: &[Action], why: &str) -> String {
     let limit = axo_protocol::elicitation::MAX_MESSAGE_CHARS;
+    let line = |action: &Action| format!("\n• {} — in {}", action.what, action.place);
+    let mut text = format!("Computer use wants to: {why}");
+    let (flagged, others): (Vec<&Action>, Vec<&Action>) =
+        actions.iter().partition(|action| action.check != Check::Pass);
+    for action in &flagged {
+        text.push_str(&line(action));
+    }
+    // Room kept for the line that counts what did not fit.
+    const SUMMARY_ROOM: usize = 40;
+    let mut shown = 0;
+    for action in &others {
+        let next = line(action);
+        if text.chars().count() + next.chars().count() + SUMMARY_ROOM > limit {
+            break;
+        }
+        text.push_str(&next);
+        shown += 1;
+    }
+    if shown < others.len() {
+        text.push_str(&format!("\nAlso: {} more actions.", others.len() - shown));
+    }
     if text.chars().count() > limit {
         text = text.chars().take(limit - 1).collect::<String>() + "…";
     }
@@ -418,20 +578,29 @@ mod tests {
         }
     }
 
+    /// A read of Mail's Inbox as `crate::call` hands it to the gate: with its elements.
+    fn inbox() -> Value {
+        json!({
+            "pid": 7, "window_id": 9, "app_name": "Mail", "window_title": "Inbox",
+            "elements": [
+                { "role": "AXButton", "label": "Delete account", "element_token": "s1:4" },
+                { "role": "AXButton", "label": "Cancel", "element_token": "s1:5" },
+            ],
+        })
+    }
+
     fn gate(p: f64) -> (Gate, Arc<AtomicUsize>) {
         let calls = Arc::new(AtomicUsize::new(0));
         let gate = Gate::new(Some(Box::new(Fixed(p, calls.clone()))));
-        gate.remember(
-            "get_window_state",
-            &json!({ "structuredContent": {
-                "pid": 7, "window_id": 9, "app_name": "Mail", "window_title": "Inbox",
-                "elements": [
-                    { "role": "AXButton", "label": "Delete account", "element_token": "s1:4" },
-                    { "role": "AXButton", "label": "Cancel", "element_token": "s1:5" },
-                ],
-            } }),
-        );
+        gate.remember("get_window_state", &inbox());
         (gate, calls)
+    }
+
+    fn asked(verdict: Verdict) -> String {
+        match verdict {
+            Verdict::Ask(question) => question,
+            other => panic!("the person must be asked, not {other:?}"),
+        }
     }
 
     #[test]
@@ -454,9 +623,7 @@ mod tests {
     fn a_flagged_action_runs_only_if_clef_finds_it_harmless_or_the_person_is_asked() {
         let click = json!({ "pid": 7, "window_id": 9, "element_token": "s1:4" });
         let (risky, _) = gate(0.97);
-        let Verdict::Ask(question) = block(risky.check("click", &click, false)) else {
-            panic!("the person must be asked about a risky click");
-        };
+        let question = asked(block(risky.check("click", &click, false)));
         assert!(
             question.contains("click AXButton \"Delete account\" — in Mail — Inbox"),
             "{question}"
@@ -471,14 +638,42 @@ mod tests {
     }
 
     #[test]
+    fn an_element_the_gate_never_read_is_put_to_the_person() {
+        // Before RFD0070 an unread token was described as "click element s2:4", which holds no
+        // risk word, so it ran: Cua's default read carries no elements to learn from.
+        let (gate, calls) = gate(0.01);
+        let click = json!({ "pid": 7, "window_id": 9, "element_token": "s2:4" });
+        let question = asked(block(gate.check("click", &click, false)));
+        assert!(question.contains("not read by Axo"), "{question}");
+        assert_eq!(calls.load(Ordering::SeqCst), 0, "Clef cannot judge an unknown target");
+    }
+
+    #[test]
+    fn many_reads_forget_the_oldest_labels_not_all_of_them() {
+        let (gate, _) = gate(0.99);
+        let many: Vec<Value> = (0..MAX_LABELS)
+            .map(|i| json!({ "element_token": format!("s2:{i}"), "role": "AXCell" }))
+            .collect();
+        gate.remember("get_window_state", &json!({ "elements": many }));
+        gate.remember("get_window_state", &inbox());
+        let question = asked(block(gate.check(
+            "click",
+            &json!({ "pid": 7, "window_id": 9, "element_token": "s1:4" }),
+            false,
+        )));
+        assert!(question.contains("Delete account"), "{question}");
+        let labels = lock(&gate.elements);
+        assert_eq!(labels.by_token.len(), MAX_LABELS);
+        assert!(!labels.by_token.contains_key("s2:0"), "the oldest went first");
+    }
+
+    #[test]
     fn confirm_only_asks_and_never_lets_a_call_through() {
         let (gate, calls) = gate(0.01);
         let delete = json!({ "pid": 7, "window_id": 9, "element_token": "s1:4" });
         let cancel = json!({ "pid": 7, "window_id": 9, "element_token": "s1:5" });
         for args in [&delete, &cancel] {
-            let Verdict::Ask(question) = block(gate.check("click", args, true)) else {
-                panic!("confirm: true must ask the person");
-            };
+            let question = asked(block(gate.check("click", args, true)));
             assert!(question.contains("The agent asked"), "{question}");
         }
         assert_eq!(
@@ -492,42 +687,97 @@ mod tests {
     fn without_a_local_model_the_flag_alone_asks() {
         let gate = Gate::new(None);
         let send = json!({ "role": "AXButton", "name": "Send" });
-        assert!(matches!(
-            block(gate.check("click", &send, false)),
-            Verdict::Ask(_)
-        ));
+        asked(block(gate.check("click", &send, false)));
+    }
+
+    #[test]
+    fn every_key_spelling_cua_presses_as_return_or_delete_is_checked() {
+        let gate = Gate::new(None);
+        for key in ["return", "RETURN", "re-turn", "Re Turn", "e_n_t_e_r", "numpad_enter", "kp-enter", "backspace", "del", "Forward_Delete"] {
+            let call = json!({ "pid": 7, "window_id": 9, "key": key });
+            asked(block(gate.check("press_key", &call, false)));
+        }
+        for keys in [json!(["cmd", "backspace"]), json!(["cmd", "re-turn"]), json!(["del"])] {
+            let call = json!({ "pid": 7, "window_id": 9, "keys": keys });
+            asked(block(gate.check("hotkey", &call, false)));
+        }
+        let tab = json!({ "pid": 7, "window_id": 9, "key": "tab" });
+        assert_eq!(block(gate.check("press_key", &tab, false)), Verdict::Allow);
+    }
+
+    #[test]
+    fn the_question_leads_with_why_and_the_flagged_action() {
+        // Thirty harmless steps before a Send used to push the Send and the reason past the
+        // elicitation's limit, so the person approved what they never saw.
+        let gate = Gate::new(None);
+        let mut steps: Vec<Value> = (0..30)
+            .map(|i| json!({ "tool": "scroll", "args": { "x": i, "y": 0, "direction": "down" } }))
+            .collect();
+        steps.push(json!({ "tool": "click", "args": { "role": "AXButton", "name": "Send" } }));
+        let question = asked(block(gate.check(
+            "run_steps",
+            &json!({ "pid": 7, "window_id": 9, "steps": steps }),
+            false,
+        )));
+        let mut lines = question.lines();
+        assert!(lines.next().unwrap().contains("Stopped because"), "{question}");
+        assert!(lines.next().unwrap().contains("click AXButton \"Send\""), "{question}");
+        assert!(question.contains("more actions."), "{question}");
+        assert!(question.chars().count() <= axo_protocol::elicitation::MAX_MESSAGE_CHARS);
     }
 
     #[test]
     fn the_question_fits_an_elicitation() {
-        let long = vec![(
-            "type text, typing ".to_string() + &"x".repeat(5_000),
-            "Notes".to_string(),
-        )];
-        let text = question(&long, "why");
+        let gate = Gate::new(None);
+        let long = json!({ "text": "x".repeat(5_000) + "\n" });
+        let question = asked(block(gate.check("type_text", &long, false)));
         assert_eq!(
-            text.chars().count(),
+            question.chars().count(),
             axo_protocol::elicitation::MAX_MESSAGE_CHARS
         );
+        assert!(question.starts_with("Computer use wants to: Stopped because"));
     }
 
     #[test]
-    fn every_step_of_run_steps_and_every_script_is_looked_at() {
+    fn every_step_of_run_steps_is_looked_at_and_scripts_are_judged_inside() {
         let (gate, calls) = gate(0.9);
         let steps = json!({ "pid": 7, "window_id": 9, "steps": [
             { "tool": "click", "args": { "element_token": "s1:5" } },
             { "press_key": { "key": "return" } },
         ] });
-        assert!(matches!(
-            block(gate.check("run_steps", &steps, false)),
-            Verdict::Ask(_)
-        ));
+        asked(block(gate.check("run_steps", &steps, false)));
+        // Each action inside a script is checked as it runs (`crate::scripts`), not its source.
         let script = json!({ "script": "await click({ role: 'AXButton', name: 'Empty Trash' })" });
-        assert!(matches!(
-            block(gate.check("run_script", &script, false)),
-            Verdict::Ask(_)
-        ));
+        assert_eq!(block(gate.check("run_script", &script, false)), Verdict::Allow);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn what_an_app_is_opened_with_is_shown_and_judged() {
+        let (gate, calls) = gate(0.97);
+        let shortcut = json!({ "bundle_id": "com.apple.shortcuts",
+            "urls": ["shortcuts://run-shortcut?name=Tidy"] });
+        let question = asked(block(gate.check("launch_app", &shortcut, false)));
+        assert!(question.contains("shortcuts://run-shortcut?name=Tidy"), "{question}");
+        let arguments = json!({ "bundle_id": "com.example.app", "additional_arguments": ["--reset-all"] });
+        assert!(asked(block(gate.check("launch_app", &arguments, false))).contains("--reset-all"));
         assert_eq!(calls.load(Ordering::SeqCst), 2);
+        let folder = json!({ "bundle_id": "com.apple.finder", "urls": ["/Users/me/Documents"] });
+        assert_eq!(block(gate.check("launch_app", &folder, false)), Verdict::Allow);
+        let confirmed = asked(block(gate.check("launch_app", &shortcut, true)));
+        assert!(confirmed.contains("launch app com.apple.shortcuts, opening"), "{confirmed}");
+    }
+
+    #[test]
+    fn an_apps_web_inspector_is_never_opened() {
+        let (gate, _) = gate(0.01);
+        let inspector = json!({ "bundle_id": "com.apple.mail", "webkit_inspector_port": 9222 });
+        for confirm in [false, true] {
+            assert!(matches!(
+                block(gate.check("launch_app", &inspector, confirm)),
+                Verdict::Refuse(_)
+            ));
+        }
     }
 
     #[test]

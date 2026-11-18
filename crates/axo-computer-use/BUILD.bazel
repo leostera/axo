@@ -19,7 +19,6 @@ rust_library(
         "@crates//:log",
         "@crates//:serde",
         "@crates//:serde_json",
-        "@crates//:sha2",
         "@crates//:tokio",
     ] + select({
         "@platforms//os:linux": ["//crates/axo-sudo:axo_sudo"],

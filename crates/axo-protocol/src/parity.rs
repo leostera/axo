@@ -246,10 +246,6 @@ pub const PARITY: &[Parity] = &[
         Remote::LocalOnly("another Mac's script asks through axo.apps.computer"),
     ),
     row(
-        method::COMPUTER_REDACTIONS,
-        Remote::LocalOnly("axod hides filled values from remote reads itself"),
-    ),
-    row(
         method::SESSION_BRIEF,
         Remote::LocalOnly("the system prompt of an agent running on this Mac"),
     ),

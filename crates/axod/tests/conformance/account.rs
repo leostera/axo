@@ -186,6 +186,4 @@ fn only_axods_own_tools_fetch_assets_or_ask_for_input() {
         json!({ "sessionId": session, "args": {} }),
     );
     assert!(input.code < 0 && input.code != INVALID_PARAMS, "{input:?}");
-    let redactions = axod.err("axo.computer.redactions", json!({}));
-    assert_eq!(redactions.code, input.code, "{redactions:?}");
 }

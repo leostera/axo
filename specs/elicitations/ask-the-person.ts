@@ -47,7 +47,7 @@ const peerCheck = defineRule("peerCheck", { description: "axod takes a local ans
 const sealedValues = defineRule("sealedValues", { description: "The phone seals input values to the Mac's request key; the cloud relays only ciphertext." });
 const receiptOnly = defineRule("receiptOnly", { description: "The agent gets a receipt for an input, never its values." });
 const boundTarget = defineRule("boundTarget", { description: "axod fills the element the request named; if the page changed, that element is gone and nothing is filled." });
-const hideBeforeFill = defineRule("hideBeforeFill", { description: "axod remembers a salted hash of each value before it fills it, and every read is redacted after it is taken, with the hashes axod has then (axo.computer.redactions)." });
+const hideBeforeFill = defineRule("hideBeforeFill", { description: "axod remembers each value before it fills it, and every read, a script's included, is redacted after it is taken, with the values axod has then (RFD0070)." });
 const redaction = defineRule("redaction", { description: "Computer results show values the person filled as \"•••• (filled by you)\"." });
 
 /** `claimed`: an answer has been taken and is being carried out (a fill); later answers lose. */

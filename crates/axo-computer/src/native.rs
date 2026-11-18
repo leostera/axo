@@ -21,7 +21,14 @@ fn registry() -> ToolRegistry {
         .collect();
     // Filtering tools/list alone leaves forbidden tools reachable through scripts and batches.
     registry.retain_tools(&allowed);
-    registry.set_invocation_guard(Arc::new(|tool| {
+    registry.set_invocation_guard(invocation_guard());
+    registry
+}
+
+/// The lock and preflight checks every dispatch goes through, nested ones included. The script
+/// registry (`crate::scripts`) installs it too, so a script meets them before its own run.
+pub(super) fn invocation_guard() -> cua_driver_core::tool::InvocationGuard {
+    Arc::new(|tool| {
         let tool = super::our_name(tool).to_owned();
         Box::pin(async move {
             if super::WORKS_LOCKED.contains(&tool.as_str()) {
@@ -32,8 +39,7 @@ fn registry() -> ToolRegistry {
             }
             platform::preflight().await
         })
-    }));
-    registry
+    })
 }
 
 fn runtime() -> &'static Runtime {
@@ -69,9 +75,39 @@ pub fn permissions() -> (bool, bool) {
     platform::permissions()
 }
 
-pub fn call(tool: &str, args: Value) -> Value {
-    let result = block_on(runtime().registry.invoke(tool, args));
+pub fn call(gate: &'static crate::gate::Gate, tool: &str, mut args: Value) -> Value {
+    let runtime = runtime();
+    let read = super::ask_for_elements(tool, &mut args);
+    // A script's actions run through the gated registry, never the driver's own script tool.
+    let registry = if tool == "run_script" {
+        static SCRIPTS: OnceLock<Arc<ToolRegistry>> = OnceLock::new();
+        SCRIPTS.get_or_init(|| {
+            let _entered = runtime.tokio.enter();
+            crate::scripts::registry(Arc::clone(&runtime.registry), gate)
+        })
+    } else {
+        &runtime.registry
+    };
+    let mut result = runtime.tokio.block_on(registry.invoke(tool, args));
+    settle(gate, tool, read, &mut result);
     serde_json::to_value(result).unwrap_or_else(|error| super::error(&error.to_string()))
+}
+
+/// [`super::settle_structured`], and filled values hidden from its text too.
+pub(crate) fn settle(
+    gate: &crate::gate::Gate,
+    tool: &str,
+    read: super::Read,
+    result: &mut cua_driver_core::protocol::ToolResult,
+) {
+    if let Some(structured) = result.structured_content.as_mut() {
+        super::settle_structured(gate, tool, read, structured);
+    }
+    for content in &mut result.content {
+        if let cua_driver_core::protocol::Content::Text { text, .. } = content {
+            crate::filled::hide_text(text);
+        }
+    }
 }
 
 #[cfg(all(test, target_os = "linux"))]

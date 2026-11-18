@@ -12,7 +12,7 @@
 //! 2. It asks in the calling Session, as Axo, with that reading and this Mac's input key. The
 //!    phone or the browser seals the values to the key; Axo.app on this Mac sends them locally.
 //! 3. On the answer it checks the page is unchanged (same address, same elements), fills, presses
-//!    the submit button if asked, and remembers a salted hash of each value, so every later read
+//!    the submit button if asked, and has `axo_computer::filled` remember each value, so every later read
 //!    of any window shows `•••• (filled by you)` instead.
 
 use std::future::Future;
@@ -28,13 +28,12 @@ use axo_protocol::elicitation::{
     Asker, ElicitationAction, InputField, InputFieldKind, InputRequest, MAX_INPUT_FIELDS,
     MAX_MESSAGE_CHARS, TIMEOUT_MS,
 };
-use axo_protocol::rpc::method::{COMPUTER_INPUT, COMPUTER_REDACTIONS};
+use axo_protocol::rpc::method::COMPUTER_INPUT;
 use axo_protocol::rpc::{MethodError, error_code};
 use axo_relay::computer::ComputerParams;
 use jsonrpc_core::IoHandler;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 
 #[cfg(target_os = "linux")]
 mod sudo_input;
@@ -44,87 +43,6 @@ use axo_questions::{Answer, Values};
 #[cfg(target_os = "linux")]
 pub use axo_sudo::Context as SudoContext;
 use jsonrpc_core::Error as RpcError;
-
-/// Values remembered for redaction at most; the oldest go first.
-const MAX_REDACTIONS: usize = 256;
-/// Shorter values are too common to hide wherever they appear.
-const SHORTEST_REDACTED: usize = 4;
-
-/// Salted hashes of the values the person filled in. Its lock is recovered after a panic: the
-/// list of hashes is never left half-written, and redaction must not stop.
-struct Redactions {
-    salt: [u8; 16],
-    hashes: Mutex<Vec<[u8; 32]>>,
-}
-
-impl Default for Redactions {
-    fn default() -> Self {
-        let mut salt = [0; 16];
-        let random = std::fs::File::open("/dev/urandom")
-            .and_then(|mut random| std::io::Read::read_exact(&mut random, &mut salt));
-        if let Err(error) = random {
-            // The values are still hidden; only their exported hashes are easier to guess.
-            log::error!("event=computer.redaction_salt_unavailable error={error}");
-        }
-        Self {
-            salt,
-            hashes: Mutex::new(Vec::new()),
-        }
-    }
-}
-
-impl Redactions {
-    fn remember(&self, value: &str) {
-        if value.chars().count() < SHORTEST_REDACTED {
-            return;
-        }
-        let hash = hash(&self.salt, value);
-        let mut hashes = self.lock();
-        if !hashes.contains(&hash) {
-            if hashes.len() >= MAX_REDACTIONS {
-                hashes.remove(0);
-            }
-            hashes.push(hash);
-        }
-    }
-
-    /// Hides every remembered value in a computer tool's result.
-    fn apply(&self, result: &mut Value) {
-        let hashes = self.lock();
-        if !hashes.is_empty() {
-            axo_computer::redact(result, &|candidate| {
-                hashes.contains(&hash(&self.salt, candidate))
-            });
-        }
-    }
-
-    fn export(&self) -> Value {
-        let hashes = self.lock().clone();
-        json!({
-            "salt": hex(&self.salt),
-            "hashes": hashes.iter().map(|hash| hex(hash)).collect::<Vec<_>>(),
-        })
-    }
-}
-
-impl Redactions {
-    fn lock(&self) -> std::sync::MutexGuard<'_, Vec<[u8; 32]>> {
-        self.hashes
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-    }
-}
-
-fn hash(salt: &[u8], value: &str) -> [u8; 32] {
-    let mut hasher = Sha256::new();
-    hasher.update(salt);
-    hasher.update(value.as_bytes());
-    hasher.finalize().into()
-}
-
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
-}
 
 /// `request_input`'s arguments, from the agent.
 #[derive(Deserialize)]
@@ -375,18 +293,12 @@ impl FillPlan {
     }
 }
 
-/// What computer use keeps: the values the person filled in, hidden from every later read.
+/// Computer use's own tools: input requests and other Macs' calls. What the person filled in is
+/// kept by `axo_computer::filled`, which every computer call in this process reads through.
 #[derive(Default)]
-pub struct ComputerUse {
-    redactions: Arc<Redactions>,
-}
+pub struct ComputerUse;
 
 impl ComputerUse {
-    /// Hides values the person filled in from a computer tool's result.
-    pub fn redact(&self, result: &mut Value) {
-        self.redactions.apply(result);
-    }
-
     /// `request_input`, for an agent's Session here or another Mac's script (`from` names its
     /// Mac). Answers like a computer tool: a receipt, or an error saying why nothing was filled.
     pub async fn request_input(
@@ -466,11 +378,9 @@ impl ComputerUse {
             (ElicitationAction::Decline, _) => return refused("Not done: the person declined."),
             _ => return refused("Not done: nobody answered in time."),
         };
-        let redactions = Arc::clone(&self.redactions);
         let fields = plan.picked.len();
         let submitted = plan.submit.is_some();
-        let receipt =
-            off_runtime(move || fill(&redactions, &*window.lock().unwrap(), &plan, &values)).await;
+        let receipt = off_runtime(move || fill(&*window.lock().unwrap(), &plan, &values)).await;
         log::info!(
             "event=input.filled fields={fields} submitted={submitted} outcome={}",
             if receipt["isError"] == json!(true) {
@@ -485,7 +395,7 @@ impl ComputerUse {
 
 /// Fills the person's values into the window if it is unchanged, presses the button asked for,
 /// and answers with a receipt that never shows them.
-fn fill(redactions: &Redactions, window: &dyn Window, plan: &FillPlan, values: &Values) -> Value {
+fn fill(window: &dyn Window, plan: &FillPlan, values: &Values) -> Value {
     let FillPlan {
         form,
         picked,
@@ -501,7 +411,7 @@ fn fill(redactions: &Redactions, window: &dyn Window, plan: &FillPlan, values: &
     }
     // Hidden before they are filled, so no read can catch one in between.
     for value in values.values() {
-        redactions.remember(value);
+        axo_computer::filled::remember(value);
     }
     for (position, field) in picked.iter().enumerate() {
         let Some(value) = values.get(&format!("f{position}")) else {
@@ -574,7 +484,7 @@ const AXOD_ONLY: Only = Only {
     message: "only axod's own tools ask for input",
 };
 
-/// `axo.computer.input` and `axo.computer.redactions`, for axod's own `axod mcp`.
+/// `axo.computer.input`, for axod's own `axod mcp`.
 pub struct ComputerExtension {
     computer: Arc<ComputerUse>,
     host: Arc<dyn ComputerHost>,
@@ -625,13 +535,6 @@ impl Extension for ComputerExtension {
             COMPUTER_INPUT,
             "expected {sessionId, args}",
             input,
-        );
-        let hiding = Arc::clone(&self.computer);
-        handler.add_typed_only(
-            AXOD_ONLY,
-            COMPUTER_REDACTIONS,
-            "expected no parameters",
-            move |_: Value| std::future::ready(Ok(hiding.redactions.export())),
         );
     }
 }
@@ -693,18 +596,17 @@ impl ComputerUse {
         let verdict = gate
             .check(&request.tool, &request.args, request.confirm)
             .await;
-        if let axo_computer::gate::Verdict::Ask(question) = verdict {
-            ask_for_computer(host, request, &question).await?;
+        match verdict {
+            axo_computer::gate::Verdict::Allow => {}
+            axo_computer::gate::Verdict::Ask(question) => {
+                ask_for_computer(host, request, &question).await?;
+            }
+            axo_computer::gate::Verdict::Refuse(why) => {
+                return Err(MethodError::new(NOT_ALLOWED, why));
+            }
         }
         let (tool, args) = (request.tool.clone(), request.args.clone());
-        let redactions = Arc::clone(&self.redactions);
-        let result = off_runtime(move || {
-            let mut result = axo_computer::call(&tool, args);
-            gate.remember(&tool, &result);
-            redactions.apply(&mut result);
-            result
-        })
-        .await;
+        let result = off_runtime(move || axo_computer::call(gate, &tool, args)).await;
         log::info!(
             "event=computer.remote_called tool={} outcome={}",
             request.tool,
@@ -783,40 +685,7 @@ async fn ask_for_computer(
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_panic_while_remembering_does_not_stop_redaction() {
-        let redactions = Arc::new(Redactions::default());
-        redactions.remember("hunter2-secret");
-        let poisoning = Arc::clone(&redactions);
-        let _ = std::thread::spawn(move || {
-            let _held = poisoning.hashes.lock().unwrap();
-            panic!("poisons the lock");
-        })
-        .join();
-        assert!(redactions.hashes.is_poisoned());
-        redactions.remember("another-secret");
-        let mut result = json!({ "text": "typed hunter2-secret and another-secret" });
-        redactions.apply(&mut result);
-        let text = result.to_string();
-        assert!(
-            !text.contains("hunter2-secret") && !text.contains("another-secret"),
-            "{text}"
-        );
-    }
     use zeroize::Zeroizing;
-
-    #[test]
-    fn remembered_values_are_hidden_in_every_read() {
-        let redactions = Redactions::default();
-        redactions.remember("me@example.com");
-        redactions.remember("abc");
-        let mut read = json!({ "content": [{ "type": "text", "text": "- [16] AXTextField \"Email\" = \"me@example.com\"\n- abc" }] });
-        redactions.apply(&mut read);
-        assert_eq!(
-            read["content"][0]["text"],
-            "- [16] AXTextField \"Email\" = \"\u{2022}\u{2022}\u{2022}\u{2022} (filled by you)\"\n- abc"
-        );
-    }
 
     #[test]
     fn lists_read_like_a_sentence() {
@@ -1081,7 +950,7 @@ mod tests {
     }
 
     #[test]
-    fn the_extension_registers_daemon_input_and_private_redactions() {
+    fn the_extension_offers_input_to_axod_alone() {
         let extension = ComputerExtension::new(
             Arc::default(),
             Arc::new(Host::answering(Ok(ElicitationAction::Accept))),
@@ -1091,12 +960,12 @@ mod tests {
         extension.register(&mut handler);
         let mut methods: Vec<_> = handler.iter().map(|(name, _)| name.clone()).collect();
         methods.sort();
-        assert_eq!(methods, [COMPUTER_INPUT, COMPUTER_REDACTIONS]);
+        assert_eq!(methods, [COMPUTER_INPUT]);
     }
 
     #[test]
     #[cfg(target_os = "linux")]
-    fn linux_intents_do_not_grant_answer_or_redaction_authority() {
+    fn linux_intents_do_not_grant_answer_authority() {
         let host = Arc::new(Host::answering(Ok(ElicitationAction::Accept)));
         let extension = ComputerExtension::new(Arc::default(), host.clone());
         let mut handler = IoHandler::new();
@@ -1121,22 +990,7 @@ mod tests {
         assert_eq!(invalid["result"]["isError"], true);
         let form = request(COMPUTER_INPUT, json!({"sessionId":SESSION,"args":{}}));
         assert_eq!(form["error"]["code"], error_code::REFUSED);
-        let private = request(COMPUTER_REDACTIONS, json!({}));
-        assert_eq!(
-            private["error"]["code"],
-            axo_protocol::rpc::error_code::REFUSED
-        );
         assert!(host.asked().is_empty());
-    }
-
-    #[test]
-    fn a_fresh_computer_hides_nothing_and_exports_its_salt() {
-        let computer = ComputerUse::default();
-        let mut read = json!({ "content": [{ "type": "text", "text": "hunter2" }] });
-        computer.redact(&mut read);
-        assert_eq!(read["content"][0]["text"], "hunter2");
-        let exported = computer.redactions.export();
-        assert_eq!(exported["hashes"], json!([]), "{exported}");
     }
 
     /// A window that reads as given, fails where told, and records what was done to it.
@@ -1288,16 +1142,9 @@ mod tests {
 
         // Every later read hides both values.
         let mut read = json!({ "text": "hunter22", "email": "leo@example.com" });
-        computer.redact(&mut read);
+        axo_computer::filled::hide(&mut read);
         assert!(!read.to_string().contains("hunter22"), "{read}");
         assert!(!read.to_string().contains("leo@example.com"), "{read}");
-        assert_eq!(
-            computer.redactions.export()["hashes"]
-                .as_array()
-                .unwrap()
-                .len(),
-            2
-        );
     }
 
     #[test]
@@ -1323,7 +1170,7 @@ mod tests {
         assert!(window.pressed.lock().unwrap().is_empty());
         // Too short to hide wherever it appears.
         let mut read = json!("123");
-        computer.redact(&mut read);
+        axo_computer::filled::hide(&mut read);
         assert_eq!(read, json!("123"));
     }
 
