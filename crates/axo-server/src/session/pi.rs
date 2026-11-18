@@ -924,8 +924,9 @@ impl Session {
                     log_context,
                 };
                 let mailbox = self.mailbox();
-                // The link owns the server: it stops when the link is let go.
-                let link_task = tokio::spawn(axo_agent::codex::run(
+                // The server's tools act as this Session (RFD0073) while the server runs.
+                let registered = self.core.agent_servers.register(server.id(), self.id);
+                let following = axo_agent::codex::run(
                     config,
                     requests,
                     Some(server),
@@ -934,7 +935,13 @@ impl Session {
                             mailbox.send(Message::Link { runtime_id, event }).is_ok()
                         })
                     },
-                ))
+                );
+                // The link owns the server: it stops when the link is let go, and only then
+                // is the registration.
+                let link_task = tokio::spawn(async move {
+                    let _registered = registered;
+                    following.await
+                })
                 .abort_handle();
                 Ok(Followed {
                     running,
@@ -974,8 +981,9 @@ impl Session {
                     log_context,
                 };
                 let mailbox = self.mailbox();
-                // The link owns the server: it stops when the link is let go.
-                let link_task = tokio::spawn(axo_agent::opencode::run(
+                // The server's tools act as this Session (RFD0073) while the server runs.
+                let registered = self.core.agent_servers.register(server.id(), self.id);
+                let following = axo_agent::opencode::run(
                     config,
                     requests,
                     Some(server),
@@ -984,7 +992,13 @@ impl Session {
                             mailbox.send(Message::Link { runtime_id, event }).is_ok()
                         })
                     },
-                ))
+                );
+                // The link owns the server: it stops when the link is let go, and only then
+                // is the registration.
+                let link_task = tokio::spawn(async move {
+                    let _registered = registered;
+                    following.await
+                })
                 .abort_handle();
                 Ok(Followed {
                     running,

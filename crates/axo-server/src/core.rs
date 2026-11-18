@@ -63,6 +63,8 @@ pub(crate) struct Core {
     pub(crate) workspace_states: WorkspaceStates,
     /// The other Macs and their Sessions' panes here (RFD0024).
     pub(crate) peers: Peers,
+    /// Codex's and OpenCode's servers, which their Sessions' tools run under (RFD0072, RFD0073).
+    pub(crate) agent_servers: Arc<crate::callers::AgentServers>,
     /// What agents here are asking the person (RFD0029).
     pub(crate) questions: Arc<Questions>,
     /// Computer use here (RFD0028).
@@ -134,6 +136,7 @@ impl Core {
             reopening: Mutex::default(),
             workspace_states: WorkspaceStates::default(),
             peers: Peers::default(),
+            agent_servers: Arc::default(),
             questions: Arc::default(),
             computer: Arc::default(),
             assets: Arc::default(),

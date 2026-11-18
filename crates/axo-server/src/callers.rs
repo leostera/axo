@@ -14,8 +14,12 @@
 //! Typing into a pane is acting in its Session, as the person at its keyboard: only the person
 //! (the signed Axo.app, or the account through the relay) or that Session's own processes may.
 //! A pane showing another Mac's Session belongs to that Session.
+//!
+//! Codex and OpenCode run their tools, `axod mcp` among them, under a server axod starts for the
+//! Session beside its pane (RFD0072); while it runs, that server counts as one of its panes.
 
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use axo_agent::process::ProcessIdentity;
@@ -86,10 +90,48 @@ fn still_the_process(pid: u32, connected_at: SystemTime) -> Option<ProcessIdenti
     (Duration::from_micros(process.started) <= connected_at).then_some(process)
 }
 
-/// Every running pane by pid: open local Sessions' and those showing other Macs' Sessions. A
-/// pid two Sessions claim (one's record is stale) is no one's.
+/// The agents' servers axod started for Sessions, by the pid of the process axod spawned.
+#[derive(Debug, Default)]
+pub(crate) struct AgentServers(Mutex<HashMap<u32, SessionId>>);
+
+impl AgentServers {
+    /// Counts `pid` as a pane of `session` until the registration is dropped, which must not
+    /// come after axod reaps it.
+    pub(crate) fn register(self: &Arc<Self>, pid: u32, session: SessionId) -> ServerRegistration {
+        self.lock().insert(pid, session);
+        ServerRegistration {
+            servers: Arc::clone(self),
+            pid,
+        }
+    }
+
+    fn processes(&self) -> Vec<(u32, SessionId)> {
+        self.lock().iter().map(|(pid, id)| (*pid, *id)).collect()
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<u32, SessionId>> {
+        self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
+/// A server counted as its Session's pane while this lives.
+#[derive(Debug)]
+pub(crate) struct ServerRegistration {
+    servers: Arc<AgentServers>,
+    pid: u32,
+}
+
+impl Drop for ServerRegistration {
+    fn drop(&mut self) {
+        self.servers.lock().remove(&self.pid);
+    }
+}
+
+/// Every running pane by pid: open local Sessions', the agents' servers beside them, and those
+/// showing other Macs' Sessions. A pid two Sessions claim (one's record is stale) is no one's.
 fn local_panes(core: &Core) -> HashMap<u32, Option<SessionId>> {
     let mut claims = core.peers.pane_processes();
+    claims.extend(core.agent_servers.processes());
     for (id, entry) in &core.catalog.view().sessions {
         if core.registry.contains(*id) {
             claims.extend(
@@ -206,6 +248,16 @@ mod tests {
         assert_eq!(pane_ancestor(tool, &panes, not_axod), None);
         pane.kill().unwrap();
         pane.wait().unwrap();
+    }
+
+    #[test]
+    fn a_server_counts_as_its_sessions_pane_only_while_registered() {
+        let servers = Arc::new(AgentServers::default());
+        let session = SessionId::from_u128(1);
+        let registration = servers.register(41, session);
+        assert_eq!(servers.processes(), vec![(41, session)]);
+        drop(registration);
+        assert!(servers.processes().is_empty());
     }
 
     #[test]
