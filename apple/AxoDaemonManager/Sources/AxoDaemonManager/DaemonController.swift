@@ -52,21 +52,24 @@ public final class DaemonController {
   /// What axod last said of itself, as it came up.
   public private(set) var health: DaemonHealth?
 
-  private static let servicePlistName = "dev.leostera.axo.axod.plist"
-  /// The plist's `Label`.
-  private static let serviceLabel = "dev.leostera.axo.axod"
   // Launchd can take longer than a health-check window to restore active PTYs and Pi bridges.
   private static let daemonStartupTimeout: Duration = .seconds(30)
   private static let healthPollInterval: Duration = .milliseconds(50)
 
-  private let service = SMAppService.agent(plistName: servicePlistName)
+  private let system: DaemonSystem
+  private var service: any LoginItemService { system.service }
   private let logger = Logger(subsystem: "dev.leostera.axo", category: "daemon")
   @ObservationIgnored private var startTask: Task<Void, Never>?
 
   @ObservationIgnored private let defaults: UserDefaults
 
-  public init(defaults: UserDefaults = .standard) {
+  public convenience init(defaults: UserDefaults = .standard) {
+    self.init(defaults: defaults, system: .live)
+  }
+
+  init(defaults: UserDefaults, system: DaemonSystem) {
     self.defaults = defaults
+    self.system = system
   }
 
   /// Publishes only real transitions; observers (menu bar, workbench) re-render on each publish.
@@ -119,7 +122,7 @@ public final class DaemonController {
     startTask = Task {
       defer { startTask = nil }
       if let socketPath = try? makeSocketPath(),
-        (try? await AxodConnection.withFreshConnection(to: socketPath) { try await $0.health() }) != nil
+        (try? await system.health(socketPath)) != nil
       {
         return
       }
@@ -274,7 +277,7 @@ public final class DaemonController {
     // path: once an install swaps a new bundle in and the old one is deleted, the job cannot spawn
     // (`copy_bundle_path` fails, exit 78) although the definition looks unchanged.
     let definitionChanged = registeredDefinition().map { $0 != currentDefinition() } ?? false
-    let launchdState = await LaunchdJobState.read(label: Self.serviceLabel)
+    let launchdState = await system.launchdState()
     if launchdState.isFailingToRun || definitionChanged {
       logger.info(
         "event=daemon.reregister_needed definition_changed=\(definitionChanged, privacy: .public) launchd=\(launchdState.description, privacy: .public)"
@@ -327,7 +330,7 @@ public final class DaemonController {
 
   /// One health check, for whether an axod is up at all; `nil` when none answers.
   private func probeDaemon(at socketPath: UnixSocketPath) async -> DaemonHealth? {
-    try? await AxodConnection.withFreshConnection(to: socketPath) { try await $0.health() }
+    try? await system.health(socketPath)
   }
 
   private func restartDaemon(
@@ -342,7 +345,7 @@ public final class DaemonController {
     logger.info("event=daemon.restart_started method=\(String(describing: method), privacy: .public)")
     if method == .kickstart {
       do {
-        try await kickstart()
+        try await system.kickstart()
         logger.info("event=daemon.restart_kickstarted")
         let daemon = try await waitForDaemon(at: socketPath, expectedBuild: expectedBuild)
         logger.info("event=daemon.restart_succeeded")
@@ -380,8 +383,7 @@ public final class DaemonController {
   // MARK: - Restarting in place
 
   private func currentDefinition() -> LaunchAgentDefinition? {
-    LaunchAgentDefinition.current(
-      bundle: .main, plistName: Self.servicePlistName, programPath: "Contents/Helpers/axod")
+    system.bundledDefinition()
   }
 
   private func registeredDefinition() -> LaunchAgentDefinition? {
@@ -399,38 +401,8 @@ public final class DaemonController {
     defaults.set(data, forKey: DaemonPreferenceKey.registeredDefinition)
   }
 
-  /// `launchctl kickstart -k`: launchd stops the job and starts it again at once, from the
-  /// registered definition. Unlike unregister/register it does not unload and reload the job.
-  private func kickstart() async throws {
-    let target = "gui/\(getuid())/\(Self.serviceLabel)"
-    let result: Result<Int32, Error> = await Task.detached(priority: .userInitiated) {
-      let process = Process()
-      process.executableURL = URL(fileURLWithPath: "/bin/launchctl")
-      process.arguments = ["kickstart", "-k", target]
-      process.standardOutput = FileHandle.nullDevice
-      process.standardError = FileHandle.nullDevice
-      return Result {
-        try process.run()
-        process.waitUntilExit()
-        return process.terminationStatus
-      }
-    }.value
-    switch result {
-    case .success(0):
-      return
-    case .success(let status):
-      throw DaemonControllerError.kickstartFailed("launchctl exited with status \(status)")
-    case .failure(let error):
-      throw DaemonControllerError.kickstartFailed(error.localizedDescription)
-    }
-  }
-
   private func makeDaemonBuildNumber() throws -> BuildNumber {
-    guard
-      let buildNumber = BuildNumber(
-        bundleValue: Bundle.main.infoDictionary?["AXODBuildNumber"]
-      )
-    else {
+    guard let buildNumber = system.bundledDaemonBuild() else {
       throw DaemonControllerError.invalidDaemonBuild
     }
     return buildNumber
@@ -444,9 +416,7 @@ public final class DaemonController {
     let deadline = clock.now.advanced(by: Self.daemonStartupTimeout)
     while clock.now < deadline {
       do {
-        let health = try await AxodConnection.withFreshConnection(to: socketPath) {
-          try await $0.health()
-        }
+        let health = try await system.health(socketPath)
         if let expectedBuild, health.buildNumber != expectedBuild.value {
           try await Task.sleep(for: Self.healthPollInterval)
           continue
@@ -480,7 +450,7 @@ public final class DaemonController {
   }
 }
 
-private enum DaemonControllerError: Error, LocalizedError {
+enum DaemonControllerError: Error, LocalizedError {
   case invalidDaemonBuild
   case missingServiceDefinition
   case registrationDidNotComplete
