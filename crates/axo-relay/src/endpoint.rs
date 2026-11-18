@@ -89,6 +89,13 @@ impl RelayEndpoint {
         ))
     }
 
+    /// Where this host revokes a credential it no longer uses, authenticated with it (RFD0074).
+    pub(crate) fn credential_revocation_url(&self, account_id: &str, host_id: &str) -> Url {
+        self.at(&format!(
+            "/api/v1/accounts/{account_id}/hosts/{host_id}/credential/revoke"
+        ))
+    }
+
     /// Where a pairing code is redeemed.
     pub(crate) fn redemption_url(&self) -> Url {
         self.at("/api/v1/host-pairings/redeem")

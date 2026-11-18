@@ -302,6 +302,9 @@ pub fn serve_ipc(
         credentials,
         link_operations: Arc::new(tokio::sync::Mutex::new(())),
     });
+    if let Some(relay) = relay.clone() {
+        runtime.spawn(keep_retiring_credentials(relay));
+    }
     let host_for_calls = relay.as_ref().map(|relay| Arc::clone(&relay.host));
     let handler = rpc_handler(Arc::clone(&core), daemon_version, relay);
     // The account's calls are answered by the same methods, as the relay's caller.
@@ -536,10 +539,38 @@ impl Extension for Relay {
     }
 }
 
+/// How long a credential that could not be retired waits to be tried again (RFD0074).
+const RETIRE_RETRY: std::time::Duration = std::time::Duration::from_secs(60 * 60);
+
+/// Retires the credentials an earlier unlink or link left behind: at start, then hourly while
+/// any is left. Each attempt holds `link_operations`, as linking does, so a revocation never
+/// lands between another link's redemption and its save (RFD0074).
+async fn keep_retiring_credentials(context: RelayContext) {
+    loop {
+        let left = {
+            let _guard = context.link_operations.lock().await;
+            axo_relay::retire_credentials(
+                &context.endpoint,
+                &axo_relay::RelayHost::identity(context.host.as_ref()).host_id,
+                context.host.as_ref(),
+                &context.credentials,
+            )
+            .await
+        };
+        match left {
+            Ok(0) => return,
+            Ok(_) => {}
+            Err(error) => log::error!("event=relay.retire_failed reason={error}"),
+        }
+        tokio::time::sleep(RETIRE_RETRY).await;
+    }
+}
+
 /// Linking hands this Mac to an account, which may then run commands here and receives every
 /// Session's transcript, so only the person links it: from Axo.app, never from an agent's shell or
-/// script (the agent-vs-person rule, RFD0073; its loopback exception is in RFD0074). A loopback relay is exempt: it never leaves this
-/// Mac, so whoever runs it already runs as the person (local Workers and the e2e tests).
+/// script (the agent-vs-person rule, RFD0073). A loopback relay is exempt: it never leaves this
+/// Mac, so whoever runs it already runs as the person (local Workers and the e2e tests). RFD0074
+/// records the exception.
 fn admit_link(endpoint: &RelayEndpoint) -> Result<(), RpcError> {
     if endpoint.is_loopback() {
         return Ok(());
@@ -637,11 +668,23 @@ fn add_relay_methods(handler: &mut IoHandler, relay: Option<RelayContext>) {
                     .map_err(|_| internal_error("another link operation is running"))?;
                 tokio::spawn(async move {
                     let _guard = guard;
-                    axo_relay::unlink_host(context.host.as_ref(), &context.credentials, || {
-                        context.control.request_connect()
-                    })
+                    axo_relay::unlink_host(
+                        &context.endpoint,
+                        &axo_relay::RelayHost::identity(context.host.as_ref()).host_id,
+                        context.host.as_ref(),
+                        &context.credentials,
+                        || context.control.request_connect(),
+                    )
                     .await
-                    .map_err(|_| internal_error("could not forget the saved link"))?;
+                    .map_err(|error| match error {
+                        axo_relay::UnlinkError::NotSaved(_) => {
+                            internal_error("could not forget the saved link")
+                        }
+                        // Loud: the link is gone, but a secret is still on disk (RFD0074).
+                        kept @ axo_relay::UnlinkError::KeychainKept(_) => internal_error(&format!(
+                            "{kept}; Axo removes it when the Keychain lets it"
+                        )),
+                    })?;
                     Ok(rpc::HostUnlinked { unlinked: true })
                 })
                 .await

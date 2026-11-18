@@ -14,6 +14,7 @@
 //! | `pi` | Each Session's Pi history file, bridge socket and credential |
 //! | `metadata` | `daemon_metadata`: settings, host identity, viewport |
 //! | `host_link` | The host's link to an Axo account |
+//! | `host_retired_credentials` | Credentials the host stopped using, until revoked and deleted (RFD0074) |
 //! | `sync` | `relay_sync`: cloud transcript cursors (RFD0018, RFD0027) |
 //! | `rows` | Parsed IDs, lifecycle states, timestamps, row-count checks |
 

@@ -79,7 +79,26 @@ fn unlink_closes_the_live_socket_forgets_credentials_and_does_not_reconnect() {
     let status = axod.ok("axo.relay.status", json!({}));
     assert_eq!(status["linked"], true);
     assert_eq!(status["accountId"], ACCOUNT_ID);
+    let redeemed = hub.redeemed()[0].clone();
+    assert!(hub.revoked().is_empty());
     assert_eq!(axod.ok("axo.relay.unlink", json!({}))["unlinked"], true);
+    // The account revokes the credential it proves, before the Keychain forgets it (RFD0074).
+    let revoked = hub.wait_for_revocations(1);
+    assert_eq!(
+        revoked[0].path,
+        format!(
+            "/api/v1/accounts/{ACCOUNT_ID}/hosts/{}/credential/revoke",
+            redeemed["hostId"].as_str().unwrap()
+        )
+    );
+    assert_eq!(
+        revoked[0].authorization.as_deref(),
+        Some(format!("Bearer {}", redeemed["credential"].as_str().unwrap()).as_str())
+    );
+    assert_eq!(
+        revoked[0].credential_id.as_deref(),
+        redeemed["credentialId"].as_str()
+    );
     wait_for_status(&axod, "disconnected");
     assert_eq!(axod.ok("axo.relay.status", json!({}))["linked"], false);
     let sockets = hub.sockets().len();
@@ -99,6 +118,23 @@ fn unlink_closes_the_live_socket_forgets_credentials_and_does_not_reconnect() {
             .count(),
         0
     );
+}
+
+#[test]
+fn linking_again_revokes_the_credential_it_replaces() {
+    let hub = FakeHub::start();
+    let (axod, _) = linked(&hub, Pi::Fake);
+    let link = axod.ok("axo.relay.link", json!({ "code": CODE }));
+    assert_eq!(link["linked"], true, "{link}");
+    let redeemed = hub.redeemed();
+    assert_eq!(redeemed.len(), 2);
+    let revoked = hub.wait_for_revocations(1);
+    assert_eq!(
+        revoked[0].credential_id.as_deref(),
+        redeemed[0]["credentialId"].as_str(),
+        "the first link's credential, never the new one"
+    );
+    assert_eq!(hub.revoked().len(), 1);
 }
 
 #[test]

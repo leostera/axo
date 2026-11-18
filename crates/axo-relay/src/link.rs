@@ -2,6 +2,10 @@
 //!
 //! The link lives in axod's database (via [`HostLinkStore`]); the secret it refers to lives in
 //! the [`HostCredentialStore`]. A host connects to the relay if and only if it is linked.
+//!
+//! A credential the host stops using is never just deleted: it moves to the link's `retired`
+//! list in the same write that stops using it, and stays there until it has been revoked at its
+//! account and deleted from the Keychain ([`crate::retired`], RFD0074).
 
 use std::io;
 use std::sync::Arc;
@@ -32,6 +36,8 @@ pub struct PendingRedemption {
 pub struct HostLink {
     account: Option<AccountLink>,
     pending: Option<PendingRedemption>,
+    /// Credentials no longer used, until each is revoked and deleted (RFD0074).
+    retired: Vec<AccountLink>,
 }
 
 fn malformed() -> io::Error {
@@ -89,7 +95,17 @@ impl HostLink {
         {
             return Err(malformed());
         }
-        Ok(Self { account, pending })
+        Ok(Self {
+            account,
+            pending,
+            retired: Vec::new(),
+        })
+    }
+
+    /// The same link, with `retired` the credentials waiting to be revoked and deleted.
+    pub fn with_retired(mut self, retired: Vec<AccountLink>) -> Self {
+        self.retired = retired;
+        self
     }
 
     pub fn account(&self) -> Option<&AccountLink> {
@@ -98,6 +114,17 @@ impl HostLink {
 
     pub fn pending(&self) -> Option<&PendingRedemption> {
         self.pending.as_ref()
+    }
+
+    pub fn retired(&self) -> &[AccountLink] {
+        &self.retired
+    }
+
+    /// The link without `credential_id` among the retired.
+    pub(crate) fn forget_retired(mut self, credential_id: &str) -> Self {
+        self.retired
+            .retain(|retired| retired.credential_id != credential_id);
+        self
     }
 }
 
@@ -112,7 +139,8 @@ pub trait HostLinkStore: Send + Sync {
 ///
 /// The credential is created and the pending redemption saved before anything is sent, so a
 /// crash mid-redemption retries with the same identity. An existing link keeps working until
-/// the new one is confirmed, and its credential is deleted only after.
+/// the new one is confirmed; then its credential is retired: revoked at its account, then
+/// deleted. The caller serializes this against every other link operation and retirement.
 pub async fn link_host(
     endpoint: &RelayEndpoint,
     code: &str,
@@ -153,32 +181,73 @@ pub async fn link_host(
         credential_id: pending.credential_id,
     });
     link.pending = None;
-    links.save_link(link).await?;
     // A redemption always uses a fresh credential, so the previous one is now unused.
-    if let Some(previous) = previous {
-        forget_credential(&credentials, previous.credential_id).await;
+    link.retired.extend(previous);
+    links.save_link(link).await?;
+    // The link stands either way; what is left is retried (RFD0074).
+    if let Err(error) =
+        crate::retired::retire_credentials(endpoint, &identity.host_id, links, &credentials).await
+    {
+        log::error!("event=relay.retire_failed reason={error}");
     }
     Ok(redeemed.label)
 }
 
-/// Forget pairing durably before closing its connection or deleting any credential. The caller
-/// serializes this against linking and owns the operation even if its receipt is abandoned.
-/// Failure to delete an unused secret cannot restore the saved link.
+/// Why an unlink did not finish.
+#[derive(Debug)]
+pub enum UnlinkError {
+    /// Nothing changed: the link is still saved.
+    NotSaved(io::Error),
+    /// The link is gone, but the Keychain kept a secret it should have deleted. It is retried.
+    KeychainKept(io::Error),
+}
+
+impl std::fmt::Display for UnlinkError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotSaved(error) => write!(formatter, "the link is still saved: {error}"),
+            Self::KeychainKept(error) => write!(
+                formatter,
+                "this Mac is unlinked, but the Keychain kept its old credential: {error}"
+            ),
+        }
+    }
+}
+
+/// Forget pairing durably before closing its connection or touching any credential: the
+/// account's credential moves to `retired` in the same write, and is then revoked at the account
+/// and deleted (RFD0074). A pending redemption's secret is deleted; its account, if it reached
+/// one, is unknown. The caller serializes this against linking and owns the operation even if
+/// its receipt is abandoned. Nothing that fails after the write restores the saved link.
 pub async fn unlink_host(
+    endpoint: &RelayEndpoint,
+    host_id: &str,
     links: &dyn HostLinkStore,
     credentials: &Arc<dyn HostCredentialStore>,
     after_commit: impl FnOnce(),
-) -> io::Result<()> {
-    let previous = links.load_link().await?;
-    links.save_link(HostLink::default()).await?;
+) -> Result<(), UnlinkError> {
+    let previous = links.load_link().await.map_err(UnlinkError::NotSaved)?;
+    let mut retired = previous.retired;
+    retired.extend(previous.account);
+    links
+        .save_link(HostLink::default().with_retired(retired))
+        .await
+        .map_err(UnlinkError::NotSaved)?;
     after_commit();
-    if let Some(account) = previous.account {
-        forget_credential(credentials, account.credential_id).await;
-    }
+    let mut kept = None;
     if let Some(pending) = previous.pending {
-        forget_credential(credentials, pending.credential_id).await;
+        let keychain = Arc::clone(credentials);
+        if let Err(error) = crate::blocking(move || keychain.delete(&pending.credential_id)).await {
+            log::error!("event=relay.credential_keychain_kept reason={error}");
+            kept = Some(error);
+        }
     }
-    Ok(())
+    if let Err(error) =
+        crate::retired::retire_credentials(endpoint, host_id, links, credentials).await
+    {
+        kept = Some(error);
+    }
+    kept.map_or(Ok(()), |error| Err(UnlinkError::KeychainKept(error)))
 }
 
 /// One pairing code's redemption, including the pending identity saved before the request.
@@ -322,8 +391,15 @@ mod tests {
         .unwrap()
     }
 
+    fn unreachable_relay() -> crate::RelayEndpoint {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        crate::RelayEndpoint::parse(&format!("http://127.0.0.1:{port}")).unwrap()
+    }
+
     #[tokio::test(flavor = "multi_thread")]
-    async fn unlink_clears_both_credentials_only_after_a_successful_commit() {
+    async fn unlink_retires_the_credential_and_deletes_the_pending_one_only_after_a_commit() {
         use crate::credential::{HostCredentialStore, testing::MemoryCredentialStore};
         use std::{io, sync::Arc};
         let credentials: Arc<dyn HostCredentialStore> = Arc::new(MemoryCredentialStore::default());
@@ -345,18 +421,25 @@ mod tests {
                 ))))
             }
         }
+        let relay = unreachable_relay();
+        let host = &super::testing::identity().host_id;
         let mut notified = false;
-        assert!(
-            super::unlink_host(&FailingStore(original.clone()), &credentials, || notified =
-                true)
-            .await
-            .is_err()
-        );
+        assert!(matches!(
+            super::unlink_host(
+                &relay,
+                host,
+                &FailingStore(original.clone()),
+                &credentials,
+                || notified = true
+            )
+            .await,
+            Err(super::UnlinkError::NotSaved(_))
+        ));
         assert!(!notified);
         assert!(credentials.load(CREDENTIAL).is_ok());
         assert!(credentials.load(GENERATION).is_ok());
         let store = MemoryLinkStore(std::sync::Mutex::new(original));
-        super::unlink_host(&store, &credentials, || {
+        super::unlink_host(&relay, host, &store, &credentials, || {
             assert!(store.0.lock().unwrap().account().is_none());
             assert!(
                 credentials.load(CREDENTIAL).is_ok(),
@@ -367,9 +450,17 @@ mod tests {
         .await
         .unwrap();
         assert!(notified);
-        assert!(credentials.load(CREDENTIAL).is_err());
+        assert!(
+            credentials.load(CREDENTIAL).is_ok(),
+            "kept until the account has revoked it"
+        );
         assert!(credentials.load(GENERATION).is_err());
-        assert!(store.load_link().await.unwrap().pending().is_none());
+        let unlinked = store.load_link().await.unwrap();
+        assert!(unlinked.account().is_none() && unlinked.pending().is_none());
+        assert_eq!(
+            unlinked.retired(),
+            &[AccountLink::parse(ACCOUNT.into(), CREDENTIAL.into()).unwrap()]
+        );
     }
 
     #[test]

@@ -16,6 +16,7 @@ mod outbound;
 mod pairing;
 pub mod peers;
 mod relay;
+mod retired;
 pub mod signin;
 mod sync;
 
@@ -25,13 +26,15 @@ pub use host::{
     RemoteAnswer,
 };
 pub use link::{
-    AccountLink, HostLink, HostLinkStore, PendingRedemption, host_label, link_host, unlink_host,
+    AccountLink, HostLink, HostLinkStore, PendingRedemption, UnlinkError, host_label, link_host,
+    unlink_host,
 };
 pub use model::{HostModel, host_model};
 pub use outbound::{Priority, RelayCallError, RelayChannel, ReplySender, SocketEpoch};
 pub use relay::{
     RelayControl, RelayDependencies, RelayWorker, current_timestamp, unavailable_status,
 };
+pub use retired::retire_credentials;
 pub use sync::{
     Eviction, SessionMetadata, StoredMetadata, SyncCursor, SyncSession, SyncStore, WorkspaceState,
 };

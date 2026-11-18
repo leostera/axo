@@ -160,6 +160,10 @@ pub fn create_tables(transaction: &rusqlite::Transaction<'_>) -> rusqlite::Resul
             pending_host_generation TEXT,
             CHECK ((account_id IS NULL) = (credential_id IS NULL)),
             CHECK ((pending_credential_id IS NULL) = (pending_host_generation IS NULL))
+        );
+        CREATE TABLE IF NOT EXISTS host_retired_credentials (
+            credential_id TEXT PRIMARY KEY NOT NULL,
+            account_id TEXT NOT NULL
         );",
     )
 }

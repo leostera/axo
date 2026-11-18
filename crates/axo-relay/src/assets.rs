@@ -36,7 +36,7 @@ use crate::link::AccountLink;
 
 /// How long one read or write may wait before the transfer is given up: a transfer is bounded by
 /// its progress, not its size, so a 100 MiB upload on a slow link goes on while bytes move.
-const READ_TIMEOUT: Duration = Duration::from_secs(30);
+pub(crate) const READ_TIMEOUT: Duration = Duration::from_secs(30);
 /// Bytes of an upload's body written at once, each within [`READ_TIMEOUT`].
 const UPLOAD_CHUNK_BYTES: usize = 64 * 1024;
 /// How long one attachment may take in all.
@@ -443,11 +443,11 @@ async fn connect(url: &Url) -> io::Result<(Box<dyn ReadWrite>, String)> {
     Ok((Box::new(stream), host_header))
 }
 
-trait ReadWrite: AsyncRead + AsyncWrite + Unpin + Send {}
+pub(crate) trait ReadWrite: AsyncRead + AsyncWrite + Unpin + Send {}
 impl<T: AsyncRead + AsyncWrite + Unpin + Send> ReadWrite for T {}
 
 /// Sends one request and returns its response stream.
-async fn request(
+pub(crate) async fn request(
     url: &Url,
     method: &str,
     extra_headers: &str,
@@ -519,13 +519,16 @@ async fn receive(
     Ok(AssetHash::from_digest(digest))
 }
 
-struct Head {
-    status: u16,
+pub(crate) struct Head {
+    pub(crate) status: u16,
     length: Option<u64>,
     chunked: bool,
 }
 
-async fn read_head(reader: &mut (impl AsyncBufRead + Unpin), stall: Duration) -> io::Result<Head> {
+pub(crate) async fn read_head(
+    reader: &mut (impl AsyncBufRead + Unpin),
+    stall: Duration,
+) -> io::Result<Head> {
     let mut raw = Vec::new();
     loop {
         let read = within_for(

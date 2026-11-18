@@ -79,7 +79,14 @@ impl axo_relay::HostLinkStore for RelayHostAdapter {
                     )
                 })
                 .transpose()?;
-            axo_relay::HostLink::new(account, pending)
+            let retired = stored
+                .retired
+                .into_iter()
+                .map(|stored| {
+                    axo_relay::AccountLink::parse(stored.account_id, stored.credential_id)
+                })
+                .collect::<io::Result<_>>()?;
+            Ok(axo_relay::HostLink::new(account, pending)?.with_retired(retired))
         })
     }
 
@@ -95,6 +102,14 @@ impl axo_relay::HostLinkStore for RelayHostAdapter {
                     credential_id: pending.credential_id().to_owned(),
                     host_generation: pending.host_generation().to_owned(),
                 }),
+            retired: link
+                .retired()
+                .iter()
+                .map(|retired| axo_store::StoredAccountLink {
+                    account_id: retired.account_id().to_owned(),
+                    credential_id: retired.credential_id().to_owned(),
+                })
+                .collect(),
         };
         Box::pin(
             self.core

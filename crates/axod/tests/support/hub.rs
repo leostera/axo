@@ -44,10 +44,20 @@ pub struct Socket {
     pub credential_id: Option<String>,
 }
 
+/// A credential revocation axod sent: its path and the credential it proved itself with.
+#[derive(Clone, Debug)]
+pub struct Revocation {
+    pub path: String,
+    pub authorization: Option<String>,
+    pub credential_id: Option<String>,
+}
+
 #[derive(Default)]
 struct State {
     /// The body of each redemption, in order.
     redeemed: Vec<Value>,
+    /// Each credential revocation (RFD0074), in order.
+    revoked: Vec<Revocation>,
     sockets: Vec<Socket>,
     /// Everything axod sent on its daemon socket, in order.
     received: Vec<Value>,
@@ -209,6 +219,29 @@ impl FakeHub {
         self.lock().redeemed.clone()
     }
 
+    pub fn revoked(&self) -> Vec<Revocation> {
+        self.lock().revoked.clone()
+    }
+
+    /// Waits until axod has sent `count` revocations.
+    pub fn wait_for_revocations(&self, count: usize) -> Vec<Revocation> {
+        let deadline = Instant::now() + WAIT;
+        let mut state = self.lock();
+        while state.revoked.len() < count {
+            assert!(
+                Instant::now() < deadline,
+                "axod never revoked {count} credentials"
+            );
+            state = self
+                .shared
+                .changed
+                .wait_timeout(state, Duration::from_millis(50))
+                .unwrap()
+                .0;
+        }
+        state.revoked.clone()
+    }
+
     pub fn sockets(&self) -> Vec<Socket> {
         self.lock().sockets.clone()
     }
@@ -276,11 +309,17 @@ fn serve(stream: TcpStream, shared: Arc<Shared>) {
 }
 
 /// `POST /api/v1/host-pairings/redeem`: links the Mac to [`ACCOUNT_ID`], echoing its host and
-/// credential.
+/// credential. `POST …/credential/revoke` (RFD0074) is recorded and answered `204`.
 fn redeem(stream: TcpStream, shared: &Shared) {
     let mut reader = BufReader::new(stream.try_clone().unwrap());
     let mut line = String::new();
     let mut length = 0usize;
+    if reader.read_line(&mut line).unwrap_or(0) == 0 {
+        return;
+    }
+    let path = line.split(' ').nth(1).unwrap_or_default().to_owned();
+    let mut authorization = None;
+    let mut credential_id = None;
     loop {
         line.clear();
         if reader.read_line(&mut line).unwrap_or(0) == 0 {
@@ -295,6 +334,29 @@ fn redeem(stream: TcpStream, shared: &Shared) {
         {
             length = value.trim().parse().unwrap_or(0);
         }
+        if let Some((name, value)) = header.split_once(':') {
+            if name.eq_ignore_ascii_case("authorization") {
+                authorization = Some(value.trim().to_owned());
+            } else if name.eq_ignore_ascii_case("x-axo-credential-id") {
+                credential_id = Some(value.trim().to_owned());
+            }
+        }
+    }
+    if path.ends_with("/credential/revoke") {
+        let mut state = shared.state.lock().unwrap();
+        state.revoked.push(Revocation {
+            path,
+            authorization,
+            credential_id,
+        });
+        shared.changed.notify_all();
+        drop(state);
+        let mut stream = stream;
+        let _ = write!(
+            stream,
+            "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        );
+        return;
     }
     let mut body = vec![0u8; length];
     if reader.read_exact(&mut body).is_err() {

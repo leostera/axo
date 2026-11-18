@@ -1,4 +1,7 @@
-//! `host_link`: this host's link to an Axo account, a single row.
+//! `host_link`: this host's link to an Axo account, a single row; and
+//! `host_retired_credentials`: the credentials it stopped using, until each is revoked at its
+//! account and deleted from the Keychain (RFD0074). Both are written together, in one
+//! transaction, so a credential is never in neither.
 
 use std::io;
 
@@ -10,6 +13,8 @@ use rusqlite::{Connection, OptionalExtension, params};
 pub struct StoredHostLink {
     pub account: Option<StoredAccountLink>,
     pub pending_redemption: Option<StoredPendingRedemption>,
+    /// Credentials no longer used, each with the account it belongs to.
+    pub retired: Vec<StoredAccountLink>,
 }
 
 /// The account this host is linked to, and the credential it connects with.
@@ -43,9 +48,13 @@ pub fn load_host_link(database: &Connection) -> io::Result<StoredHostLink> {
         )
         .optional()
         .map_err(io::Error::other)?;
+    let retired = load_retired(database)?;
     let Some((account_id, credential_id, pending_credential_id, pending_host_generation)) = row
     else {
-        return Ok(StoredHostLink::default());
+        return Ok(StoredHostLink {
+            retired,
+            ..StoredHostLink::default()
+        });
     };
     Ok(StoredHostLink {
         account: account_id
@@ -60,7 +69,26 @@ pub fn load_host_link(database: &Connection) -> io::Result<StoredHostLink> {
                 host_generation,
             },
         ),
+        retired,
     })
+}
+
+fn load_retired(database: &Connection) -> io::Result<Vec<StoredAccountLink>> {
+    let mut statement = database
+        .prepare(
+            "SELECT account_id, credential_id FROM host_retired_credentials \
+             ORDER BY credential_id",
+        )
+        .map_err(io::Error::other)?;
+    statement
+        .query_map([], |row| {
+            Ok(StoredAccountLink {
+                account_id: row.get(0)?,
+                credential_id: row.get(1)?,
+            })
+        })
+        .and_then(Iterator::collect)
+        .map_err(io::Error::other)
 }
 
 pub fn store_host_link(database: &Connection, link: &StoredHostLink) -> io::Result<()> {
@@ -70,7 +98,8 @@ pub fn store_host_link(database: &Connection, link: &StoredHostLink) -> io::Resu
     let credential_id = account.map(|account| &account.credential_id);
     let pending_credential_id = pending.map(|pending| &pending.credential_id);
     let pending_host_generation = pending.map(|pending| &pending.host_generation);
-    database
+    let transaction = database.unchecked_transaction().map_err(io::Error::other)?;
+    transaction
         .execute(
             "INSERT INTO host_link \
              (singleton, account_id, credential_id, pending_credential_id, pending_host_generation) \
@@ -86,8 +115,19 @@ pub fn store_host_link(database: &Connection, link: &StoredHostLink) -> io::Resu
                 pending_host_generation
             ],
         )
-        .map(drop)
-        .map_err(io::Error::other)
+        .map_err(io::Error::other)?;
+    transaction
+        .execute("DELETE FROM host_retired_credentials", [])
+        .map_err(io::Error::other)?;
+    for retired in &link.retired {
+        transaction
+            .execute(
+                "INSERT INTO host_retired_credentials (credential_id, account_id) VALUES (?1, ?2)",
+                params![retired.credential_id, retired.account_id],
+            )
+            .map_err(io::Error::other)?;
+    }
+    transaction.commit().map_err(io::Error::other)
 }
 
 #[cfg(test)]
@@ -108,6 +148,7 @@ mod tests {
                 credential_id: "credential-1".into(),
                 host_generation: "generation-1".into(),
             }),
+            retired: Vec::new(),
         };
         store_host_link(&database, &pending).unwrap();
         assert_eq!(load_host_link(&database).unwrap(), pending);
@@ -117,9 +158,17 @@ mod tests {
                 credential_id: "credential-1".into(),
             }),
             pending_redemption: None,
+            retired: Vec::new(),
         };
         store_host_link(&database, &linked).unwrap();
         assert_eq!(load_host_link(&database).unwrap(), linked);
+        // Unlinking moves the credential to `retired` in the same write.
+        let unlinked = StoredHostLink {
+            retired: linked.account.clone().into_iter().collect(),
+            ..StoredHostLink::default()
+        };
+        store_host_link(&database, &unlinked).unwrap();
+        assert_eq!(load_host_link(&database).unwrap(), unlinked);
         store_host_link(&database, &StoredHostLink::default()).unwrap();
         assert_eq!(
             load_host_link(&database).unwrap(),
