@@ -4,15 +4,16 @@
 - Status: Draft
 - Author: leostera
 - Start Date: 2026-11-15
-- Updated: 2026-11-15
+- Updated: 2026-11-17
 - Document Type: Proposal
 - Amends: [RFD0030](RFD0030-assets.md)
 
 ## Summary
 
-An agent calls `webview({ html | path, title, alt })` to show the person a page it wrote: a diagram, a chart, a sketch of an idea. The page is stored as an asset. The web and the phone draw it inline in the transcript, where the tool call was, with no frame, border or scrollbar, sized to its content and in the app's colours, so it reads as part of the message. Pi's terminal shows a link.
+An agent calls `webview({ html | path, title, alt })` to show the person a page it wrote: a diagram, a chart, a sketch of an idea. The page is stored as an asset. The web and the phone draw it inline in the transcript, where the tool call was, with no border or scrollbar, sized to its content and in the app's colours. A caption the client draws above it, *Page by the agent*, says the page is the agent's, not the app's. Pi's terminal shows a link.
 
 - **The page never runs on `axo.leostera.dev`.** It is served from a separate content domain, as a sandboxed document with an opaque origin, so it can't act as the person.
+- **The page can't pass for the app.** The client marks every page as the agent's, and never draws its own requests, answers or sign-in where a page is.
 - **Opening a page needs the person's sign-in.** The app asks the hub for a short-lived URL bound to one page of one account. The transcript holds the asset, never the URL.
 - **Three phases:**
   1. Show the page inline, on the web and the phone. This RFD specifies it in full.
@@ -105,7 +106,7 @@ A second host served by the same Worker, `axo-public-app`, and only for webviews
 - **Headers:**
   - `Content-Type: text/html; charset=utf-8`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, `Cache-Control: private, no-store`.
   - `Content-Security-Policy`:
-    - `sandbox allow-scripts allow-popups allow-popups-to-escape-sandbox`: the document has an opaque origin even when opened on its own, not in a frame.
+    - `sandbox allow-scripts`: the document has an opaque origin even when opened on its own, not in a frame. No `allow-popups`: a page opens a link only by asking the client (*Links*, below), which shows where it goes.
     - `default-src 'none'`
     - `script-src 'unsafe-inline' https://cdn.jsdelivr.net`, `style-src 'unsafe-inline' https://cdn.jsdelivr.net`
     - `img-src data: blob: https://cdn.jsdelivr.net`, `font-src data: https://cdn.jsdelivr.net`, `media-src data: blob:`
@@ -113,7 +114,8 @@ A second host served by the same Worker, `axo-public-app`, and only for webviews
     - `frame-ancestors https://axo.leostera.dev`
     - `form-action 'none'`, `base-uri 'none'`
   - No nonce: a nonce would make browsers ignore `'unsafe-inline'`, and the agent's own scripts are inline.
-- **One CDN:** jsDelivr, because a URL at an exact npm version never changes, and `integrity` makes the browser refuse other bytes. esm.sh builds its files on request, so it is not on the list. A page reaches no other host, so it can't send off what the agent put in it. Adding a CDN is one directive in one place.
+- **One CDN:** jsDelivr, because a URL at an exact npm version never changes, and `integrity` makes the browser refuse other bytes. esm.sh builds its files on request, so it is not on the list. Adding a CDN is one directive in one place.
+- **What the CSP does not do: stop a page sending data out.** `connect-src` limits `fetch` and WebSockets, not every way out. DNS prefetch (`<link rel="dns-prefetch">`) and WebRTC ICE to a STUN server are outside CSP in shipping browsers. A link the person follows carries whatever its URL holds. jsDelivr's `/gh/` paths name any public repository. None of this is a boundary: the agent that wrote the page already has a shell and the network, so a page can't send off anything its agent couldn't. The boundary is the person's account, which a page can't reach (*Why separate*, above). The CSP keeps pages from loading code that isn't pinned, and keeps an ordinary page from calling home by accident.
 - **Not cached across people:** the asset is cached as an asset (RFD0030); the page with its bootstrap is made per request, which is cheap.
 
 ### The bootstrap
@@ -122,7 +124,7 @@ About 2 KB of script, the same for every page, in `packages/axo-api-worker/src/w
 
 - **Theme.** It reads the theme from the URL's fragment, `#axo=<base64url JSON>`, which never reaches the server: `{ scheme: "light" | "dark", vars: { "--fg": …, "--bg": "transparent", "--muted": …, "--accent": …, "--border": …, "--font": …, "--mono": …, "--radius": … } }`. It sets them on `:root`, sets `color-scheme`, and adds a base stylesheet before the page's own: transparent background, the app's font and colours, no margin on `body`, `img, svg, canvas { max-width: 100% }`. A page that uses the variables matches the app; one that doesn't still sits on the message's background.
 - **Size.** A `ResizeObserver` on `document.documentElement` reports the height, rounded to whole pixels, at most once a frame: through `window.webkit.messageHandlers.axo` in the phone's webview, through `parent.postMessage({ axo: "size", height }, "*")` in an iframe.
-- **Links.** A click on a link is sent the same way as `{ axo: "open", url }` (only `https:`), and the client opens it outside: a new tab on the web, Safari on the phone.
+- **Links.** A click on a link is sent the same way as `{ axo: "open", url }` (only `https:`), and the client opens it outside: a new tab on the web, Safari on the phone. The client shows the link's host before it opens it the first time on a page (*Open example.com?*), as a page's link text can say anything.
 - **Theme changes.** The client sends `{ axo: "theme", … }` when the person switches light and dark; the bootstrap applies it without reloading.
 - **Trust:** the bootstrap runs in the page's own context, so the page can change it or send these messages itself. Clients treat every message as untrusted: they only take these three kinds, clamp the height, and only open `https:` URLs. In phase 1 nothing a page sends reaches the agent.
 
@@ -130,13 +132,14 @@ About 2 KB of script, the same for every page, in `packages/axo-api-worker/src/w
 
 `packages/axo-web-app/src/chat/webview.tsx`, used where the transcript renders a tool call named `webview` whose result has `details.webview === 1`, in place of the tool card:
 
-- `<iframe sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox" referrerpolicy="no-referrer" allow="" loading="lazy">`, no `allow-same-origin`, `border: 0`, `background: transparent`, full width of the text column.
+- `<iframe sandbox="allow-scripts" referrerpolicy="no-referrer" allow="" loading="lazy">`, no `allow-same-origin`, `border: 0`, `background: transparent`, full width of the text column.
 - **`color-scheme` matches the app's**, or the browser paints an opaque backdrop behind a transparent frame.
 - **Height:** `details.height` until the page reports its own; then the reported one, from 40 to 4,000 pixels, with no animation. A page taller than 4,000 pixels scrolls inside itself. The last height is kept in memory for the Session, so scrolling back doesn't jump.
 - **Messages** from the frame are taken only when `event.source` is that frame's `contentWindow`.
 - **Before it loads, and if it fails:** the `alt` text in the reserved space, muted. A failed token or a missing asset shows *This page could not be loaded* with the `alt` text.
 - **Off screen:** `loading="lazy"` delays it, and a frame more than three screens away is replaced by its last height, so a long transcript doesn't run every page at once.
 - **Hover:** an *Open* button at the top right opens `/w/sha256:<hex>`.
+- **Provenance:** the caption *Page by the agent · <title>*, drawn by the web app above the frame, in the app's muted text, outside anything the page can draw over. The frame never overlaps the composer, the requests bell or a request card, and the app never draws a request, an answer, a sign-in or the person's own message inside a message that holds a page. A page can look like any of them; it can't sit where they are, and it carries the caption.
 - **Share pages** (`/s/*`): people viewing a share have no sign-in, so a webview shows as its `alt` text and title. Showing webviews on public shares is a separate decision.
 
 ### The phone
@@ -148,6 +151,7 @@ About 2 KB of script, the same for every page, in `packages/axo-api-worker/src/w
 - **Height** works as on the web: the reserved height, then the reported one, clamped, kept in memory.
 - **Lifecycle:** made when the row appears, released when it is far off screen, keeping its height.
 - **Long press:** *Open* (the page full screen, in the same kind of view) and *Copy link* (the `/w/` link).
+- **Provenance:** the same caption as on the web, drawn by the app above the view. Full screen, the app's own bar says *Page by the agent* and holds the only *Done*.
 - **Theme:** from `ChatColors`, through the fragment, and `{ axo: "theme" }` when the appearance changes.
 - **Preview mode** `AXO_PHONE_PREVIEW_LIVE=webview` shows a Session with one webview, for UI tests and snapshots.
 
@@ -162,9 +166,10 @@ The Worker logs `webviews.view` (account, hash, outcome: `ok`, `forbidden`, `exp
 ### Phase 2: clicks become messages (outline)
 
 - The bootstrap exposes `axo.send(text, data?)`; the client turns it into a message to the Session, from the person, *through the webview "<title>"*, with the page's hash.
-- **Only on a real click:** the parent checks its own `navigator.userActivation.isActive`, which a click inside the frame activates. On the phone, which can't see activation in the page, the message shows as a chip the person taps to send.
+- **The person sees what they send.** A click never sends by itself: the page's text goes into the composer, marked *from the page "<title>"*, and the person sends it as they send anything. A page can say "click to continue" and send whatever it wants; showing the exact text is what makes the person, not the page, the sender.
+- **Only on a real click:** the parent checks its own `navigator.userActivation.isActive`, which a click inside the frame activates, before it fills the composer. On the phone, which can't see activation in the page, the text shows as a chip the person taps to put in the composer.
 - **Limits:** at most 2,000 characters; one message per click; at most 10 a minute per page.
-- **The agent** sees it as the person's message, marked as coming from the page, which the agent wrote but the person clicked.
+- **The agent** sees it as the person's message, marked as coming from the page, which the agent wrote but the person read and sent.
 - It sends through the mailbox once it exists, and through today's remote prompt until then.
 - Its own spec, `specs/webviews/clicks.ts`, comes before it is built: a page can't send without a click, one click sends at most once across reloads and reconnects, and a message names its page.
 
@@ -187,7 +192,8 @@ The Worker logs `webviews.view` (account, hash, outcome: `ok`, `forbidden`, `exp
 - **pi-axo** (`test/webview.test.ts`): `html` and `path` both store and answer the same `details`; both, neither, too large, an unreadable file and a disconnected Mac are tool errors.
 - **Web:** the frame's attributes; height clamping; a message from another frame is ignored; `open` with a non-`https:` URL is ignored.
 - **Phone:** a UI test and snapshot in `AXO_PHONE_PREVIEW_LIVE=webview`, light and dark; a model test of the height clamp and navigation policy.
-- **A hostile page, end to end, in a real browser, before release:** a page that calls `fetch("https://axo.leostera.dev/api/auth/me", { credentials: "include" })`, reads `document.cookie` and `localStorage`, posts a form, navigates its parent, and loads a script from another host. None of them may succeed. Then the same page opened on its own, by its `/w/` link.
+- **A hostile page, end to end, in a real browser, before release:** a page that calls `fetch("https://axo.leostera.dev/api/auth/me", { credentials: "include" })`, reads `document.cookie` and `localStorage`, posts a form, navigates its parent, opens a popup, and loads a script from another host. None of them may succeed. Then the same page opened on its own, by its `/w/` link.
+- **A page that pretends to be the app:** it draws a request card with *Allow*, a sign-in form, and a message bubble in the person's style. A snapshot on the web and the phone shows the caption above each, and no app request, answer or sign-in inside the message.
 
 ## Drawbacks
 
@@ -197,6 +203,8 @@ The Worker logs `webviews.view` (account, hash, outcome: `ok`, `forbidden`, `exp
 - **Pages can't use storage:** `localStorage` throws in an opaque origin, and some libraries expect it.
 - **jsDelivr learns when a page is opened,** from where, and a page that uses a library breaks when jsDelivr is unreachable or offline.
 - **The CSP can't require `integrity`:** a page without it trusts jsDelivr to serve the version it names.
+- **The CSP doesn't stop data leaving** (DNS prefetch, WebRTC, followed links). That is accepted: a page can't send anything its agent couldn't already.
+- **The caption costs a line** above every page, and a page can't look fully like part of the message. That is the price of the person always knowing what the app said and what the agent drew.
 
 ## Alternatives
 
