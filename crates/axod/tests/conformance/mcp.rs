@@ -208,7 +208,11 @@ fn an_agent_starts_names_and_prompts_another_session() {
 
 #[test]
 fn an_agent_opens_types_into_reads_and_closes_a_terminal() {
-    let axod = Axod::start();
+    // Exercise the transport, not the person's interactive shell startup/configuration.
+    let axod = Axod::with(support::Options {
+        env: vec![("SHELL".into(), "/bin/sh".into())],
+        ..Default::default()
+    });
     let (_, id) = first_session(&axod);
     let mut mcp = Mcp::start(&axod, &id);
     let created = mcp.ok("shell_create", json!({ "sessionId": "self" }));
@@ -323,50 +327,81 @@ fn computer_use_lists_its_tools_and_refuses_what_it_does_not_know() {
 }
 
 #[test]
-fn computer_use_asks_the_person_as_axo_when_the_agent_asks_it_to_confirm() {
+fn computer_confirmation_preserves_platform_caller_authority() {
     let axod = Axod::start();
     let (_, id) = first_session(&axod);
     let mut mcp = Mcp::start(&axod, &id);
-    let _asking = mcp.send_tool("computer", json!({ "tool": "list_apps", "confirm": true }));
-    let question = axod.wait_for("the gate's question", || {
-        axod.ok("axo.elicitation.list", json!({}))["elicitations"]
-            .as_array()
-            .unwrap()
-            .first()
-            .cloned()
-    });
-    // Asked by the tool itself, which only axod's own `axod mcp` may do.
-    assert_eq!(question["askedBy"], "computerUse", "{question}");
+    #[cfg(target_os = "linux")]
+    {
+        // No Linux code-signature identity is invented for this legacy gate.
+        let reason = mcp.err("computer", json!({"tool":"list_apps","confirm":true}));
+        assert!(reason.contains("only axod"), "{reason}");
+        assert!(waiting_questions(&axod).is_empty());
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _asking = mcp.send_tool("computer", json!({ "tool": "list_apps", "confirm": true }));
+        let question = axod.wait_for("the gate's question", || {
+            axod.ok("axo.elicitation.list", json!({}))["elicitations"]
+                .as_array()
+                .unwrap()
+                .first()
+                .cloned()
+        });
+        // Asked by the tool itself, which only axod's own `axod mcp` may do.
+        assert_eq!(question["askedBy"], "computerUse", "{question}");
+    }
 }
 
-/// `request_input` reads the window before it asks, so a test without a real form sees its
-/// refusals; `//packages/axo-api-worker:input-live` fills a real one.
+/// Native forms read their target before asking. Linux admits only explicit sudo
+/// intents and rejects malformed intents before consent; neither case collects values.
 #[test]
 fn request_input_refuses_what_it_cannot_fill_without_asking() {
     let axod = Axod::start();
     let (_, id) = first_session(&axod);
     let mut mcp = Mcp::start(&axod, &id);
-    let shape = mcp.err(
-        "computer",
-        json!({ "tool": "request_input", "args": { "pid": 1 } }),
-    );
-    assert!(shape.contains("request_input takes"), "{shape}");
-    let none = mcp.err(
-        "computer",
-        json!({ "tool": "request_input", "args": { "pid": 1, "window_id": 1, "fields": [] } }),
-    );
-    assert!(none.contains("1 to 8 fields"), "{none}");
-    let nine = vec![json!({ "kind": "text" }); 9];
-    let many = mcp.err(
+    #[cfg(target_os = "linux")]
+    {
+        let reason = mcp.err("computer", json!({"tool":"request_input","args":{"pid":1}}));
+        assert!(
+            reason.contains("only a daemon-owned sudo target"),
+            "{reason}"
+        );
+        for args in [
+            json!({"target":{"kind":"sudo","argv":[]}}),
+            json!({"target":{"kind":"sudo","argv":["relative"]}}),
+            json!({"target":{"kind":"sudo","argv":["/usr/bin/true"]},"values":{"f0":"fixture-only"}}),
+        ] {
+            assert!(
+                mcp.err("computer", json!({"tool":"request_input","args":args}))
+                    .contains("no values, consent or answer may be supplied")
+            );
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let shape = mcp.err(
+            "computer",
+            json!({ "tool": "request_input", "args": { "pid": 1 } }),
+        );
+        assert!(shape.contains("request_input takes"), "{shape}");
+        let none = mcp.err(
+            "computer",
+            json!({ "tool": "request_input", "args": { "pid": 1, "window_id": 1, "fields": [] } }),
+        );
+        assert!(none.contains("1 to 8 fields"), "{none}");
+        let nine = vec![json!({ "kind": "text" }); 9];
+        let many = mcp.err(
         "computer",
         json!({ "tool": "request_input", "args": { "pid": 1, "window_id": 1, "fields": nine } }),
     );
-    assert!(many.contains("1 to 8 fields"), "{many}");
-    let no_window = mcp.err(
+        assert!(many.contains("1 to 8 fields"), "{many}");
+        let no_window = mcp.err(
         "computer",
         json!({ "tool": "request_input", "args": { "pid": 999_999, "window_id": 1, "fields": [{ "kind": "password" }] } }),
     );
-    assert!(!no_window.is_empty());
+        assert!(!no_window.is_empty());
+    }
     assert!(
         axod.ok("axo.elicitation.list", json!({}))["elicitations"]
             .as_array()
