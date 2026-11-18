@@ -647,7 +647,7 @@ final class AxoMobileUITests: XCTestCase {
   }
 
   @MainActor
-  func testLongRequestsShowFullTextAndCenteredActionsWithoutExpansion() {
+  func testLongRequestsShowFullTextAndRightAlignedActionsWithoutExpansion() {
     let app = launch(["AXO_PHONE_PREVIEW_CHAT": "1", "AXO_PHONE_PREVIEW_LIVE": "elicitation", "AXO_MOBILE_PREVIEW_LONG_QUESTION": "1"])
     let card = element(app, "elicitationCard")
     XCTAssertTrue(card.waitForExistence(timeout: 15))
@@ -656,13 +656,13 @@ final class AxoMobileUITests: XCTestCase {
     let no = app.buttons["elicitationNo"]
     XCTAssertTrue(yes.waitForExistence(timeout: 5))
     XCTAssertTrue(no.exists)
-    XCTAssertEqual((yes.frame.minX + no.frame.maxX) / 2, card.frame.midX, accuracy: 3)
+    XCTAssertEqual(no.frame.maxX, card.frame.maxX, accuracy: 3)
     let detail = app.staticTexts.matching(NSPredicate(format: "label == %@",
       "Keep mailbox activation, public-history removal, billing changes, and native releases disabled until their separate checks pass. No real mail is sent.")).firstMatch
     XCTAssertTrue(detail.exists)
     XCTAssertGreaterThanOrEqual(detail.frame.minY - card.frame.minY, 24)
     XCTAssertGreaterThanOrEqual(card.frame.maxY - yes.frame.maxY, 24)
-    capture(app, named: "full-request-centered-actions")
+    capture(app, named: "full-request-right-aligned-actions")
   }
 
   @MainActor

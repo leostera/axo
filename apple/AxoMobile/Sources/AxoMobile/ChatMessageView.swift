@@ -396,7 +396,6 @@ struct ElicitationCard: View {
           .accessibilityIdentifier("elicitationYes")
         AnswerButton(title: "No", prominent: false, fill: false) { answer(.decline) }
           .accessibilityIdentifier("elicitationNo")
-        Spacer(minLength: 0)
       }
       .padding(.top, 12)
       .disabled(!canAnswer || question.answering != nil)
