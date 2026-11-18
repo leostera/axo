@@ -196,13 +196,16 @@ final class MobilePush: NSObject, UNUserNotificationCenterDelegate {
   }
 
   nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter,
-    willPresent notification: UNNotification) async -> UNNotificationPresentationOptions
+    willPresent notification: UNNotification,
+    withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void)
   {
-    guard let route = RequestNotificationRoute(userInfo: notification.request.content.userInfo) else { return [] }
-    guard await shouldPresent(route) else { return [] }
-    if notification.request.trigger is UNPushNotificationTrigger { await reportReceivedTest(route) }
-    await refreshUpdates()
-    return [.banner, .list, .sound]
+    NotificationCallback.perform(operation: {
+      guard let route = RequestNotificationRoute(userInfo: notification.request.content.userInfo),
+        await self.shouldPresent(route) else { return UNNotificationPresentationOptions() }
+      if notification.request.trigger is UNPushNotificationTrigger { self.reportReceivedTest(route) }
+      self.refreshUpdates()
+      return [.banner, .list, .sound]
+    }, completion: { completionHandler($0) })
   }
 
   private func shouldPresent(_ route: RequestNotificationRoute) async -> Bool {
@@ -211,18 +214,20 @@ final class MobilePush: NSObject, UNUserNotificationCenterDelegate {
   }
 
   nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter,
-    didReceive response: UNNotificationResponse) async
+    didReceive response: UNNotificationResponse, withCompletionHandler completionHandler: @escaping () -> Void)
   {
-    guard let route = RequestNotificationRoute(userInfo: response.notification.request.content.userInfo) else { return }
-    let remote = response.notification.request.trigger is UNPushNotificationTrigger
-    if response.actionIdentifier == UNNotificationDefaultActionIdentifier {
-      await openInbox(route, remoteReceipt: remote)
-    } else if remote && response.notification.request.content.categoryIdentifier == Self.confirmCategory,
-      let metadata = RequestNotificationAction(userInfo: response.notification.request.content.userInfo),
-      let action = Self.answer(for: response.actionIdentifier)
-    {
-      await answer(route, metadata: metadata, displayedMessage: response.notification.request.content.body, action: action)
-    }
+    NotificationCallback.perform(operation: {
+      guard let route = RequestNotificationRoute(userInfo: response.notification.request.content.userInfo) else { return }
+      let remote = response.notification.request.trigger is UNPushNotificationTrigger
+      if response.actionIdentifier == UNNotificationDefaultActionIdentifier {
+        await self.openInbox(route, remoteReceipt: remote)
+      } else if remote && response.notification.request.content.categoryIdentifier == Self.confirmCategory,
+        let metadata = RequestNotificationAction(userInfo: response.notification.request.content.userInfo),
+        let action = Self.answer(for: response.actionIdentifier)
+      {
+        await self.answer(route, metadata: metadata, displayedMessage: response.notification.request.content.body, action: action)
+      }
+    }, completion: { _ in completionHandler() })
   }
 
   enum TestStatus: String, Encodable {

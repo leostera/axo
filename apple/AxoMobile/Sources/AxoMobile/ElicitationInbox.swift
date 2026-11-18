@@ -30,6 +30,7 @@ struct RequestsInbox: View {
   var client: AccountClient
   @State private var updates: [AgentNotification] = []
   @State private var updatesUnavailable = false
+  @State private var showingSettings = false
   @Environment(\.dismiss) private var dismiss
 
   var body: some View {
@@ -71,7 +72,21 @@ struct RequestsInbox: View {
       }
       .navigationTitle("Notifications")
       .navigationBarTitleDisplayMode(.inline)
-      .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
+      .toolbar {
+        ToolbarItem(placement: .topBarLeading) {
+          Button("Settings", systemImage: "gearshape") { showingSettings = true }
+            .accessibilityIdentifier("notification-settings")
+        }
+        ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
+      }
+      .sheet(isPresented: $showingSettings) {
+        NavigationStack {
+          NotificationPreferencesView()
+            .toolbar { ToolbarItem(placement: .confirmationAction) {
+              Button("Done") { showingSettings = false }.accessibilityIdentifier("notification-settings-done")
+            } }
+        }
+      }
       .task(id: MobilePush.shared.updatesRevision) {
         do { updates = try await client.notifications(); updatesUnavailable = false }
         catch is CancellationError {} catch { updatesUnavailable = true }
