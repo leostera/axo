@@ -90,9 +90,9 @@ private final class Listener: @unchecked Sendable {
       }
     }
     guard bound == 0, Darwin.listen(socket, 1) == 0 else { throw POSIXError(.EIO) }
-    let socket = socket
+    let listeningSocket = socket
     Thread.detachNewThread { [self] in
-      let client = Darwin.accept(socket, nil, nil)
+      let client = Darwin.accept(listeningSocket, nil, nil)
       defer {
         if client >= 0 { Darwin.close(client) }
         done.signal()
