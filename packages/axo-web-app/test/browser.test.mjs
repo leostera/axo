@@ -872,7 +872,8 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     assert.deepEqual(answers.map(({ device, ...rest }) => rest), [{ hostId, elicitationId, action: "accept" }]);
     assert.equal(answers[0].device.name, "Chrome on Mac");
     assert.equal(answers[0].device.key.length, 88);
-    await requests.getByRole("button", { name: "Close requests" }).click();
+    await requests.waitFor({ state: "hidden" });
+    assert.equal(await page.getByTestId("elicitation-bell").isDisabled(), true);
 
     // A new chat: its first message starts it in the Mac's home folder.
     await chats.getByRole("button", { name: "New chat", exact: true }).click();

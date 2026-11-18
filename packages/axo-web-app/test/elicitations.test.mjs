@@ -41,6 +41,15 @@ test("global inbox reaches both devices and Yes followed by voice Send never int
       pages.push(page);
     }
     const [desktop, phone, otherDevice] = pages;
+    const emptyBell = desktop.getByTestId("elicitation-bell");
+    assert.equal(await emptyBell.isDisabled(), true);
+    await emptyBell.evaluate(button => button.click());
+    assert.equal(await desktop.getByRole("dialog", { name: "Requests", exact: true }).isVisible(), false);
+    await desktop.getByRole("button", { name: "Settings", exact: true }).click();
+    const settings = desktop.getByRole("dialog", { name: "Settings", exact: true });
+    await settings.getByRole("heading", { name: "Notifications", exact: true }).waitFor();
+    await settings.getByText("Desktop notifications", { exact: true }).waitFor();
+    await settings.getByRole("button", { name: "Close Settings", exact: true }).click();
     await desktop.getByRole("button", { name: "Talk", exact: true }).click();
     await desktop.getByRole("group", { name: "Listening", exact: true }).waitFor();
     cloud.holdAnswers();
@@ -114,8 +123,10 @@ test("global inbox reaches both devices and Yes followed by voice Send never int
     await desktop.getByTestId("elicitation-bell").click();
     const inbox = desktop.getByRole("dialog", { name: "Requests", exact: true });
     await inbox.getByRole("button", { name: "Yes", exact: true }).click();
-    await phoneInbox.getByText("You’re all caught up.", { exact: true }).waitFor();
-    await inbox.getByRole("button", { name: "Close requests" }).click();
+    await phoneInbox.waitFor({ state: "hidden" });
+    await inbox.waitFor({ state: "hidden" });
+    assert.equal(await desktop.getByTestId("elicitation-bell").isDisabled(), true);
+    assert.equal(await phone.getByTestId("elicitation-bell").isDisabled(), true);
     await desktop.getByRole("group", { name: "Listening", exact: true }).waitFor();
     await desktop.getByRole("button", { name: "Send", exact: true }).click();
     await desktop.waitForFunction(() => document.querySelector("textarea")?.disabled);
@@ -134,6 +145,8 @@ test("global inbox reaches both devices and Yes followed by voice Send never int
     // A distinct request is an ordering fence: both replay and marker have now been processed.
     const marker = { ...question, id: "6c4e2f0a-1b2c-4d3e-8f9a-0b1c2d3e4f82", sessionId: sid(2), message: "A short-lived request.", createdAt: Date.now(), expiresAt: Date.now() + 2_000 };
     cloud.ask(marker);
+    await phone.waitForFunction(() => !document.querySelector('[data-testid="elicitation-bell"]').disabled);
+    await phone.getByTestId("elicitation-bell").click();
     await phoneInbox.getByText(marker.message, { exact: true }).waitFor();
     // Observe each device concurrently: waiting for one to expire before observing the next
     // would miss that next device's short-lived pending state.

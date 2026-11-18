@@ -198,6 +198,10 @@ const HOST_SCHEMA: readonly SchemaStep[] = [
     sql.exec("CREATE TABLE IF NOT EXISTS request_push (id TEXT PRIMARY KEY, next_at INTEGER, attempts INTEGER NOT NULL DEFAULT 0)");
   },
 ];
+  (sql) => {
+    sql.exec("CREATE TABLE IF NOT EXISTS resolution_push (id TEXT PRIMARY KEY, route_json TEXT NOT NULL, next_at INTEGER NOT NULL, attempts INTEGER NOT NULL DEFAULT 0)");
+    sql.exec("CREATE TABLE IF NOT EXISTS settled_requests (id TEXT PRIMARY KEY, expires_at INTEGER NOT NULL)");
+  },
 /** How long a progress snapshot may wait to be saved; an idle object is evicted after longer. */
 const PROGRESS_SAVE_MS = 1_000;
 /** A snapshot longer than this is held but not saved: a row holds at most 2 MB. */
@@ -415,7 +419,20 @@ export class AxoHostDO extends AxoHostRelay {
     if (call.method === ELICITATION_METHODS.resolved) {
       const parsed = elicitationResolvedSchema.safeParse(call.params);
       if (!parsed.success || !this.ready(peer)) return true;
-      this.ctx.storage.sql.exec("DELETE FROM pending_elicitations WHERE id = ?", parsed.data.id);
+      const pending = this.pendingElicitations().find(question => question.id === parsed.data.id);
+      const identity = this.identity();
+      if (pending && pending.sessionId !== parsed.data.sessionId) return true;
+      this.ctx.storage.transactionSync(() => {
+        if (pending && identity) {
+          this.ctx.storage.sql.exec("INSERT OR REPLACE INTO settled_requests (id, expires_at) VALUES (?, ?)", pending.id, Date.now() + 24 * 60 * 60_000);
+          const route: PushRoute = { accountId: identity.account_id, hostId: identity.host_id,
+            sessionId: pending.sessionId, requestId: pending.id, expiresAt: Date.now() + 24 * 60 * 60_000 };
+          this.ctx.storage.sql.exec("INSERT OR IGNORE INTO resolution_push (id, route_json, next_at) VALUES (?, ?, ?)",
+            pending.id, JSON.stringify(route), Date.now() + 1);
+        }
+        this.ctx.storage.sql.exec("DELETE FROM pending_elicitations WHERE id = ?", parsed.data.id);
+      });
+      await this.schedule();
       recordApiEvent({ event: "elicitation_resolved", outcome: parsed.data.action });
       this.queue({ kind: "elicitationResolved", resolved: parsed.data }, true);
       return true;
@@ -925,6 +942,8 @@ export class AxoHostDO extends AxoHostRelay {
     return true;
   }
 
+    sql.exec("DELETE FROM settled_requests WHERE expires_at<=?", Date.now());
+    if (sql.exec("SELECT 1 FROM settled_requests WHERE id=?", elicitation.id).toArray().length) return false;
   /** Generic routing data from current authoritative state; no question text crosses to APNs. */
   async pendingPush(requestId: string): Promise<PushRoute | null> {
     const identity = this.identity();
@@ -961,7 +980,7 @@ export class AxoHostDO extends AxoHostRelay {
 
   protected override nextWorkDeadline(): number | null {
     return this.ctx.storage.sql.exec<{ deadline: number | null }>(
-      "SELECT MIN(next_at) AS deadline FROM request_push").one().deadline;
+      "SELECT MIN(next_at) AS deadline FROM (SELECT next_at FROM request_push UNION ALL SELECT next_at FROM resolution_push)").one().deadline;
   }
 
   protected override async runScheduledWork(): Promise<void> {
@@ -984,6 +1003,18 @@ export class AxoHostDO extends AxoHostRelay {
   // ─── Notices ───────────────────────────────────────────────────────────────
 
   private queueSession(sessionId: string): void {
+    const resolutions = sql.exec<{ id: string; route_json: string; attempts: number }>(
+      "SELECT id, route_json, attempts FROM resolution_push WHERE next_at<=? LIMIT 4", Date.now()).toArray();
+    for (const work of resolutions) {
+      const route = JSON.parse(work.route_json) as PushRoute;
+      let next: number | null = null;
+      if (route.expiresAt > Date.now() && work.attempts < 8) {
+        try { next = await this.ctx.exports.AxoPushRegistry.getByName("sandbox-v1").resolve(route); }
+        catch { next = Date.now() + 30_000; }
+      }
+      if (next === null || next >= route.expiresAt) sql.exec("DELETE FROM resolution_push WHERE id=?", work.id);
+      else sql.exec("UPDATE resolution_push SET next_at=?, attempts=attempts+1 WHERE id=?", next, work.id);
+    }
     const row = this.indexRow(sessionId);
     if (row) this.queue({ kind: "session", session: this.clientSession(row) });
   }

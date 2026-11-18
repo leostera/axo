@@ -12,6 +12,7 @@ import UserNotifications
 final class MobilePush: NSObject, UNUserNotificationCenterDelegate {
   static let shared = MobilePush()
   private(set) var inboxRevision = UUID()
+  private(set) var deliveryRevision = UUID()
   private var inboxRoute: RequestNotificationRoute?
   private var deviceToken: Data?
   private var account: AccountSession?
@@ -21,6 +22,7 @@ final class MobilePush: NSObject, UNUserNotificationCenterDelegate {
   private var submittedSession: SessionToken?
   private var submittedPreviews: Bool?
   private var answersInFlight: Set<UUID> = []
+  private var inboxResolutions: [UUID: Set<UUID>] = [:]
   private(set) var updatesRevision = UUID()
   nonisolated static let previewPreference = "push.richPreviews.v1"
   private nonisolated static let confirmCategory = "AXO_CONFIRM_V1"
@@ -191,14 +193,16 @@ final class MobilePush: NSObject, UNUserNotificationCenterDelegate {
   }
 
   /// Only call with an authoritative connected inbox, never a disconnected/cache-only snapshot.
-  func reconcile(pending: Set<UUID>) async {
+  func reconcile(pending: Set<UUID>, resolved: Set<UUID> = []) async {
     guard enabled, let account else { return }
     guard let session = try? await account.tokens.sessionToken() else { return }
+    inboxResolutions = [session.accountID: resolved]
     let delivered = await UNUserNotificationCenter.current().deliveredNotifications()
     guard (try? await account.tokens.sessionToken()) == session else { return }
     let obsolete = delivered.filter { notification in
       guard let route = RequestNotificationRoute(userInfo: notification.request.content.userInfo) else { return false }
       if Self.isInformation(notification.request.content.userInfo) { return route.accountID != session.accountID }
+      if resolved.contains(route.requestID) { return true }
       return RequestNotificationCleanup.shouldRemove(receivedAt: notification.date,
         belongsToCurrentAccount: route.accountID == session.accountID, isPending: pending.contains(route.requestID))
     }.map { $0.request.identifier }
@@ -213,12 +217,46 @@ final class MobilePush: NSObject, UNUserNotificationCenterDelegate {
       guard let route = RequestNotificationRoute(userInfo: notification.request.content.userInfo),
         await self.shouldPresent(route) else { return UNNotificationPresentationOptions() }
       if notification.request.trigger is UNPushNotificationTrigger { self.reportReceivedTest(route) }
+      self.deliveryRevision = UUID()
       self.refreshUpdates()
       return [.banner, .list, .sound]
     }, completion: { completionHandler($0) })
   }
 
+  /// APNs retraction: match the complete route, not a notification identifier or an answer.
+  func receiveResolution(_ userInfo: [AnyHashable: Any]) async -> Bool {
+    guard enabled, let resolution = RequestNotificationResolution(userInfo: userInfo) else { return false }
+    let route = resolution.route
+    // Retraction is display-only and fully route-scoped. It must work while the token
+    // Keychain is locked; unlike answering, it never needs credentials or a device proof.
+    rememberResolution(route)
+    let center = UNUserNotificationCenter.current()
+    let delivered = await center.deliveredNotifications()
+    let ids = delivered.filter { resolution.matches($0.request.content.userInfo) }.map { $0.request.identifier }
+    center.removeDeliveredNotifications(withIdentifiers: ids)
+    center.removePendingNotificationRequests(withIdentifiers: ids)
+    deliveryRevision = UUID()
+    return true
+  }
+
+  private func resolutionKey(_ route: RequestNotificationRoute) -> String {
+    [route.accountID, route.hostID, route.sessionID, route.requestID]
+      .map { $0.uuidString.lowercased() }.joined(separator: "/")
+  }
+
+  private func rememberResolution(_ route: RequestNotificationRoute) {
+    let now = Date().timeIntervalSince1970
+    var tombstones = (defaults.dictionary(forKey: "push.resolvedRoutes.v1") as? [String: Double] ?? [:])
+      .filter { $0.value > now }
+    tombstones[resolutionKey(route)] = now + 86_400
+    tombstones = Dictionary(uniqueKeysWithValues: tombstones.sorted { $0.value > $1.value }.prefix(512).map { ($0.key, $0.value) })
+    defaults.set(tombstones, forKey: "push.resolvedRoutes.v1")
+  }
+
   private func shouldPresent(_ route: RequestNotificationRoute) async -> Bool {
+    if inboxResolutions[route.accountID]?.contains(route.requestID) == true { return false }
+    if let expiry = (defaults.dictionary(forKey: "push.resolvedRoutes.v1") as? [String: Double])?[resolutionKey(route)],
+      expiry > Date().timeIntervalSince1970 { return false }
     guard let account, let token = try? await account.tokens.sessionToken() else { return false }
     return token.accountID == route.accountID
   }

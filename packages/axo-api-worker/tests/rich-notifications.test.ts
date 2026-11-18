@@ -100,8 +100,15 @@ test("current confirm-only content is immutable and answers require native authe
   }
   assert.equal((await answering).status, 200);
   daemon.send({ jsonrpc: "2.0", method: "axo.elicitation.resolved", params: { id: asked.id, sessionId, action: "accept" } });
-  await new Promise(resolve => setTimeout(resolve, 30));
+  await eventually(() => sent.some(value => value.axoResolution?.version === 1));
+  const cleanup = sent.find(value => value.axoResolution?.version === 1);
+  assert.equal(cleanup.axo.requestId, asked.id);
+  assert.equal(cleanup.axo.sessionId, sessionId);
+  assert.deepEqual(cleanup.aps, { "content-available": 1 });
   assert.equal((await post("api/v1/account/push/request", { ...answer, device })).status, 409);
+  daemon.send({ jsonrpc: "2.0", method: "axo.elicitation.requested", params: asked });
+  await new Promise(resolve => setTimeout(resolve, 50));
+  assert.equal((await post("api/v1/account/push/request", read)).status, 409, "a late replay cannot resurrect a settled request");
 });
 
 test("sensitive input stays generic even with rich previews enabled", async t => {

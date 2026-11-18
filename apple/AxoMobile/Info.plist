@@ -19,6 +19,10 @@
 	<string>Axo uses the camera when you take a photo to send with a message.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Axo listens while you say a message, and turns it into words on this device. Audio never leaves it.</string>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>remote-notification</string>
+	</array>
 	<key>UIAppFonts</key>
 	<array>
 		<string>Fredoka.ttf</string>

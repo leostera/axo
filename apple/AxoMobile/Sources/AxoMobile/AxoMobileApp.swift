@@ -73,6 +73,16 @@ public final class AxoMobileLifecycle: NSObject, UIApplicationDelegate {
     MobilePush.shared.receive(deviceToken: deviceToken)
   }
 
+  public nonisolated func application(_ application: UIApplication, didReceiveRemoteNotification userInfo: [AnyHashable: Any],
+    fetchCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void) {
+    NotificationCallback.perform(operation: {
+      guard !EnclaveProbeRuntime.requestsDestinationGate(role: .mobile),
+        !MobileTransferConfiguration.requiresDestinationGate else { return UIBackgroundFetchResult.noData }
+      _ = AppEnvironment.shared
+      return await MobilePush.shared.receiveResolution(userInfo) ? .newData : .noData
+    }, completion: { completionHandler($0) })
+  }
+
   public func application(_ application: UIApplication, didFailToRegisterForRemoteNotificationsWithError error: Error) {
     MobilePush.shared.registrationFailed()
   }

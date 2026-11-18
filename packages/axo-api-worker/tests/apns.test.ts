@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { decodeJwt, decodeProtectedHeader, exportPKCS8, generateKeyPair, jwtVerify } from "jose";
-import { ApnsProvider, ApnsRequestNotice, apnsDestinationSchema, type ApnsCredentials } from "../src/push/apns";
+import { ApnsProvider, ApnsRequestNotice, ApnsRequestResolution, apnsDestinationSchema, type ApnsCredentials } from "../src/push/apns";
 
 const NOW = 1_800_000_000_000;
 const route = {
@@ -41,6 +41,25 @@ test("the only payload is private generic attention and validated routing, with 
   assert.throws(() => new ApnsRequestNotice({ ...route, question: "secret" }, NOW));
   assert.throws(() => new ApnsRequestNotice({ ...route, requestId: "../other" }, NOW));
   assert.throws(() => new ApnsRequestNotice(route, Number.NaN));
+});
+
+test("resolution uses silent background delivery with no alert, sound, question or answer", async () => {
+  const resolution = new ApnsRequestResolution(route, NOW + 60_000);
+  assert.deepEqual(JSON.parse(resolution.body), {
+    aps: { "content-available": 1 }, axo: { version: 1, ...route }, axoResolution: { version: 1 },
+  });
+  const provider = await ApnsProvider.create(credentials, {
+    now: () => NOW,
+    transport: async (_url, init) => {
+      const headers = new Headers(init.headers);
+      assert.equal(headers.get("apns-push-type"), "background");
+      assert.equal(headers.get("apns-priority"), "5");
+      assert.equal(headers.get("apns-collapse-id"), route.requestId);
+      return new Response(null, { status: 200 });
+    },
+  });
+  assert.equal((await provider.send(destination(), resolution)).kind, "accepted");
+  assert.throws(() => new ApnsRequestResolution({ ...route, action: "accept" }, NOW));
 });
 
 test("one sandbox attempt has the correct headers and a verifiable ES256 provider JWT", async () => {

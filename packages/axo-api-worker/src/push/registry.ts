@@ -2,7 +2,7 @@ import { DurableObject } from "cloudflare:workers";
 import { InformationNotifications, type NoticeOwner } from "./notices";
 import { recordApiEvent } from "../observability";
 import { z } from "zod";
-import { ApnsProvider, ApnsRequestNotice, apnsDestinationSchema, type ApnsResult } from "./apns";
+import { ApnsProvider, ApnsRequestNotice, ApnsRequestResolution, apnsDestinationSchema, type ApnsResult } from "./apns";
 import { pushRegistrationSchema, type PushOwner, type PushRegistrationResult } from "./registration";
 import { hostDOName } from "../host-do";
 
@@ -100,6 +100,37 @@ export class AxoPushRegistry extends DurableObject<Env> {
     return nextAt;
   }
 
+  /** Authoritative terminal outbox only. Cleanup is idempotent; it cannot answer a request. */
+  async resolve(input: unknown): Promise<number | null> {
+    const parsed = routeSchema.safeParse(input);
+    if (!parsed.success || !this.env.APNS_PRIVATE_KEY || !this.env.APNS_KEY_ID || !this.env.APNS_TEAM_ID) return null;
+    const route = parsed.data;
+    const account = this.ctx.exports.AxoAccountDirectory.getByName(route.accountId);
+    if (!await account.isPushHostActive(route.hostId)) return null;
+    const host = this.ctx.exports.AxoHostDO.getByName(hostDOName(route.accountId, route.hostId));
+    if (await host.pendingPush(route.requestId)) return null;
+    const rows = this.ctx.storage.sql.exec<PushRegistrationRow>(
+      "SELECT * FROM push_registrations WHERE account_id=? AND token IS NOT NULL AND expires_at>? LIMIT 20",
+      route.accountId, Date.now()).toArray();
+    const provider = await this.getProvider();
+    let next: number | null = null;
+    for (const row of rows) {
+      if (!await account.verifyPushSession(row.session_digest, Date.now()) || !this.current(row)) continue;
+      if (!await account.isPushHostActive(route.hostId) || !this.current(row)) continue;
+      const { expiresAt, ...routing } = route;
+      const notice = new ApnsRequestResolution(routing, expiresAt);
+      const result = await provider.send(apnsDestinationSchema.parse({
+        topic: "dev.leostera.axo", environment: "sandbox", token: row.token,
+      }), notice);
+      this.invalidate(row, result);
+      // Unlike answers/alerts, repeating a retraction is safe after transport uncertainty.
+      const retry = result.kind === "deferred" ? result.notBefore
+        : result.kind === "uncertain" ? Date.now() + 30_000 : null;
+      if (retry !== null && retry < route.expiresAt) next = Math.min(next ?? retry, retry);
+    }
+    return next;
+  }
+
   private async deliver(route: PushRoute, row: PushRegistrationRow): Promise<number | null> {
     const sql = this.ctx.storage.sql;
     const key = [route.accountId, route.hostId, route.requestId, row.installation_id];
@@ -143,6 +174,10 @@ export class AxoPushRegistry extends DurableObject<Env> {
     const retry = result.kind === "deferred" && result.notBefore < route.expiresAt ? result.notBefore : null;
     sql.exec(`UPDATE push_attempts SET state=?, next_at=? WHERE account_id=? AND host_id=? AND request_id=? AND installation_id=?`, retry === null ? result.kind : "deferred", retry, ...key);
     this.invalidate(row, result);
+    // A terminal event may race this in-flight alert. Retract again after its admission.
+    if (!await host.pendingPush(route.requestId)) {
+      await this.resolve({ ...route, expiresAt: Date.now() + 24 * 60 * 60_000 });
+    }
     return retry;
   }
 

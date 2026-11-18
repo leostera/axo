@@ -18,6 +18,7 @@ import {
 import { assetUploader } from "./assets.ts";
 import { ChatCache } from "./cache.ts";
 import { ElicitationInbox } from "./elicitation-inbox.tsx";
+import { NotificationSettings } from "./notification-settings.tsx";
 
 const DEFAULT_API_URL = "https://axo.leostera.dev";
 const apiBaseUrl = import.meta.env.VITE_AXO_API_BASE_URL || DEFAULT_API_URL;
@@ -567,6 +568,7 @@ function SettingsSheet({ onClose, onSignOut, onApps }: { onClose: () => void; on
           </button>
         </div>
       ) : null}
+      <NotificationSettings />
       <ChatListSettings />
       <h3 className="sheet-section">Theme</h3>
       <div className="grouped">

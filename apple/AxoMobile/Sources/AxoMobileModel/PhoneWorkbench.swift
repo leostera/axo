@@ -90,6 +90,8 @@ public final class PhoneWorkbench {
   /// What the Macs' agents ask now, oldest first (RFD0029).
   public private(set) var questions: [AskedQuestion] = []
   @ObservationIgnored private var settledQuestions: [String: Int64] = [:]
+  public private(set) var notificationResolutionRevision = UUID()
+  public var settledRequestIDs: Set<UUID> { Set(settledQuestions.keys.compactMap(UUID.init(uuidString:))) }
   private struct AnswerOperation {
     let destination: Selection
     let result: Task<Bool, Never>
@@ -232,7 +234,9 @@ public final class PhoneWorkbench {
         questions.append(AskedQuestion(hostID: host, elicitation: elicitation))
       }
     case .elicitationResolved(_, let id, _):
-      if let question = questions.first(where: { $0.id == id }) { settledQuestions[id] = question.elicitation.expiresAt }
+      settledQuestions[id] = questions.first(where: { $0.id == id })?.elicitation.expiresAt
+        ?? Int64(Date().timeIntervalSince1970 * 1_000) + 600_000
+      notificationResolutionRevision = UUID()
       questions.removeAll { $0.id == id }
     }
   }

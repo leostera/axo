@@ -30,26 +30,24 @@ export function ElicitationInbox({ workbench }: { workbench: ChatWorkbench }) {
         body: "A Session has a request waiting. Open Axo to review it.",
         tag: `axo.elicitation.${id}`,
       });
-      notification.onclick = () => { window.focus(); setOpen(true); };
+      notification.onclick = () => {
+        if (!workbench.questions().some(question => question.elicitation.id === id && question.elicitation.expiresAt > Date.now())) return;
+        window.focus(); setOpen(true);
+      };
       return { close: () => { notification.onclick = null; notification.close(); } };
     });
   }, [questions.map(question => question.elicitation.id).join(), allowed, notifications]);
+  useEffect(() => { if (questions.length === 0) setOpen(false); }, [questions.length]);
   useEffect(() => {
-    if (open) dialog.current?.showModal();
+    if (open && questions.length > 0) dialog.current?.showModal();
     else dialog.current?.close();
   }, [open]);
-
-  const enable = async () => {
-    // Only this explicit click can prompt for permission.
-    if (typeof Notification !== "undefined") {
-      try { setAllowed(await Notification.requestPermission()); } catch { setAllowed(permission()); }
-    }
-  };
 
   return <>
     <button className={`circle-button elicitation-bell${questions.length ? " has-requests" : ""}`}
       data-testid="elicitation-bell" aria-label={`Requests, ${questions.length} pending`}
-      title="Requests" onClick={() => setOpen(true)}>
+      title={questions.length ? "Requests" : "No pending requests"} disabled={questions.length === 0}
+      onClick={() => { if (questions.length) setOpen(true); }}>
       <Icon name="bell" size={19} />
       {questions.length ? <span className="elicitation-count" aria-live="polite">{questions.length}</span> : null}
     </button>
@@ -62,9 +60,6 @@ export function ElicitationInbox({ workbench }: { workbench: ChatWorkbench }) {
           <h2>Requests {questions.length ? `(${questions.length})` : ""}</h2>
           <button className="circle-button" aria-label="Close requests" onClick={() => setOpen(false)}><Icon name="close" /></button>
         </header>
-        {allowed === "default" ? <button className="pill-button" onClick={() => void enable()}>Enable desktop notifications</button> : null}
-        {allowed === "denied" ? <p className="tool-note">Desktop notifications are blocked in your browser settings. Requests still appear here.</p> : null}
-        {questions.length === 0 ? <p className="tool-note">You’re all caught up.</p> : null}
         <div className="elicitation-inbox-list">
           {questions.map(question => {
             const host = workbench.hosts.find(host => host.hostId === question.hostId);

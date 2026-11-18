@@ -62,8 +62,9 @@ button:disabled { cursor: default; }
   background: color-mix(in srgb, var(--bg) 55%, transparent); backdrop-filter: blur(20px) saturate(1.6);
   transition: background .15s, transform .15s;
 }
-.circle-button:hover { background: var(--fill-strong); }
-.circle-button:active { transform: scale(0.94); }
+.circle-button:hover:not(:disabled) { background: var(--fill-strong); }
+.circle-button:active:not(:disabled) { transform: scale(0.94); }
+.circle-button:disabled { color: var(--secondary); opacity: 0.4; }
 .circle-placeholder { width: 44px; flex: none; }
 .pill-button {
   display: inline-flex; min-height: 44px; align-items: center; justify-content: center; gap: 8px; padding: 0 20px;

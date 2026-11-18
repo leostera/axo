@@ -53,7 +53,25 @@ export class ApnsRequestNotice {
   }
 }
 
-export interface ApnsNotice { readonly expiresAt: number; readonly collapseId: string; readonly body: string }
+export interface ApnsNotice {
+  readonly expiresAt: number; readonly collapseId: string; readonly body: string;
+  readonly pushType?: "background";
+}
+
+/** Retraction only: never an alert, answer, navigation intent or source of approval. */
+export class ApnsRequestResolution implements ApnsNotice {
+  readonly #route: z.infer<typeof routeSchema>;
+  readonly pushType = "background" as const;
+  constructor(route: unknown, readonly expiresAt: number) {
+    this.#route = routeSchema.parse(route);
+    if (!Number.isSafeInteger(expiresAt) || expiresAt <= 0) throw new Error("Invalid push expiry");
+  }
+  get collapseId(): string { return this.#route.requestId.toLowerCase(); }
+  get body(): string {
+    return JSON.stringify({ aps: { "content-available": 1 },
+      axo: { version: 1, ...this.#route }, axoResolution: { version: 1 } });
+  }
+}
 
 export class ApnsInformationNotice implements ApnsNotice {
   readonly #route: z.infer<typeof routeSchema>;
@@ -160,7 +178,7 @@ export class ApnsProvider {
         method: "POST", redirect: "manual", signal: bounded,
         headers: {
           authorization: `bearer ${token}`, "content-type": "application/json",
-          "apns-topic": destination.topic, "apns-push-type": "alert", "apns-priority": "10",
+          "apns-topic": destination.topic, "apns-push-type": notice.pushType ?? "alert", "apns-priority": notice.pushType === "background" ? "5" : "10",
           "apns-expiration": String(Math.floor(notice.expiresAt / 1000)),
           "apns-collapse-id": notice.collapseId, "apns-id": apnsId,
         },
