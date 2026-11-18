@@ -238,3 +238,20 @@ fn thirty_two_pending_questions_do_not_allocate_a_thread_each() {
         pending(&axod).is_empty().then_some(())
     });
 }
+
+/// Which devices answer this Mac is the person's to say, at the Mac, in Axo.app (RFD0069): any
+/// client may read the list, and only Axo.app, by code signature, allows or removes a device.
+/// The same uid is no such identity, on macOS or on Linux.
+#[test]
+fn only_axo_app_decides_which_devices_answer() {
+    let axod = Axod::start();
+    let devices = axod.ok("axo.device.list", json!({}));
+    assert_eq!(devices["allowed"], json!([]));
+    assert_eq!(devices["waiting"], json!([]));
+    let key = "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBA=";
+    let decide = axod.err("axo.device.decide", json!({ "key": key, "allow": true }));
+    assert_eq!(decide.code, NOT_A_PERSON, "{decide:?}");
+    let revoke = axod.err("axo.device.revoke", json!({ "key": key }));
+    assert_eq!(revoke.code, NOT_A_PERSON, "{revoke:?}");
+    assert_eq!(axod.ok("axo.device.list", json!({}))["allowed"], json!([]));
+}

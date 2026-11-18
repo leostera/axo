@@ -155,6 +155,17 @@ change behind the person's back. RFD0067's migration refuses to carry one over
   values on `axod.sock` (`AxodConnection.resolveElicitation(values:)` fails with
   `untrustedPeer`). Signed builds, which are the only ones published, always verify.
 
+### Linux hosts
+
+The rules are the same on a Linux host: every remote answer, including the computer-use gate
+and [RFD0059](RFD0059-linux-sudo-input.md)'s sudo confirmation and password, goes through the
+same `check`. Linux has no signed Axo.app. [RFD0053](RFD0053-linux-computer-use.md) says that a
+same-uid peer gains no right to approve, so `axo.device.decide` and `axo.device.revoke` refuse
+every Linux caller. Until Linux has a trusted local surface to allow devices, a Linux host
+refuses every remote answer with `UNKNOWN_DEVICE`, and its devices wait. This fails closed: a
+Linux host can no longer be approved from a phone. That is a known gap, not a reason to trust the
+same uid.
+
 ## Invariants
 
 - An answer counts only if it is signed for that answer by a key the person allowed at that Mac,
