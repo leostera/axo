@@ -62,8 +62,13 @@ export function peerClientId(hostId: string): string {
   return `host-${uuid.parse(hostId)}`;
 }
 
+/** Whether a client id is a Mac's; the Worker gives one only to a Mac signed in with its credential. */
+export function isPeerClientId(clientId: string): boolean {
+  return clientId.startsWith("host-");
+}
+
 function peerHostOf(clientId: string): string | null {
-  return clientId.startsWith("host-") ? clientId.slice("host-".length) : null;
+  return isPeerClientId(clientId) ? clientId.slice("host-".length) : null;
 }
 
 /** What a protocol 3 client asks of its account socket (RFD0032). */

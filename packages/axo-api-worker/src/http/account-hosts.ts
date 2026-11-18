@@ -1,12 +1,22 @@
 import { clientIdSchema, uuid } from "@axo/protocol";
 import { hostIdSchema, hostListResultSchema } from "@axo/protocol/v1";
-import { clientDOName, peerClientId } from "../client-do";
+import { clientDOName, isPeerClientId, peerClientId } from "../client-do";
 import { hostDOName } from "../host-do";
 import { DIRECT_CLIENT_ROLE } from "../host-clients";
 import { requireAccount, type AuthExports } from "../auth/account-access";
 import type { AuthEnvironment } from "../auth/config";
 
 const privateHeaders = { "Cache-Control": "private, no-store", Pragma: "no-cache" };
+
+/**
+ * The client id a person's client asks for. `host-<id>` is a Mac's (peerClientId), given only on
+ * the routes a host credential signs in to: a person who took one would replace that Mac's socket
+ * and be served as the Mac.
+ */
+function personClientId(request: Request): string | null {
+  const clientId = clientIdSchema.safeParse(new URL(request.url).searchParams.get("clientId"));
+  return clientId.success && !isPeerClientId(clientId.data) ? clientId.data : null;
+}
 type PairingEnvironment = AuthEnvironment;
 
 export async function serveAccountHosts(request: Request, env: PairingEnvironment, exports: AuthExports): Promise<Response> {
@@ -133,16 +143,16 @@ export async function upgradeAccountClient(
 ): Promise<Response> {
   if (request.method !== "GET" || request.headers.get("Upgrade")?.toLowerCase() !== "websocket")
     return new Response("WebSocket required", { status: 426, headers: privateHeaders });
-  const clientId = clientIdSchema.safeParse(new URL(request.url).searchParams.get("clientId"));
-  if (!clientId.success) return json({ error: "Valid clientId required" }, 400);
+  const clientId = personClientId(request);
+  if (!clientId) return json({ error: "Valid clientId required" }, 400);
   // The socket acts on the account's hosts, so it is held to the same rule as a change.
   const caller = await requireAccount(request, env, exports, "change");
   if (caller instanceof Response) return caller;
-  return ctx.exports.AxoClientDO.getByName(clientDOName(caller.accountId, clientId.data)).fetch(new Request("https://client.internal/", {
+  return ctx.exports.AxoClientDO.getByName(clientDOName(caller.accountId, clientId)).fetch(new Request("https://client.internal/", {
     headers: {
       Upgrade: "websocket",
       "X-Axo-Account": caller.accountId,
-      "X-Axo-Client": clientId.data,
+      "X-Axo-Client": clientId,
       "X-Axo-Expiry": String(caller.expiresAt),
     },
   }));
@@ -153,16 +163,16 @@ export async function serveAccountHTTPClient(
   request: Request, env: PairingEnvironment, exports: AuthExports, ctx: ExecutionContext,
 ): Promise<Response> {
   if (request.method !== "POST") return json({ error: "POST required" }, 405, { Allow: "POST" });
-  const clientId = clientIdSchema.safeParse(new URL(request.url).searchParams.get("clientId"));
-  if (!clientId.success) return json({ error: "Valid clientId required" }, 400);
+  const clientId = personClientId(request);
+  if (!clientId) return json({ error: "Valid clientId required" }, 400);
   const caller = await requireAccount(request, env, exports, "change");
   if (caller instanceof Response) return caller;
-  return ctx.exports.AxoClientDO.getByName(clientDOName(caller.accountId, clientId.data)).fetch(new Request("https://client.internal/http", {
+  return ctx.exports.AxoClientDO.getByName(clientDOName(caller.accountId, clientId)).fetch(new Request("https://client.internal/http", {
     method: "POST",
     body: request.body,
     headers: {
       "X-Axo-Account": caller.accountId,
-      "X-Axo-Client": clientId.data,
+      "X-Axo-Client": clientId,
       "X-Axo-Expiry": String(caller.expiresAt),
       "X-Axo-SignIn": caller.sessionDigest,
     },
@@ -226,8 +236,8 @@ export async function upgradeHostClient(
 ): Promise<Response> {
   if (request.method !== "GET" || request.headers.get("Upgrade")?.toLowerCase() !== "websocket")
     return new Response("WebSocket required", { status: 426, headers: privateHeaders });
-  const clientId = clientIdSchema.safeParse(new URL(request.url).searchParams.get("clientId"));
-  if (!clientId.success) return json({ error: "Valid clientId required" }, 400);
+  const clientId = personClientId(request);
+  if (!clientId) return json({ error: "Valid clientId required" }, 400);
   const hostId = uuid.safeParse(rawHostId);
   if (!hostId.success) return json({ error: "Invalid host" }, 400);
   const caller = await requireAccount(request, env, exports, "change");
@@ -245,7 +255,7 @@ export async function upgradeHostClient(
       "X-Axo-Role": DIRECT_CLIENT_ROLE,
       "X-Axo-Account": caller.accountId,
       "X-Axo-Machine": hostId.data,
-      "X-Axo-Client": clientId.data,
+      "X-Axo-Client": clientId,
       "X-Axo-Person": "1",
       "X-Axo-Expiry": String(caller.expiresAt),
     },

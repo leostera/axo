@@ -149,6 +149,16 @@ node_test(
     tsx = True,
 )
 
+# Focused tests of who a socket is signed in as, and how long it stays so.
+node_test(
+    name = "sign_in_test",
+    concurrency = 1,
+    data = _DEPS + [":node_modules/tsx", ":test_files"],
+    tests = ["tests/socket-sign-in.test.ts"],
+    tests_in_data = True,
+    tsx = True,
+)
+
 # Focused watchOS HTTPS mailbox integration tests (no client WebSockets).
 node_test(
     name = "http_test",
