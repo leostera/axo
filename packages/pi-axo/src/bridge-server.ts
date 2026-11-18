@@ -11,6 +11,10 @@ import {
 } from "./protocol.js";
 
 const MAX_CACHED_COMMANDS = 256;
+/** How long a connection has to authenticate before it is closed (RFD0070). */
+export const BRIDGE_AUTH_TIMEOUT_MS = 5_000;
+/** Connections still authenticating at once; more are closed on arrival. */
+const MAX_UNAUTHENTICATED = 8;
 
 function traceBridge(message: string): void {
   if (process.env.AXO_PI_BRIDGE_DEBUG === "1") console.error(`Axo Pi bridge: ${message}`);
@@ -20,7 +24,9 @@ type CommandHandler = (command: PiControlCommand) => Promise<PiCommandResult>;
 
 export class AxoPiBridgeServer {
   private server: Server | undefined;
+  /** The authenticated Axod. Only a connection that proved the token takes this slot. */
   private socket: Socket | undefined;
+  private readonly authenticating = new Set<Socket>();
   private identity: PiSessionIdentity | undefined;
   private activitySnapshot: (() => { working: boolean }) | undefined;
   /** What a newly connected Axod is told right after the activity snapshot: Pi's state (RFD0033). */
@@ -37,6 +43,7 @@ export class AxoPiBridgeServer {
     private readonly bridgeToken: string,
     private readonly handleCommand: CommandHandler,
     private readonly onDisconnect: () => void = () => {},
+    private readonly authTimeoutMs = BRIDGE_AUTH_TIMEOUT_MS,
   ) {}
 
   async start(): Promise<void> {
@@ -117,6 +124,8 @@ export class AxoPiBridgeServer {
     this.socket = undefined;
     if (socket) this.onDisconnect();
     socket?.destroy();
+    for (const pending of this.authenticating) pending.destroy();
+    this.authenticating.clear();
 
     const server = this.server;
     this.server = undefined;
@@ -129,19 +138,25 @@ export class AxoPiBridgeServer {
     }
   }
 
+  /**
+   * A connection waits, apart, until it authenticates; only then does it take the slot. One that
+   * never authenticates is closed after `authTimeoutMs`, so no unauthenticated process can hold the
+   * bridge and keep Axod out (RFD0070).
+   */
   private accept(socket: Socket): void {
     traceBridge("accepted local connection");
-    if (this.socket !== undefined) {
+    if (this.authenticating.size >= MAX_UNAUTHENTICATED) {
       socket.destroy();
       return;
     }
-
-    this.socket = socket;
+    this.authenticating.add(socket);
+    const deadline = setTimeout(() => this.protocolError(socket, "bridge authentication timed out"), this.authTimeoutMs);
+    deadline.unref();
+    (socket as SocketWithInput).axoDeadline = deadline;
     socket.setNoDelay(true);
     socket.on("error", () => this.disconnect(socket));
     socket.on("close", () => this.disconnect(socket));
     socket.on("data", data => this.receive(socket, data));
-    if (this.identity !== undefined) void this.sendHello(socket).catch(() => socket.destroy());
   }
 
   private receive(socket: Socket, data: Buffer): void {
@@ -231,6 +246,11 @@ export class AxoPiBridgeServer {
     const expected = Buffer.from(this.bridgeToken, "utf8");
     const received = Buffer.from(record.token, "utf8");
     if (expected.byteLength !== received.byteLength || !timingSafeEqual(expected, received)) return false;
+    clearTimeout(socket.axoDeadline);
+    this.authenticating.delete(socket);
+    // One Axod at a time, as before: the first to authenticate keeps the bridge.
+    if (this.socket !== undefined) return false;
+    this.socket = socket;
     socket.axoAuthenticated = true;
     void this.send({ type: "authenticated", protocolVersion: 1 }, socket)
       .then(() => this.sendHello(socket))
@@ -302,6 +322,8 @@ export class AxoPiBridgeServer {
   }
 
   private disconnect(socket: Socket): void {
+    clearTimeout((socket as SocketWithInput).axoDeadline);
+    this.authenticating.delete(socket);
     if (this.socket === socket) {
       this.socket = undefined;
       this.onDisconnect();
@@ -321,6 +343,7 @@ export class AxoPiBridgeServer {
 interface SocketWithInput extends Socket {
   axoInput?: { buffer: Buffer };
   axoAuthenticated?: boolean;
+  axoDeadline?: NodeJS.Timeout;
 }
 
 /** True when nothing listens on `path`: connecting is refused, or the file has gone. */

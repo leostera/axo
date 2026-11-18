@@ -195,3 +195,28 @@ test("sends nothing to Axod before it authenticates, even when Pi publishes firs
     await server.close();
   }
 });
+
+test("a connection that never authenticates neither keeps Axod out nor stays open (RFD0070)", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "axo-pi-bridge-squat-"));
+  const socketPath = join(directory, "bridge.sock");
+  const server = new AxoPiBridgeServer(socketPath, identity.axoSessionId, bridgeToken, async () => ({ accepted: true }), () => {}, 100);
+  try {
+    await server.start();
+    server.bindIdentity(identity, () => ({ working: false }));
+    // Connected first, and silent.
+    const squatter = await connectTo(socketPath);
+    const squatterClosed = once(squatter.socket, "close");
+    const axod = await connectTo(socketPath);
+    axod.socket.write(`${JSON.stringify({ type: "authenticate", protocolVersion: 1, token: bridgeToken })}\n`);
+    assert.deepEqual(await axod.next(), { type: "authenticated", protocolVersion: 1 });
+    assert.deepEqual(await axod.next(), { type: "hello", protocolVersion: 1, identity });
+    await squatterClosed;
+    // With Axod authenticated, a second token holder is refused.
+    const second = await connectTo(socketPath);
+    second.socket.write(`${JSON.stringify({ type: "authenticate", protocolVersion: 1, token: bridgeToken })}\n`);
+    assert.deepEqual(await second.next(), { type: "protocolError", message: "bridge authentication failed" });
+    axod.socket.destroy();
+  } finally {
+    await server.close();
+  }
+});
