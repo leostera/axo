@@ -131,7 +131,7 @@ Approvals stay in Codex's TUI: axod sees each request but never answers it (Open
 
 ### Discovery
 
-An agent's executable is found, in order, from: `AXO_<KIND>_EXECUTABLE`; the configured command for that kind (`agent.command` for Pi, as today); `PATH`; then the directories each kind's installer uses, under the user's home and the system (`~/.local/bin`, `~/.bun/bin`, `~/.opencode/bin`, `~/.npm-global/bin`, `~/.cargo/bin`, `/opt/homebrew/bin`, `/usr/local/bin`). The last step matters because axod starts from launchd with a minimal `PATH`: Claude Code's installer puts it in `~/.local/bin`. A candidate is the agent only if `<it> --version` answers within two seconds with a version the adapter supports; the answer is cached until the file changes.
+An agent's executable is found, in order, from: `AXO_<KIND>_EXECUTABLE`; the configured command for that kind (`agent.command` for Pi, as today); `PATH`; then the directories each kind's installer uses, under the user's home and the system (`~/.local/bin`, `~/.bun/bin`, `~/.opencode/bin`, `~/.npm-global/bin`, `~/.cargo/bin`, `/opt/homebrew/bin`, `/usr/local/bin`). The last step matters because axod starts from launchd with a minimal `PATH`: Claude Code's installer puts it in `~/.local/bin`. A candidate is the agent only if `<it> --version` answers within five seconds (Node-based agents start slowly on a busy Mac) with a version the adapter supports. It is checked at every launch; caching the answer until the file changes is left until a launch shows the cost.
 
 ### Storage and wire
 
