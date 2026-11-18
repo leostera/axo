@@ -210,6 +210,9 @@ try:
                 if method=='axo.protocol.negotiate': result={'protocolVersion':2,'methods':['axo.daemon.health','axo.session.catalog','axo.config.get','axo.config.set']}
                 elif method=='axo.daemon.health': result={'version':'fixture','buildNumber':0,'status':'running','ready':True}
                 elif method=='axo.session.catalog': result={'sessions':[],'archived':[]}
+                elif method=='axo.session.events.stream':
+                    connection.sendall(json.dumps({'jsonrpc':'2.0','id':request['id'],'error':{'code':-32601,'message':'settings-only fixture has no event stream'}}).encode()+b'\n')
+                    return
                 elif method=='axo.config.get': result={'key':params['key'],'value':stored[params['key']]}
                 elif method=='axo.config.set':
                     stored[params['key']]=params['value']; writes.append(params); return

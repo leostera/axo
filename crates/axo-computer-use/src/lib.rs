@@ -596,6 +596,14 @@ impl Extension for ComputerExtension {
         let input = move |request: ComputerInput| {
             let (asking, host) = (Arc::clone(&asking), Arc::clone(&host));
             async move {
+                #[cfg(target_os = "linux")]
+                if request.args.get("target").is_none() {
+                    return Err(RpcError {
+                        code: jsonrpc_core::ErrorCode::ServerError(error_code::REFUSED),
+                        message: "Linux request_input accepts only a daemon-owned sudo target; GUI form input is unavailable.".into(),
+                        data: None,
+                    });
+                }
                 Ok(asking
                     .request_input(
                         host.as_ref(),
@@ -1111,6 +1119,8 @@ mod tests {
             json!({"sessionId":SESSION,"args":{"target":{"kind":"sudo","argv":["/usr/bin/true"]},"values":{"f0":"never accepted"}}}),
         );
         assert_eq!(invalid["result"]["isError"], true);
+        let form = request(COMPUTER_INPUT, json!({"sessionId":SESSION,"args":{}}));
+        assert_eq!(form["error"]["code"], error_code::REFUSED);
         let private = request(COMPUTER_REDACTIONS, json!({}));
         assert_eq!(
             private["error"]["code"],
