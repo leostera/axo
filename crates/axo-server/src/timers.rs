@@ -300,6 +300,12 @@ async fn run(core: Weak<Core>, id: TimerId, mut cancel: watch::Receiver<bool>) {
     }
 }
 
+/// Every timer method acts as its `fromSessionId`, which must be the caller's own Session
+/// (RFD0073): no caller sets, reads or cancels another Session's timers.
+fn as_owner(core: &Core, owner: SessionId) -> Result<(), RpcError> {
+    crate::callers::act_as(core, &axo_ipc::peer::current(), owner)
+}
+
 pub(crate) fn register(handler: &mut IoHandler, core: Arc<Core>) {
     let create = Arc::clone(&core);
     handler.add_typed(
@@ -307,20 +313,31 @@ pub(crate) fn register(handler: &mut IoHandler, core: Arc<Core>) {
         "expected a bounded runtime timer",
         move |request: CreateTimer| {
             let core = Arc::clone(&create);
-            async move { Timers::create(&core, request) }
+            async move {
+                as_owner(&core, request.from_session_id)?;
+                Timers::create(&core, request)
+            }
         },
     );
     let list = Arc::clone(&core);
-    handler.add_typed(method::SESSION_TIMER_LIST, "expected {fromSessionId}", move |request: TimerOwner| {
-        let core = Arc::clone(&list);
-        async move { Ok(serde_json::json!({"timers":core.timers.list(request.from_session_id)})) }
-    });
+    handler.add_typed(
+        method::SESSION_TIMER_LIST,
+        "expected {fromSessionId}",
+        move |request: TimerOwner| {
+            let core = Arc::clone(&list);
+            async move {
+                as_owner(&core, request.from_session_id)?;
+                Ok(serde_json::json!({"timers":core.timers.list(request.from_session_id)}))
+            }
+        },
+    );
     handler.add_typed(
         method::SESSION_TIMER_CANCEL,
         "expected {fromSessionId,timerId}",
         move |request: CancelTimer| {
             let core = Arc::clone(&core);
             async move {
+                as_owner(&core, request.from_session_id)?;
                 Ok(core
                     .timers
                     .cancel(request.from_session_id, &request.timer_id))

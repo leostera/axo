@@ -25,6 +25,9 @@ fn raw(axod: &Axod, line: &str) -> Value {
     serde_json::from_str(&response).unwrap_or_else(|error| panic!("{error}: {response:?}"))
 }
 
+/// A caller named a Session it does not run in (RFD0073).
+const NOT_THAT_SESSION: i64 = -32099;
+
 #[test]
 fn negotiation_offers_every_method_and_only_version_2() {
     let axod = Axod::start();
@@ -114,42 +117,65 @@ fn runtime_timers_are_owned_cancellable_and_not_restored() {
     let mut axod = Axod::start();
     let session = axod.ok("axo.session.create", json!({}));
     let owner = session["id"].as_str().unwrap();
-    let created = axod.ok(
-        "axo.session.timer.create",
+    let other_session = axod.ok("axo.session.create", json!({}));
+    let other = other_session["id"].as_str().unwrap();
+    let timer_for = |from: &str| {
         json!({
-            "sessionId":owner,"fromSessionId":owner,"text":"private timer fixture",
+            "sessionId":owner,"fromSessionId":from,"text":"private timer fixture",
             "timing":{"kind":"after","milliseconds":3600000}
-        }),
-    );
+        })
+    };
+    // A timer is its Session's own (RFD0073): set, listed and cancelled only from inside it.
+    for refused in [
+        axod.err("axo.session.timer.create", timer_for(owner)),
+        axod.err("axo.session.timer.list", json!({"fromSessionId":owner})),
+        axod.agent(&session["id"])
+            .err("axo.session.timer.create", timer_for(other)),
+    ] {
+        assert_eq!(refused.code, NOT_THAT_SESSION, "{refused:?}");
+    }
+    let agent = axod.agent(&session["id"]);
+    let created = agent.ok("axo.session.timer.create", timer_for(owner));
     let timer = created["timerId"].as_str().unwrap();
-    let listed = axod.ok("axo.session.timer.list", json!({"fromSessionId":owner}));
+    let listed = agent.ok("axo.session.timer.list", json!({"fromSessionId":owner}));
     assert_eq!(listed["timers"].as_array().unwrap().len(), 1);
     assert!(listed["timers"][0].get("text").is_none());
-    let other = "00000000-0000-4000-8000-000000000099";
     assert_eq!(
-        axod.ok(
+        axod.agent(&other_session["id"]).ok(
             "axo.session.timer.cancel",
             json!({"fromSessionId":other,"timerId":timer})
         )["cancelled"],
-        false
+        false,
+        "another Session cannot cancel it"
     );
     assert_eq!(
-        axod.ok(
+        axod.err(
+            "axo.session.timer.cancel",
+            json!({"fromSessionId":owner,"timerId":timer})
+        )
+        .code,
+        NOT_THAT_SESSION,
+        "nor can a program that only names its owner"
+    );
+    assert_eq!(
+        agent.ok(
             "axo.session.timer.cancel",
             json!({"fromSessionId":owner,"timerId":timer})
         )["cancelled"],
         true
     );
-    axod.ok(
+    agent.ok(
         "axo.session.timer.create",
         json!({
             "sessionId":owner,"fromSessionId":owner,"text":"lost at restart",
             "timing":{"kind":"interval","milliseconds":3600000}
         }),
     );
+    drop(agent);
     axod.restart();
     assert_eq!(
-        axod.ok("axo.session.timer.list", json!({"fromSessionId":owner}))["timers"],
+        axod.agent(&session["id"])
+            .ok("axo.session.timer.list", json!({"fromSessionId":owner}))["timers"],
         json!([])
     );
 }
