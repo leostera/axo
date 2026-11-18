@@ -175,14 +175,17 @@ impl Questions {
         if !host.has_session(request.session_id) {
             return Err(invalid(format!("no open Session {}", request.session_id)));
         }
-        self.ask(
+        self.ask_titled_with(
             host,
             request.session_id,
+            request.title.as_deref(),
             &request.message,
             request.asked_by,
+            None,
             timeout,
         )
         .await
+        .map(|answer| answer.outcome)
     }
 
     /// Asks in `session_id`, which may run on another Mac: the gate asks in the Session of the
@@ -210,27 +213,47 @@ impl Questions {
         input: Option<InputRequest>,
         timeout: Duration,
     ) -> Result<Answer, RpcError> {
+        self.ask_titled_with(host, session_id, None, message, asked_by, input, timeout)
+            .await
+    }
+
+    async fn ask_titled_with(
+        &self,
+        host: &dyn QuestionsHost,
+        session_id: SessionId,
+        title: Option<&str>,
+        message: &str,
+        asked_by: Asker,
+        input: Option<InputRequest>,
+        timeout: Duration,
+    ) -> Result<Answer, RpcError> {
+        let title = title.map(str::trim);
+        if title.is_some_and(|title| {
+            title.is_empty()
+                || title.encode_utf16().count() > 60
+                || title.chars().any(char::is_control)
+        }) {
+            return Err(invalid(
+                "title must be a short, single-line heading of at most 60 characters".into(),
+            ));
+        }
         let message = message.trim();
         if message.is_empty() || message.chars().count() > MAX_MESSAGE_CHARS {
             return Err(invalid(format!(
                 "message must be 1 to {MAX_MESSAGE_CHARS} characters"
             )));
         }
-        let request = RequestElicitation {
-            session_id,
-            message: message.to_owned(),
-            asked_by,
-        };
         let now = unix_millis();
         let elicitation = Elicitation {
             id: new_uuid_v4().map_err(internal)?,
-            session_id: request.session_id,
+            session_id,
             kind: if input.is_some() {
                 ElicitationKind::Input
             } else {
                 ElicitationKind::Confirm
             },
-            asked_by: request.asked_by,
+            asked_by,
+            title: title.map(str::to_owned),
             message: message.to_owned(),
             input,
             created_at: now,
@@ -259,7 +282,7 @@ impl Questions {
             } else {
                 "confirm"
             },
-            match request.asked_by {
+            match asked_by {
                 Asker::Agent => "agent",
                 Asker::ComputerUse => "computer_use",
             }
@@ -611,6 +634,7 @@ mod tests {
             session_id: SessionId::from_u128(1),
             kind: ElicitationKind::Confirm,
             asked_by: Asker::Agent,
+            title: None,
             message: "Go?".into(),
             input: None,
             created_at: 1,
@@ -772,6 +796,75 @@ mod tests {
             code(questions.resolve(host, &id, ElicitationAnswer::Accept, Reply::Bare)),
             NOT_PENDING
         );
+    }
+
+    #[tokio::test]
+    async fn a_title_is_preserved_separately_from_the_complete_question() {
+        let shared = asking();
+        let asking = Arc::clone(&shared);
+        let task = tokio::spawn(async move {
+            asking
+                .0
+                .request(
+                    &asking.1,
+                    RequestElicitation {
+                        session_id: SessionId::from_u128(1),
+                        title: Some("Release approval".into()),
+                        message: "Deploy the relay only? No mail or billing changes.".into(),
+                        asked_by: Asker::Agent,
+                    },
+                    Duration::from_secs(10),
+                )
+                .await
+        });
+        let id = first_pending(&shared.0).await;
+        let question = shared.0.pending().pop().unwrap();
+        assert_eq!(question.title.as_deref(), Some("Release approval"));
+        assert_eq!(
+            question.message,
+            "Deploy the relay only? No mail or billing changes."
+        );
+        shared
+            .0
+            .resolve_pi_agent_question(
+                &shared.1,
+                question.session_id,
+                &id,
+                ElicitationAction::Decline,
+            )
+            .unwrap();
+        assert_eq!(
+            task.await.unwrap().unwrap().action,
+            ElicitationAction::Decline
+        );
+    }
+
+    #[tokio::test]
+    async fn invalid_titles_are_refused_before_any_question_is_published() {
+        for title in [
+            "".to_owned(),
+            "x".repeat(61),
+            "Two\nlines".to_owned(),
+            "Hidden\u{1b}heading".to_owned(),
+        ] {
+            let shared = asking();
+            let outcome = shared
+                .0
+                .request(
+                    &shared.1,
+                    RequestElicitation {
+                        session_id: SessionId::from_u128(1),
+                        title: Some(title),
+                        message: "Proceed?".into(),
+                        asked_by: Asker::Agent,
+                    },
+                    Duration::from_secs(1),
+                )
+                .await;
+            assert!(outcome.is_err());
+            assert!(shared.0.pending().is_empty());
+            assert!(shared.1.events.lock().unwrap().is_empty());
+        }
     }
 
     #[test]

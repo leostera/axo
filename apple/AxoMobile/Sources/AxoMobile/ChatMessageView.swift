@@ -381,9 +381,9 @@ struct ElicitationCard: View {
         if question.answering != nil { ProgressView().controlSize(.small) }
       }
       VStack(alignment: .leading, spacing: 4) {
-        Text(copy.headline).font(.subheadline.weight(.semibold))
+        Text(question.elicitation.title ?? copy.headline).font(.subheadline.weight(.semibold))
           .fixedSize(horizontal: false, vertical: true)
-        if let detail = copy.detail {
+        if let detail = question.elicitation.title == nil ? copy.detail : question.elicitation.message {
           Text(detail).font(.subheadline).foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
         }

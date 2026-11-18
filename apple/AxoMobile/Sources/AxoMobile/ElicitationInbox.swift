@@ -44,6 +44,7 @@ struct RequestsInbox: View {
               let session = host.flatMap { phone.sessions(of: $0).first { $0.sessionId == question.elicitation.sessionId } }
               Button { openConversation(question.hostID, question.elicitation.sessionId) } label: {
                 VStack(alignment: .leading, spacing: 4) {
+                  if let title = question.elicitation.title { Text(title).font(.subheadline.weight(.semibold)) }
                   Text(question.elicitation.message).font(.subheadline).fixedSize(horizontal: false, vertical: true)
                   HStack {
                     Text("\(session?.displayName ?? "Conversation") · \(host?.label ?? "Mac")")

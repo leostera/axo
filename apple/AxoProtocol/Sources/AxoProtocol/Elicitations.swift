@@ -21,6 +21,7 @@ public struct Elicitation: Decodable, Equatable, Hashable, Sendable, Identifiabl
   public let sessionId: SessionID
   public let kind: Kind
   public let askedBy: Asker
+  public let title: String?
   /// The asker's words, shown as theirs.
   public let message: String
   /// For `input`: the fields, where they go, and the key to seal them to.
@@ -30,13 +31,14 @@ public struct Elicitation: Decodable, Equatable, Hashable, Sendable, Identifiabl
   public let expiresAt: Int64
 
   public init(
-    id: String, sessionId: SessionID, kind: Kind = .confirm, askedBy: Asker = .agent, message: String, input: InputRequest? = nil,
+    id: String, sessionId: SessionID, kind: Kind = .confirm, askedBy: Asker = .agent, message: String, title: String? = nil, input: InputRequest? = nil,
     createdAt: Int64, expiresAt: Int64
   ) {
     self.id = id
     self.sessionId = sessionId
     self.kind = kind
     self.askedBy = askedBy
+    self.title = title
     self.message = message
     self.input = input
     self.createdAt = createdAt
@@ -44,7 +46,7 @@ public struct Elicitation: Decodable, Equatable, Hashable, Sendable, Identifiabl
   }
 
   private enum CodingKeys: String, CodingKey {
-    case id, sessionId, kind, askedBy, message, input, createdAt, expiresAt
+    case id, sessionId, kind, askedBy, title, message, input, createdAt, expiresAt
   }
 
   /// An older axod sends no `askedBy`: its questions are all the agent's.
@@ -54,6 +56,7 @@ public struct Elicitation: Decodable, Equatable, Hashable, Sendable, Identifiabl
     sessionId = try container.decode(SessionID.self, forKey: .sessionId)
     kind = try container.decode(Kind.self, forKey: .kind)
     askedBy = try container.decodeIfPresent(Asker.self, forKey: .askedBy) ?? .agent
+    title = try container.decodeIfPresent(String.self, forKey: .title)
     message = try container.decode(String.self, forKey: .message)
     input = try container.decodeIfPresent(InputRequest.self, forKey: .input)
     createdAt = try container.decode(Int64.self, forKey: .createdAt)

@@ -927,7 +927,7 @@ impl Session {
             let _ = link
                 .show_elicitation(
                     &question.id,
-                    "Agent asks",
+                    question.title.as_deref().unwrap_or("Agent asks"),
                     &question.message,
                     question.expires_at,
                 )

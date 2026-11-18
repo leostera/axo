@@ -29,6 +29,12 @@ After reviewing build 73, the person required the entire elicitation message to 
 no truncation, collapsed scope, or review/expand step. Yes/No are right-aligned (the person rejected the centered iteration), with more vertical space
 around the request. Concision comes from authoring better copy, never hiding approval scope.
 
+An elicitation may carry a separate, optional `title` (up to 60 characters). The agent authors a
+short heading such as “Release approval”; the complete question and every material restriction
+remain in `message`. Push and Pi use the heading, not the request itself, as the title. Existing
+message-only callers retain a generic heading. Sensitive input and explicit preview opt-out still
+use generic notifications. Titles are immutable with the pending request.
+
 ## Reference contract
 
 - New informational titles are at most 48 Unicode code points, messages at most 140.

@@ -51,7 +51,8 @@ test("new updates are concise without invalidating retained notification content
 test("short complete questions carry authenticated-action metadata; truncated questions never do", async () => {
   const route = { accountId: crypto.randomUUID(), hostId: crypto.randomUUID(), sessionId: crypto.randomUUID(), requestId: crypto.randomUUID() };
   for (const message of ["Approve the harmless test?", "🦎".repeat(140)]) {
-    const body = JSON.parse((await ApnsRequestNotice.withQuestion(route, Date.now() + 60_000, message)).body);
+    const body = JSON.parse((await ApnsRequestNotice.withQuestion(route, Date.now() + 60_000, message, "Release approval")).body);
+    assert.equal(body.aps.alert.title, "Release approval");
     assert.equal(body.aps.alert.body, message);
     assert.equal(body.aps.category, "AXO_CONFIRM_V1");
     assert.equal(body.axoRequest.digest, createHash("sha256").update(message).digest("hex"));
@@ -65,9 +66,10 @@ test("short complete questions carry authenticated-action metadata; truncated qu
 
 test("current confirm-only content is immutable and answers require native authentication and a device proof", async t => {
   const { sent, native, host, daemon, sessionId, post } = await fixture(t);
-  const asked = question(sessionId);
+  const asked = { ...question(sessionId), title: "Release approval" };
   daemon.send({ jsonrpc: "2.0", method: "axo.elicitation.requested", params: asked });
   await eventually(() => sent.length === 1);
+  assert.equal(sent[0].aps.alert.title, asked.title);
   assert.equal(sent[0].aps.alert.body, asked.message);
   const read = { operation: "read", hostId: host.hostId, requestId: asked.id };
   assert.equal((await post("api/v1/account/push/request", read, {})).status, 401);
@@ -76,8 +78,12 @@ test("current confirm-only content is immutable and answers require native authe
   assert.equal(((await current.json()) as any).elicitation.message, asked.message);
   daemon.send({ jsonrpc: "2.0", method: "axo.elicitation.requested", params: { ...asked, message: "Changed operation" } });
   await new Promise(resolve => setTimeout(resolve, 30));
+  daemon.send({ jsonrpc: "2.0", method: "axo.elicitation.requested", params: { ...asked, title: "Changed heading" } });
+  await new Promise(resolve => setTimeout(resolve, 30));
   const unchanged = await post("api/v1/account/push/request", read);
-  assert.equal(((await unchanged.json()) as any).elicitation.message, asked.message);
+  const retained = ((await unchanged.json()) as any).elicitation;
+  assert.equal(retained.message, asked.message);
+  assert.equal(retained.title, asked.title);
   const answer = { operation: "answer", hostId: host.hostId, requestId: asked.id, action: "accept",
     digest: sent[0].axoRequest.digest, expiresAt: asked.expiresAt };
   assert.equal((await post("api/v1/account/push/request", answer)).status, 400, "missing device proof");

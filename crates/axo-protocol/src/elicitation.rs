@@ -101,6 +101,9 @@ pub struct Elicitation {
     pub session_id: SessionId,
     pub kind: ElicitationKind,
     pub asked_by: Asker,
+    /// A short display heading; all material scope stays in the message.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
     /// The asker's words, shown as theirs.
     pub message: String,
     /// For `Input`: the fields, where they go, and the key to seal them to.
@@ -153,6 +156,8 @@ impl From<ElicitationAnswer> for ElicitationAction {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RequestElicitation {
     pub session_id: SessionId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
     pub message: String,
     #[serde(default)]
     pub asked_by: Asker,
@@ -294,6 +299,7 @@ mod tests {
             session_id: SessionId::from_u128(1),
             kind: ElicitationKind::Confirm,
             asked_by: Asker::ComputerUse,
+            title: None,
             message: "Delete the branch?".into(),
             input: None,
             created_at: 1,

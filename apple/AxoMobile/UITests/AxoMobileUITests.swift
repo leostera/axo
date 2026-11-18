@@ -657,7 +657,8 @@ final class AxoMobileUITests: XCTestCase {
     XCTAssertTrue(yes.waitForExistence(timeout: 5))
     XCTAssertTrue(no.exists)
     XCTAssertEqual(no.frame.maxX, card.frame.maxX, accuracy: 3)
-    let detail = app.staticTexts.matching(NSPredicate(format: "label == %@",
+    XCTAssertTrue(app.staticTexts["Release approval"].exists)
+    let detail = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@",
       "Keep mailbox activation, public-history removal, billing changes, and native releases disabled until their separate checks pass. No real mail is sent.")).firstMatch
     XCTAssertTrue(detail.exists)
     XCTAssertGreaterThanOrEqual(detail.frame.minY - card.frame.minY, 24)

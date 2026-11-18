@@ -312,6 +312,7 @@ struct WorkbenchView: View {
                   message: ProcessInfo.processInfo.environment["AXO_MOBILE_PREVIEW_LONG_QUESTION"] == "1"
                     ? "Ship the tested relay only? Keep mailbox activation, public-history removal, billing changes, and native releases disabled until their separate checks pass. No real mail is sent."
                     : "Delete the branch feat/old-ui? It has 3 unmerged commits.",
+                  title: ProcessInfo.processInfo.environment["AXO_MOBILE_PREVIEW_LONG_QUESTION"] == "1" ? "Release approval" : nil,
                   createdAt: now, expiresAt: now + 300_000),
                 host: selection.host)
             }

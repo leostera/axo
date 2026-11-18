@@ -10,7 +10,8 @@
 ## Summary and guide
 
 Show the agent's own yes-or-no elicitations in its Pi terminal: a bold title, the complete
-question/description, then a keyboard-selectable Yes/No list. Arrow keys select, Enter answers,
+question/description, then a keyboard-selectable Yes/No list. The heading comes from the
+elicitation’s optional short `title`, falling back to “Agent asks” for existing callers. Arrow keys select, Enter answers,
 and Escape cancels. No truncation or new model-facing answer tool. The existing elicitation
 registry remains authoritative; the first answer from any supported surface wins.
 

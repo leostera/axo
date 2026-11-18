@@ -89,6 +89,8 @@ export const deviceProofSchema = z.object({
 export type DeviceProof = z.infer<typeof deviceProofSchema>;
 
 /** What the person is asked: yes or no, or values for a form's fields. */
+export const elicitationTitleSchema = z.string().trim().min(1).max(60).regex(/^[^\u0000-\u001f\u007f-\u009f]+$/u);
+
 export const elicitationSchema = z.object({
   id: z.uuid(),
   sessionId: sessionIdSchema,
@@ -98,7 +100,8 @@ export const elicitationSchema = z.object({
    * about to do. axod lets only its own `axod mcp` ask as a tool. Absent from an older axod.
    */
   askedBy: z.enum(["agent", "computerUse"]).default("agent"),
-  /** The asker's words, shown as theirs. */
+  /** Short display heading; complete approval scope remains in message. */
+  title: elicitationTitleSchema.optional(),
   message: z.string().min(1).max(ELICITATION_LIMITS.messageChars),
   /** For `input`: the fields, where they go, and the key to seal them to. */
   input: inputRequestSchema.optional(),

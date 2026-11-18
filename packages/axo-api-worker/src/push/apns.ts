@@ -1,5 +1,6 @@
 import { importPKCS8, SignJWT } from "jose";
 import { z } from "zod";
+import { elicitationTitleSchema } from "@axo/protocol";
 import { notificationContentSchema, questionDigest, questionPreview, NOTIFICATION_CONFIRM_CATEGORY, NOTIFICATION_REVIEW_CATEGORY, type NotificationContent } from "./content";
 
 /** Topics are installed identities, not aliases. Never send an old-ID token to the new topic. */
@@ -22,7 +23,7 @@ export class ApnsRequestNotice {
   readonly #route: z.infer<typeof routeSchema>;
   readonly expiresAt: number;
 
-  constructor(route: unknown, expiresAt: number, private readonly preview?: { body: string; digest: string | null }) {
+  constructor(route: unknown, expiresAt: number, private readonly preview?: { title: string; body: string; digest: string | null }) {
     this.#route = routeSchema.parse(route);
     if (!Number.isSafeInteger(expiresAt) || expiresAt <= 0) throw new Error("Invalid push expiry");
     this.expiresAt = expiresAt;
@@ -30,9 +31,9 @@ export class ApnsRequestNotice {
 
   get collapseId(): string { return this.#route.requestId.toLowerCase(); }
 
-  static async withQuestion(route: unknown, expiresAt: number, message: string): Promise<ApnsRequestNotice> {
+  static async withQuestion(route: unknown, expiresAt: number, message: string, title = "Axo request"): Promise<ApnsRequestNotice> {
     const preview = questionPreview(message);
-    return new ApnsRequestNotice(route, expiresAt, { body: preview.body,
+    return new ApnsRequestNotice(route, expiresAt, { title: elicitationTitleSchema.parse(title), body: preview.body,
       digest: preview.complete ? await questionDigest(message) : null });
   }
 
@@ -40,7 +41,7 @@ export class ApnsRequestNotice {
   get body(): string {
     return JSON.stringify({
       aps: {
-        alert: this.preview ? { title: "Axo request", body: this.preview.body }
+        alert: this.preview ? { title: this.preview.title, body: this.preview.body }
           : { title: "Axo", body: "A request needs your attention." },
         ...(this.preview ? { category: this.preview.digest ? NOTIFICATION_CONFIRM_CATEGORY : NOTIFICATION_REVIEW_CATEGORY } : {}),
         sound: "default",
