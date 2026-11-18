@@ -51,6 +51,11 @@ async fn creation_encodes_home_folder_and_current_context_once() {
             },
             json!({"like":SessionId::from_u128(2),"name":"named fixture"}),
         ),
+        (
+            serde_json::from_value(json!({"folder":"/tmp/fixture","name":"named Session"}))
+                .unwrap(),
+            json!({"folder":"/tmp/fixture","name":"named Session"}),
+        ),
     ] {
         let (mut client, mut server) = pair();
         client.methods = vec![rpc::method::SESSION_CREATE.into()];
