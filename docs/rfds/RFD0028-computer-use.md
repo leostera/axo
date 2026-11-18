@@ -1,13 +1,13 @@
 # RFD0028 - Axo: Computer Use
 
 - Feature Name: `axo-computer-use`
-- Status: Implemented, with computer use from anywhere; computer use on a locked Mac is refused, and how to make it work is still open
+- Status: Implemented, with computer use from anywhere; computer use on a locked Mac is refused, and how to make it work is still open. Its gate is amended by [RFD0070](RFD0070-computer-use-as-a-real-boundary.md)
 - Author: leostera
 - Start Date: 2026-10-31
 - Updated: 2026-11-10 (reconciled with the code)
 - Document Type: Proposal
 - Amends: [RFD0015](RFD0015-sessions-as-axo-clients.md), [RFD0016](RFD0016-connections-and-tools.md)
-- Amended By: [RFD0029](RFD0029-ask-the-person.md)
+- Amended By: [RFD0029](RFD0029-ask-the-person.md), [RFD0070](RFD0070-computer-use-as-a-real-boundary.md)
 
 ## Summary
 
