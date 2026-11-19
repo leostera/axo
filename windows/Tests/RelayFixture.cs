@@ -109,14 +109,10 @@ sealed class RelayFixture : IAsyncDisposable
         await SendAsync(socket??throw new IOException("No daemon connection"),new{jsonrpc="2.0",id,method,@params=parameters});
         try{return await result.Task.WaitAsync(TimeSpan.FromSeconds(15));}finally{calls.TryRemove(id,out _);}
     }
-    public static object SignedAnswer(object target,string id,string action,JsonElement? sealedValue=null)
-    {
-        using var key=System.Security.Cryptography.ECDsa.Create(System.Security.Cryptography.ECCurve.NamedCurves.nistP256);
-        var point=key.ExportParameters(false).Q;var publicKey=new byte[65];publicKey[0]=4;point.X!.CopyTo(publicKey,1);point.Y!.CopyTo(publicKey,33);
-        string digest=sealedValue is JsonElement s?Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(s.GetProperty("enc").GetString()+"\n"+s.GetProperty("ciphertext").GetString()))):"";
-        byte[] signature=key.SignData(Encoding.UTF8.GetBytes($"axo-answer/v1\n{id}\n{action}\n{digest}"),System.Security.Cryptography.HashAlgorithmName.SHA256,System.Security.Cryptography.DSASignatureFormat.IeeeP1363FixedFieldConcatenation);
-        return new {target,elicitationId=id,action,@sealed=sealedValue,device=new {key=Convert.ToBase64String(publicKey),name="Isolated Windows fixture",signature=Convert.ToBase64String(signature)}};
-    }
+    // Calls originate from the authenticated account relay. Human answers do not
+    // require a device proof or a per-host enrollment under RFD0079.
+    public static object AccountAnswer(object target,string id,string action,JsonElement? sealedValue=null)
+        => new {target,elicitationId=id,action,@sealed=sealedValue};
     public string[] Messages(string id)
     {
         if(!records.TryGetValue(id,out var list))return[];

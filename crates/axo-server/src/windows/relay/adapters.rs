@@ -34,14 +34,8 @@ impl RelayHost for Host {
         Host::pending_elicitations(self)
     }
     fn resolve_elicitation(&self, answer: RemoteAnswer) -> Result<(), MethodError> {
-        Host::resolve_elicitation(
-            self,
-            &answer.elicitation_id,
-            answer.answer,
-            answer.sealed,
-            answer.device,
-        )
-        .map_err(|(code, message)| MethodError::new(code, message))
+        Host::resolve_elicitation(self, &answer.elicitation_id, answer.answer, answer.sealed)
+            .map_err(|(code, message)| MethodError::new(code, message))
     }
     fn computer_status(&self) -> HostFuture<'_, Value> {
         Box::pin(async move { Host::computer_status(self) })

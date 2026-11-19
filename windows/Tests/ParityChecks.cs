@@ -22,31 +22,47 @@ static class ParityChecks
         object request=new {sessionId=session,tool="request_input",args=new {pid,window_id=window,fields=new[]{new{kind="text",label="Fixture input"},new{kind="password",label="Fixture password"}}},timeoutMs=15000};
         File.Delete(ready+".filled");
         var waiting=client.CallAsync("axo.computer.call",request);
-        var question=await Question(client);string id=question.GetProperty("id").GetString()!;
+        var question=await Question(client);
+        string id=question.GetProperty("id").GetString()!;
         assert(question.GetProperty("kind").GetString()=="input" && question.GetProperty("input").GetProperty("fields").GetArrayLength()==2,"Windows reads and presents the target form with the shared input protocol");
-        bool refused=false;try{await client.CallAsync("axo.elicitation.resolve",new {elicitationId=id,action="accept",values=new{wrong="value"}});}catch(IOException){refused=true;}
+        bool refused=false;
+        try { await client.CallAsync("axo.elicitation.resolve",new {elicitationId=id,action="accept",values=new{wrong="value"}}); }
+        catch(IOException) { refused=true; }
         assert(refused && !waiting.IsCompleted,"malformed field answers leave the form pending and fill nothing");
+
         var sealedValue=await Seal(question,"wrong-request");
-        var reply=await relay.CallAsync("axo.elicitation.resolve",RelayFixture.SignedAnswer(target,id,"accept",sealedValue));
-        assert(reply.TryGetProperty("error",out _) && !waiting.IsCompleted,"a device-signed ciphertext for another request cannot be opened");
-        reply=await relay.CallAsync("axo.elicitation.resolve",new{target,elicitationId=id,action="accept",@sealed=await Seal(question)});
-        assert(reply.TryGetProperty("error",out _) && !waiting.IsCompleted,"a sealed answer without a device signature cannot authorize filling");
-        await File.WriteAllTextAsync(ready+".change","change");await Task.Delay(200);
-        reply=await relay.CallAsync("axo.elicitation.resolve",RelayFixture.SignedAnswer(target,id,"accept",await Seal(question)));
+        var reply=await relay.CallAsync("axo.elicitation.resolve",RelayFixture.AccountAnswer(target,id,"accept",sealedValue));
+        assert(reply.TryGetProperty("error",out _) && !waiting.IsCompleted,"account-authorized ciphertext for another request cannot be opened");
+        var valid=await Seal(question);
+        var tampered=Convert.FromBase64String(valid.GetProperty("ciphertext").GetString()!);
+        tampered[0]^=1;
+        var corrupt=JsonSerializer.SerializeToElement(new {enc=valid.GetProperty("enc").GetString(),ciphertext=Convert.ToBase64String(tampered)});
+        reply=await relay.CallAsync("axo.elicitation.resolve",RelayFixture.AccountAnswer(target,id,"accept",corrupt));
+        assert(reply.TryGetProperty("error",out _) && !waiting.IsCompleted,"account authorization does not bypass ciphertext integrity");
+
+        await File.WriteAllTextAsync(ready+".change","change");
+        await Task.Delay(200);
+        reply=await relay.CallAsync("axo.elicitation.resolve",RelayFixture.AccountAnswer(target,id,"accept",await Seal(question)));
         var changed=await waiting;
         assert(changed.GetProperty("isError").GetBoolean() && !File.Exists(ready+".filled"),"a changed target window refuses the approved fill");
-        waiting=client.CallAsync("axo.computer.call",request);question=await Question(client);id=question.GetProperty("id").GetString()!;
-        reply=await relay.CallAsync("axo.elicitation.resolve",RelayFixture.SignedAnswer(target,id,"accept",await Seal(question)));
+
+        waiting=client.CallAsync("axo.computer.call",request);
+        question=await Question(client);
+        id=question.GetProperty("id").GetString()!;
+        reply=await relay.CallAsync("axo.elicitation.resolve",RelayFixture.AccountAnswer(target,id,"accept",await Seal(question)));
         var result=await waiting;
-        assert(reply.TryGetProperty("result",out _) && !result.GetProperty("isError").GetBoolean() && !result.ToString().Contains("5294"),"the agent receives only a receipt after a signed sealed fill");
-        for(int n=0;n<100 && !File.Exists(ready+".filled");n++)await Task.Delay(25);
-        using(var observed=JsonDocument.Parse(await File.ReadAllTextAsync(ready+".filled")))assert(observed.RootElement.GetProperty("plain").GetBoolean() && observed.RootElement.GetProperty("password").GetBoolean(),"the independent fixture verifies both plain and password values without exposing them to the agent");
+        assert(reply.TryGetProperty("result",out _) && !result.GetProperty("isError").GetBoolean() && !result.ToString().Contains("5294"),"a signed-in account fills securely without device enrollment or proofs; the agent gets only a receipt");
+        for(int n=0;n<100 && !File.Exists(ready+".filled");n++) await Task.Delay(25);
+        using(var observed=JsonDocument.Parse(await File.ReadAllTextAsync(ready+".filled")))
+            assert(observed.RootElement.GetProperty("plain").GetBoolean() && observed.RootElement.GetProperty("password").GetBoolean(),"the independent fixture verifies both plain and password values without exposing them to the agent");
         var read=await client.CallAsync("axo.computer.call",new{sessionId=session,tool="get_window_state",args=new{pid,window_id=window,include_screenshot=true}});
         assert(!read.ToString().Contains("5294") && !read.GetProperty("content").EnumerateArray().Any(c=>c.GetProperty("type").GetString()=="image"),"later computer reads redact phrases and suppress screenshots that could reveal filled secrets");
-        reply=await relay.CallAsync("axo.elicitation.resolve",RelayFixture.SignedAnswer(target,id,"accept",await Seal(question)));
+        reply=await relay.CallAsync("axo.elicitation.resolve",RelayFixture.AccountAnswer(target,id,"accept",await Seal(question)));
         assert(reply.TryGetProperty("error",out _),"a consumed sealed answer cannot be replayed");
-        waiting=client.CallAsync("axo.computer.call",request);question=await Question(client);
-        await client.CallAsync("axo.windows.settings.save",new{computerUseEnabled=false,codexFullAccess=true});await client.CallAsync("axo.windows.settings.save",new{computerUseEnabled=true,codexFullAccess=true});
+        waiting=client.CallAsync("axo.computer.call",request);
+        question=await Question(client);
+        await client.CallAsync("axo.windows.settings.save",new{computerUseEnabled=false,codexFullAccess=true});
+        await client.CallAsync("axo.windows.settings.save",new{computerUseEnabled=true,codexFullAccess=true});
         assert((await waiting).GetProperty("isError").GetBoolean(),"disabling and re-enabling computer use cancels pending secret input");
     }
 
