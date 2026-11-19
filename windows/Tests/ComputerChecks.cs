@@ -49,10 +49,25 @@ static class ComputerChecks
         assert(instructions.Contains("Use request_input") && instructions.Contains("Use run_steps"),
             "MCP initialization explains how to use sealed input and gated sequences");
         var tools = await mcp.Request("tools/list", new { });
-        assert(tools.GetProperty("tools").EnumerateArray().Select(t => t.GetProperty("name").GetString()).SequenceEqual(new[] { "self", "computer_tools", "computer" }), "Codex discovers Session identity and computer use");
+        assert(tools.GetProperty("tools").EnumerateArray().Select(t => t.GetProperty("name").GetString()).SequenceEqual(new[] { "self", "session_rename", "computer_tools", "computer" }), "Codex discovers Session identity, scoped rename, and computer use");
         var identity = (await mcp.Tool("self", new { })).GetProperty("structuredContent");
         assert(identity.EnumerateObject().Count() == 1 && identity.GetProperty("sessionId").GetString() == session,
             "MCP self returns only the bridge's Session identity, even when computer use is disabled");
+        var catalog = await client.CallAsync("axo.session.list");
+        var originalName = catalog.GetProperty("sessions").EnumerateArray().Single(s => s.GetProperty("id").GetString() == session).GetProperty("name").GetString();
+        var renamed = await mcp.Tool("session_rename", new { sessionId = "self", name = "axo: windows fixture" });
+        catalog = await client.CallAsync("axo.session.list");
+        assert(renamed.GetProperty("structuredContent").GetProperty("saved").GetBoolean() &&
+            catalog.GetProperty("sessions").EnumerateArray().Single(s => s.GetProperty("id").GetString() == session).GetProperty("name").GetString() == "axo: windows fixture",
+            "MCP rename reaches the user-only pipe without shell escalation or computer-use permission");
+        bool wrongSessionRejected = false;
+        try { await mcp.Tool("session_rename", new { sessionId = Guid.NewGuid().ToString(), name = "must not change" }); }
+        catch (IOException error) when (error.Message.Contains("only rename your own Session")) { wrongSessionRejected = true; }
+        assert(wrongSessionRejected, "MCP rename refuses a caller-selected different Session");
+        await mcp.Tool("session_rename", new { sessionId = session, name = originalName });
+        var afterRename = await client.CallAsync("axo.windows.settings");
+        assert(!afterRename.GetProperty("computerUseEnabled").GetBoolean() && !afterRename.GetProperty("codexFullAccess").GetBoolean(),
+            "renaming a Session does not enable computer use or Full Access");
         var disabled = await mcp.Tool("computer", new { tool = "get_screen_size", args = new { } });
         assert(IsError(disabled), "a configured MCP server cannot operate the PC while computer use is disabled");
 
