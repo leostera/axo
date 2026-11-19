@@ -4,6 +4,23 @@ What changed in each published version of Axo. Every publish raises the minor ve
 
 ## Unreleased
 
+## 0.73 (Mac app build 345, axod 89)
+
+### Added
+
+- Phone-led QR linking: Profile → Linked Axos → Link another Axo opens the camera. A private, expiring code binds the recipient's actual key; the phone asks Allow / Don’t allow and transfers verified input keys through an encrypted channel.
+- The signed Mac app can connect through native Cloudflare sign-in without copying a host-pairing code, then show the QR used to bootstrap a pairing phone. Existing sign-in, approval keys and device identities are retained.
+- Pairing phones have explicit, per-host management authority. Newly linked responders cannot silently manage more devices. Scoped unlinking and durable consumed-grant records prevent stale grants from undoing revocation.
+- New Sessions can choose an installed coding agent, including the newly integrated Codex, Claude Code and OpenCode adapters.
+
+### Fixed
+
+- Answering a request retracts its notifications across connected clients. Native background retraction uses silent pushes with route-scoped cleanup and a reconnect fallback; iOS may delay background delivery.
+- The web bell is disabled when there are no requests and closes when the last request settles. Desktop notification preferences live in regular Settings.
+- Native notification cleanup retries after the fresh-alert grace interval rather than leaving a skipped alert indefinitely.
+
+QR UI initially ships on signed Mac and native iPhone/iPad clients. Linking terminology and host types are platform-neutral; a trusted Linux/Windows bootstrap and browser candidate UI are separate platform work, not account-login trust fallbacks. This release does not replace Watch identities, enable production APNs or submit apps to a store.
+
 ## 0.72 (Mac app build 344, axod 88)
 
 ### Added
