@@ -4,6 +4,18 @@ What changed in each published version of Axo. Every publish raises the minor ve
 
 ## Unreleased
 
+## 0.74 (Mac app build 346, axod 90)
+
+### Changed
+
+- Signed-in account clients can answer requests immediately: no phone hub, device enrollment, QR bootstrap or per-computer client approval.
+- Computers still work locally without login. Connect a host to the account and relay with the existing short linking code.
+- Private-input forms stay encrypted for the host but no longer require manual fingerprint confirmation. The authenticated account service is the chosen authorization boundary.
+- Removed device-management settings, enrollment onboarding, QR mailboxes, management grants and the daemon's device allowlist gate. Existing sign-ins, host credentials, keys and app data are retained.
+- Notification Yes/No actions use the current authenticated account session without accessing a device signing key. Full-request checks, expiry, stale-host checks and cross-client retraction remain.
+- Local signed-app/daemon authentication, agent-versus-person boundaries, immutable updates and Apple identity preservation remain unchanged.
+
+
 ## 0.73 (Mac app build 345, axod 89)
 
 ### Added
