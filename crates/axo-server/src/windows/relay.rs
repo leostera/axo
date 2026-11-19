@@ -299,7 +299,7 @@ impl Host {
                 let messages = axo_store::coding::messages(&db, id, cursor)?;
                 for m in &messages {
                     cursor = m["sequence"].as_i64().unwrap_or(cursor);
-                    let at = m["createdAt"].as_i64().unwrap_or(0) * 1000;
+                    let at = m["timestampMs"].as_i64().unwrap_or(0);
                     if m["role"] == "user" {
                         if let Some(command) = m["commandId"].as_str() {
                             let receipt = format!("axo:command:{cursor}");

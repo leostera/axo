@@ -78,6 +78,30 @@ fn main() {
                 );
                 send(json!({"id":id,"result":{"turn":{"id":active,"status":"inProgress"}}}));
                 match text {
+                    "stream-reconciliation" => {
+                        let item = format!("{active}-assistant");
+                        event(
+                            "item/agentMessage/delta",
+                            json!({"threadId":thread,"turnId":active,"itemId":item,"delta":"Stream fixture: partial"}),
+                        );
+                        std::thread::sleep(std::time::Duration::from_millis(1100));
+                        event(
+                            "item/agentMessage/delta",
+                            json!({"threadId":thread,"turnId":active,"itemId":item,"delta":" and complete"}),
+                        );
+                        event(
+                            "item/completed",
+                            json!({"threadId":thread,"turnId":active,"item":{"type":"agentMessage","id":item,"text":"Stream fixture: partial and complete"}}),
+                        );
+                        event(
+                            "item/agentMessage/delta",
+                            json!({"threadId":thread,"turnId":active,"itemId":item,"delta":"LATE_FRAGMENT"}),
+                        );
+                        event(
+                            "turn/completed",
+                            json!({"threadId":thread,"turn":{"id":active,"status":"completed","error":null}}),
+                        );
+                    }
                     "wait" => {}
                     "crash" => std::process::exit(23),
                     "approval" => {

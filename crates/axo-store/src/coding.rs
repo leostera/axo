@@ -16,6 +16,7 @@ pub fn initialize(database: &Connection) -> io::Result<()> {
             text TEXT NOT NULL,
             created_at INTEGER NOT NULL,
             command_id TEXT,
+            message_timestamp_ms INTEGER,
             UNIQUE(session_id, item_id)
         );
         CREATE INDEX IF NOT EXISTS coding_messages_by_session ON coding_messages(session_id, sequence);
@@ -44,6 +45,15 @@ pub fn initialize(database: &Connection) -> io::Result<()> {
     if !has_receipt {
         database
             .execute_batch("ALTER TABLE coding_messages ADD COLUMN command_id TEXT")
+            .map_err(io::Error::other)?;
+    }
+    let has_stamp: bool = database.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info(\'coding_messages\') WHERE name=\'message_timestamp_ms\')",
+        [], |row| row.get(0),
+    ).map_err(io::Error::other)?;
+    if !has_stamp {
+        database
+            .execute_batch("ALTER TABLE coding_messages ADD COLUMN message_timestamp_ms INTEGER")
             .map_err(io::Error::other)?;
     }
     database
@@ -196,6 +206,12 @@ pub fn save_message(
 
 /// Records an immutable client-command association on first insertion only. Duplicate native
 /// notifications update text but must not consume or steal the next prompt's receipt.
+#[derive(Default)]
+pub struct MessageMetadata<'a> {
+    pub command_id: Option<&'a str>,
+    pub started_at_ms: Option<i64>,
+}
+
 pub fn save_message_with_command(
     database: &Connection,
     id: SessionId,
@@ -204,6 +220,34 @@ pub fn save_message_with_command(
     text: &str,
     command_id: Option<&str>,
 ) -> io::Result<bool> {
+    save_message_with_metadata(
+        database,
+        id,
+        item_id,
+        role,
+        text,
+        MessageMetadata {
+            command_id,
+            ..MessageMetadata::default()
+        },
+    )
+}
+
+pub fn save_message_with_metadata(
+    database: &Connection,
+    id: SessionId,
+    item_id: &str,
+    role: &str,
+    text: &str,
+    metadata: MessageMetadata<'_>,
+) -> io::Result<bool> {
+    let command_id = metadata.command_id;
+    if metadata.started_at_ms.is_some_and(|stamp| stamp < 0) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Message timestamps must be nonnegative",
+        ));
+    }
     if role != "user" && command_id.is_some() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -218,9 +262,9 @@ pub fn save_message_with_command(
         )
         .map_err(io::Error::other)?;
     database.execute(
-        "INSERT INTO coding_messages(session_id,item_id,role,text,created_at,command_id)
-         VALUES (?1,?2,?3,?4,?5,?6) ON CONFLICT(session_id,item_id) DO UPDATE SET text=excluded.text",
-        params![id.to_string(), item_id, role, text, crate::unix_timestamp(), if existed { None } else { command_id }],
+        "INSERT INTO coding_messages(session_id,item_id,role,text,created_at,command_id,message_timestamp_ms)
+         VALUES (?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(session_id,item_id) DO UPDATE SET text=excluded.text",
+        params![id.to_string(), item_id, role, text, crate::unix_timestamp(), if existed { None } else { command_id }, metadata.started_at_ms],
     ).map_err(io::Error::other)?;
     crate::record_session_message(database, id, crate::unix_timestamp())?;
     Ok(!existed)
@@ -228,9 +272,14 @@ pub fn save_message_with_command(
 
 /// Read at most 200 messages, using a stable sequence cursor.
 pub fn messages(database: &Connection, id: SessionId, after: i64) -> io::Result<Vec<Value>> {
-    let mut q = database.prepare("SELECT sequence,role,text,created_at,item_id,command_id FROM coding_messages WHERE session_id=?1 AND sequence>?2 ORDER BY sequence LIMIT 200").map_err(io::Error::other)?;
-    q.query_map(params![id.to_string(), after], |r| Ok(json!({"sequence":r.get::<_,i64>(0)?,"role":r.get::<_,String>(1)?,"text":r.get::<_,String>(2)?,"createdAt":r.get::<_,i64>(3)?,"itemId":r.get::<_,String>(4)?,"commandId":r.get::<_,Option<String>>(5)?})))
+    let mut q = database.prepare("SELECT sequence,role,text,created_at,item_id,command_id,COALESCE(message_timestamp_ms,created_at*1000) FROM coding_messages WHERE session_id=?1 AND sequence>?2 ORDER BY sequence LIMIT 200").map_err(io::Error::other)?;
+    q.query_map(params![id.to_string(), after], |r| Ok(json!({"sequence":r.get::<_,i64>(0)?,"role":r.get::<_,String>(1)?,"text":r.get::<_,String>(2)?,"createdAt":r.get::<_,i64>(3)?,"itemId":r.get::<_,String>(4)?,"commandId":r.get::<_,Option<String>>(5)?,"timestampMs":r.get::<_,i64>(6)?})))
         .map_err(io::Error::other)?.collect::<Result<Vec<_>,_>>().map_err(io::Error::other)
+}
+
+pub fn last_message_timestamp(database: &Connection, id: SessionId) -> io::Result<i64> {
+    database.query_row("SELECT COALESCE(MAX(COALESCE(message_timestamp_ms,created_at*1000)),0) FROM coding_messages WHERE session_id=?1",
+        [id.to_string()], |row| row.get(0)).map_err(io::Error::other)
 }
 
 pub fn reopen(database: &Connection, id: SessionId) -> io::Result<()> {
@@ -348,6 +397,58 @@ mod tests {
             save_message_with_command(&db, id, "u3", "user", "same", Some("command-2")).is_err()
         );
     }
+    #[test]
+    fn reply_timestamp_is_persisted_once_and_legacy_rows_keep_their_stamp() {
+        let mut db = Connection::open_in_memory().unwrap();
+        crate::initialize_database(&mut db).unwrap();
+        initialize(&db).unwrap();
+        let id = SessionId::new_v4().unwrap();
+        insert_session(
+            &db,
+            id,
+            &std::env::current_dir().unwrap(),
+            "Stamp fixture",
+            None,
+        )
+        .unwrap();
+        save_message_with_metadata(
+            &db,
+            id,
+            "a1",
+            "assistant",
+            "partial",
+            MessageMetadata {
+                command_id: None,
+                started_at_ms: Some(1234567890123),
+            },
+        )
+        .unwrap();
+        save_message_with_metadata(
+            &db,
+            id,
+            "a1",
+            "assistant",
+            "complete",
+            MessageMetadata {
+                command_id: None,
+                started_at_ms: Some(1234567890999),
+            },
+        )
+        .unwrap();
+        save_message(&db, id, "legacy", "assistant", "older row").unwrap();
+        let rows = messages(&db, id, 0).unwrap();
+        assert_eq!(rows[0]["timestampMs"], 1234567890123_i64);
+        assert_eq!(
+            rows[1]["timestampMs"].as_i64().unwrap(),
+            rows[1]["createdAt"].as_i64().unwrap() * 1000
+        );
+        initialize(&db).unwrap();
+        assert_eq!(
+            messages(&db, id, 0).unwrap()[0]["timestampMs"],
+            1234567890123_i64
+        );
+    }
+
     #[test]
     fn codex_session_and_history_survive_archive_and_reopen_without_pi_columns() {
         let mut db = Connection::open_in_memory().unwrap();
