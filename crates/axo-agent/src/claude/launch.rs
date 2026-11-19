@@ -5,6 +5,10 @@
 //!
 //! The conversation's id is chosen by axod (the Session's own id) and passed as
 //! `--session-id`; once Claude has written its transcript, later launches `--resume` it.
+//!
+//! In a folder Claude has not been told to trust, its TUI first asks whether to trust it, with
+//! "No, exit" chosen: a prompt typed then would end Claude. So axod learns, before the launch,
+//! whether Claude trusts the folder ([`ClaudeTrust`]), and the link holds prompts until it does.
 
 use std::io;
 use std::os::fd::AsRawFd;
@@ -70,6 +74,48 @@ pub struct ClaudeProcess {
     pub hooks: HookListener,
     pub identity: Option<ProcessIdentity>,
     pub conversation: String,
+    /// Where Claude keeps whether it trusts the Session's folder; `None` if it trusted it
+    /// when the TUI started.
+    pub untrusted: Option<ClaudeTrust>,
+}
+
+/// Claude's own record of the folders it trusts: `projects.<folder>.hasTrustDialogAccepted` in
+/// its global configuration, `.claude.json` in the home (or in `$CLAUDE_CONFIG_DIR`). A folder
+/// is trusted when it or a folder above it is. Claude may be trusted without recording it (in
+/// the home it asks every time), so the link also watches its screen.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ClaudeTrust {
+    global_config: PathBuf,
+    folder: PathBuf,
+}
+
+impl ClaudeTrust {
+    pub fn new(home: &Path, config_dir: &Path, folder: &Path) -> Self {
+        let global_config = if config_dir == home.join(".claude") {
+            home.join(".claude.json")
+        } else {
+            config_dir.join(".claude.json")
+        };
+        // Claude records folders as the system names them (`/private/tmp/…` for `/tmp/…`).
+        let folder = std::fs::canonicalize(folder).unwrap_or_else(|_| folder.to_owned());
+        Self { global_config, folder }
+    }
+
+    /// Whether Claude trusts the folder now. An unreadable record trusts nothing.
+    pub fn trusted(&self) -> bool {
+        let Ok(text) = std::fs::read_to_string(&self.global_config) else {
+            return false;
+        };
+        let Ok(config) = serde_json::from_str::<serde_json::Value>(&text) else {
+            return false;
+        };
+        let projects = &config["projects"];
+        self.folder.ancestors().any(|folder| {
+            folder
+                .to_str()
+                .is_some_and(|folder| projects[folder]["hasTrustDialogAccepted"] == true)
+        })
+    }
 }
 
 /// Launches Claude Code, blocking (run it on the blocking pool).
@@ -104,8 +150,11 @@ pub fn launch(launch: &ClaudeLaunch) -> io::Result<ClaudeProcess> {
     for (name, value) in &launch.environment {
         command.env(name, value);
     }
+    let trust = ClaudeTrust::new(&launch.home, &launch.config_dir, &launch.initial_pwd);
+    let untrusted = (!trust.trusted()).then_some(trust);
     let pty = process::spawn(command, launch.size, &[writer_lock.as_raw_fd()])?;
     Ok(ClaudeProcess {
+        untrusted,
         identity: ProcessIdentity::of(pty.child.id()),
         pty,
         writer_lock,
@@ -149,6 +198,26 @@ mod tests {
         std::fs::write(project.join("c1.jsonl"), "{}\n").unwrap();
         assert!(transcript_exists(&home, "c1"));
         assert!(!transcript_exists(&home, "c2"));
+        std::fs::remove_dir_all(&home).unwrap();
+    }
+
+    #[test]
+    fn a_folder_is_trusted_when_claude_trusts_it_or_a_folder_above_it() {
+        let home = std::fs::canonicalize(crate::test_directory()).unwrap();
+        let work = home.join("work/project");
+        std::fs::create_dir_all(&work).unwrap();
+        let trust = ClaudeTrust::new(&home, &home.join(".claude"), &work);
+        assert!(!trust.trusted(), "no record trusts nothing");
+        let record = |projects: serde_json::Value| {
+            std::fs::write(home.join(".claude.json"), serde_json::json!({ "projects": projects }).to_string()).unwrap();
+        };
+        record(serde_json::json!({ work.to_str().unwrap(): { "hasTrustDialogAccepted": false } }));
+        assert!(!trust.trusted(), "Claude records a folder it asked about as untrusted");
+        record(serde_json::json!({ home.join("work").to_str().unwrap(): { "hasTrustDialogAccepted": true } }));
+        assert!(trust.trusted(), "a trusted folder trusts those inside it");
+        // With `$CLAUDE_CONFIG_DIR`, the record is inside it.
+        let elsewhere = ClaudeTrust::new(&home, &home.join("config"), &work);
+        assert!(!elsewhere.trusted());
         std::fs::remove_dir_all(&home).unwrap();
     }
 }

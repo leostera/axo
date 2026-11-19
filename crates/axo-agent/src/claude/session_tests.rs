@@ -21,7 +21,7 @@ fn names(observed: &Observed) -> Vec<&'static str> {
 
 #[test]
 fn a_prompt_is_typed_when_idle_held_as_a_follow_up_and_refused_otherwise() {
-    let mut session = Session::new(ID.into());
+    let mut session = Session::new(ID.into(), false);
     assert_eq!(session.plan_send("one".into(), None), SendPlan::Type("one".into()));
     assert!(session.working(), "working from the moment it is typed");
     assert_eq!(session.plan_send("two".into(), None), SendPlan::Reject(RejectReason::Busy));
@@ -42,7 +42,7 @@ fn a_prompt_is_typed_when_idle_held_as_a_follow_up_and_refused_otherwise() {
 
 #[test]
 fn a_turn_reads_as_pi_reports_one() {
-    let mut session = Session::new(ID.into());
+    let mut session = Session::new(ID.into(), false);
     let start = session.observe(&hook("SessionStart", json!({ "source": "startup", "model": "claude-opus-5" })));
     assert_eq!(names(&start), ["pi.state"]);
     assert_eq!(start.transcript, Some(PathBuf::from("/Users/x/.claude/projects/-tmp/5d0c.jsonl")));
@@ -65,7 +65,7 @@ fn a_turn_reads_as_pi_reports_one() {
 
 #[test]
 fn escape_settles_the_turn_since_claude_says_nothing_of_it() {
-    let mut session = Session::new(ID.into());
+    let mut session = Session::new(ID.into(), false);
     assert_eq!(session.plan_stop().0, StopPlan::Idle);
     session.observe(&hook("UserPromptSubmit", json!({ "prompt": "long" })));
     session.observe(&hook("PermissionRequest", json!({})));
@@ -81,7 +81,7 @@ fn escape_settles_the_turn_since_claude_says_nothing_of_it() {
 
 #[test]
 fn other_conversations_and_subagents_change_nothing() {
-    let mut session = Session::new(ID.into());
+    let mut session = Session::new(ID.into(), false);
     let mut other = hook("UserPromptSubmit", json!({ "prompt": "x" }));
     other["session_id"] = json!("someone-else");
     assert_eq!(session.observe(&other), Observed::default());
@@ -107,7 +107,7 @@ fn generated_hook_sequences_keep_activity_and_waits_balanced() {
     ];
     let notifications = ["elicitation_dialog", "elicitation_complete", "idle_prompt", "permission_prompt"];
     for _ in 0..1_000 {
-        let mut session = Session::new(ID.into());
+        let mut session = Session::new(ID.into(), false);
         let (mut working, mut waits) = (false, 0_i64);
         for _ in 0..60 {
             let observed = match next(4) {
@@ -144,4 +144,56 @@ fn generated_hook_sequences_keep_activity_and_waits_balanced() {
             }
         }
     }
+}
+
+#[test]
+fn in_a_folder_claude_does_not_trust_prompts_wait_for_the_person_and_go_once_it_does() {
+    let mut session = Session::new(ID.into(), true);
+    let waiting: Vec<&str> = session.snapshot().iter().map(|event| event.name).collect();
+    assert_eq!(waiting, ["activity.snapshot", "ui.prompt.start"]);
+    assert_eq!(session.snapshot()[1].data["kind"], "trust");
+    // Typed now, a prompt would answer Claude's question, whose choice is "No, exit".
+    assert_eq!(session.plan_send("one".into(), None), SendPlan::Held);
+    assert_eq!(session.plan_send("two".into(), Some(QueuedDelivery::FollowUp)), SendPlan::Held);
+    assert_eq!(
+        session.plan_send("now".into(), Some(QueuedDelivery::Steer)),
+        SendPlan::Reject(RejectReason::Unavailable)
+    );
+    assert!(!session.working());
+    let trusted = session.trusted();
+    assert_eq!(names(&trusted), ["ui.prompt.end"]);
+    assert_eq!(trusted.next.as_deref(), Some("one"));
+    assert!(session.working(), "the first held prompt is typed");
+    assert_eq!(session.trusted(), Observed::default(), "trusted once");
+    let stopped = session.observe(&hook("Stop", json!({ "last_assistant_message": "done" })));
+    assert_eq!(stopped.next.as_deref(), Some("two"), "the rest follow turn by turn");
+}
+
+#[test]
+fn a_hook_while_untrusted_means_the_person_trusted_the_folder_in_the_terminal() {
+    let mut session = Session::new(ID.into(), true);
+    assert_eq!(session.plan_send("held".into(), None), SendPlan::Held);
+    let started = session.observe(&hook("SessionStart", json!({ "source": "startup" })));
+    assert_eq!(names(&started)[0], "ui.prompt.end");
+    assert_eq!(started.next.as_deref(), Some("held"), "Claude is idle: the held prompt goes");
+    assert!(!session.untrusted());
+
+    // The person typed a prompt of their own: the held one waits for its turn.
+    let mut session = Session::new(ID.into(), true);
+    assert_eq!(session.plan_send("held".into(), None), SendPlan::Held);
+    let submitted = session.observe(&hook("UserPromptSubmit", json!({ "prompt": "mine" })));
+    assert_eq!(names(&submitted)[..2], ["ui.prompt.end", "agent.start"]);
+    assert_eq!(submitted.next, None);
+    let stopped = session.observe(&hook("Stop", json!({ "last_assistant_message": "ok" })));
+    assert_eq!(stopped.next.as_deref(), Some("held"));
+}
+
+#[test]
+fn the_trust_question_is_recognised_only_while_it_is_on_the_screen() {
+    let asking = "Accessing workspace:\n\n /tmp/x\n\n ❯ No, exit\n   Yes, I trust this folder\n\n Enter to confirm";
+    assert!(asks_for_trust(asking, 40));
+    assert!(asks_for_trust("Do you trust the files in this folder?", 40));
+    assert!(!asks_for_trust("❯ \n  ? for shortcuts", 40));
+    let scrolled = format!("{asking}\n{}", "line\n".repeat(50));
+    assert!(!asks_for_trust(&scrolled, 40), "what scrolled away is no longer asked");
 }

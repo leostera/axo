@@ -1030,8 +1030,13 @@ impl Session {
                     hooks,
                     identity,
                     conversation,
+                    untrusted,
                 } = launched;
                 let terminal = pty.master.try_clone()?;
+                let untrusted = untrusted.map(|trust| axo_agent::claude::UntrustedFolder {
+                    trust,
+                    screen: Arc::clone(&pty.output),
+                });
                 let running = Running::new(
                     PaneRole::Pi,
                     Some(pane_id),
@@ -1045,6 +1050,7 @@ impl Session {
                     conversation: conversation.clone(),
                     terminal,
                     log_context,
+                    untrusted,
                 };
                 let mailbox = self.mailbox();
                 let link_task = tokio::spawn(axo_agent::claude::run(

@@ -6,6 +6,11 @@
 //! is typed only while Claude is idle, a follow-up waits for `Stop`, steering and interrupting
 //! are refused, and a stop is Escape. Claude runs no `Stop` hook for a turn the person
 //! interrupts, so axod settles the turn itself when it sends Escape, and on `idle_prompt`.
+//!
+//! In a folder Claude does not trust yet, its TUI asks the person first, with "No, exit"
+//! chosen, and runs no hook until they answer. Until Claude trusts the folder the Session waits
+//! on the person (`ui.prompt.start` of kind `trust`), and every prompt is held rather than
+//! typed into the question.
 
 use std::collections::VecDeque;
 use std::path::PathBuf;
@@ -55,16 +60,40 @@ pub struct Session {
     held: VecDeque<String>,
     approval: bool,
     question: bool,
+    /// Claude asks whether to trust the folder, or may yet.
+    untrusted: bool,
 }
 
 impl Session {
-    pub fn new(id: String) -> Self {
+    /// `untrusted`: Claude did not trust the folder when its TUI started.
+    pub fn new(id: String, untrusted: bool) -> Self {
         Self {
             id,
             working: false,
             held: VecDeque::new(),
             approval: false,
             question: false,
+            untrusted,
+        }
+    }
+
+    pub fn untrusted(&self) -> bool {
+        self.untrusted
+    }
+
+    /// Claude trusts the folder now: the person's wait ends, and a held prompt is typed.
+    pub fn trusted(&mut self) -> Observed {
+        if !std::mem::take(&mut self.untrusted) {
+            return Observed::default();
+        }
+        let next = self.held.pop_front();
+        if next.is_some() {
+            self.working = true;
+        }
+        Observed {
+            events: vec![prompt_end("trust")],
+            transcript: None,
+            next,
         }
     }
 
@@ -73,10 +102,26 @@ impl Session {
     }
 
     pub fn snapshot(&self) -> Vec<Emitted> {
-        vec![activity(self.working)]
+        let mut events = vec![activity(self.working)];
+        if self.untrusted {
+            events.push(prompt_start("trust"));
+        }
+        events
     }
 
     pub fn plan_send(&mut self, text: String, delivery: Option<QueuedDelivery>) -> SendPlan {
+        if self.untrusted {
+            return match delivery {
+                None | Some(QueuedDelivery::FollowUp) if self.held.len() < MAX_HELD => {
+                    self.held.push_back(text);
+                    SendPlan::Held
+                }
+                None | Some(QueuedDelivery::FollowUp) => SendPlan::Reject(RejectReason::Busy),
+                Some(QueuedDelivery::Steer | QueuedDelivery::Interrupt) => {
+                    SendPlan::Reject(RejectReason::Unavailable)
+                }
+            };
+        }
         if !self.working {
             // Typed now; the hook that follows says the turn started.
             self.working = true;
@@ -147,6 +192,8 @@ impl Session {
         if hook["session_id"].as_str() != Some(self.id.as_str()) || hook.get("agent_id").is_some() {
             return Observed::default();
         }
+        // Claude runs hooks only in a folder it trusts: the person said so in its terminal.
+        let was_untrusted = std::mem::take(&mut self.untrusted);
         let transcript = hook["transcript_path"]
             .as_str()
             .map(PathBuf::from)
@@ -214,6 +261,14 @@ impl Session {
             _ => Observed::default(),
         };
         observed.transcript = transcript;
+        if was_untrusted {
+            observed.events.insert(0, prompt_end("trust"));
+            // Prompts held for the question go once Claude is idle; else after this turn.
+            if observed.next.is_none() && !self.working {
+                observed.next = self.held.pop_front();
+                self.working = observed.next.is_some();
+            }
+        }
         observed
     }
 
@@ -237,6 +292,17 @@ impl Observed {
             ..Self::default()
         }
     }
+}
+
+/// Whether the bottom `rows` lines of the TUI's screen ask whether to trust the folder, as
+/// Claude Code 2.1 ("Yes, I trust this folder") and earlier ("Do you trust the files in this
+/// folder?") word it. Only the bottom: what scrolled away is no longer asked.
+pub fn asks_for_trust(screen: &str, rows: usize) -> bool {
+    let lines: Vec<&str> = screen.lines().collect();
+    lines[lines.len().saturating_sub(rows)..].iter().any(|line| {
+        let line = line.to_lowercase();
+        line.contains("trust this folder") || line.contains("trust the files in this folder")
+    })
 }
 
 /// A tool's response as text: a string as is, `{content: [...]}` blocks' text, or the JSON.

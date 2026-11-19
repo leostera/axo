@@ -22,7 +22,22 @@ fn claude_log(fixture: &Fixture) -> String {
     fs::read_to_string(fixture.directory.join("fake-claude.log")).unwrap_or_default()
 }
 
+/// Claude trusts the fixtures' folders, as if the person had said so: in the tests' home
+/// (`$HOME`, shared by every test here), `.claude.json` trusts `/tmp`, where fixtures are.
+fn trust_fixture_folders() {
+    static TRUSTED: std::sync::Once = std::sync::Once::new();
+    TRUSTED.call_once(|| {
+        let home = std::path::PathBuf::from(std::env::var_os("HOME").expect("Bazel sets HOME"));
+        let tmp = fs::canonicalize("/tmp").unwrap();
+        let record = serde_json::json!({
+            "projects": { tmp.to_str().unwrap(): { "hasTrustDialogAccepted": true } }
+        });
+        fs::write(home.join(".claude.json"), record.to_string()).unwrap();
+    });
+}
+
 async fn claude_session(fixture: &Fixture) -> SessionRecord {
+    trust_fixture_folders();
     sessions::create(
         &fixture.core,
         CreateSession {

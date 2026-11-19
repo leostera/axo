@@ -8,9 +8,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use axo_pty::output::TerminalOutput;
+
 use crate::channel::{Action, LinkRequests, Request};
+use crate::claude::ClaudeTrust;
 use crate::claude::hooks::HookListener;
-use crate::claude::session::{Observed, SendPlan, Session, StopPlan};
+use crate::claude::session::{Observed, SendPlan, Session, StopPlan, asks_for_trust};
 use crate::runtime::{AgentEvent, CommandResult, RejectReason};
 use crate::vocabulary::{Emitted, text_with_attachments};
 
@@ -23,6 +26,10 @@ const ESCAPE: &[u8] = b"\x1b";
 const ESCAPE_SETTLE: Duration = Duration::from_millis(300);
 /// Claude Code exits on a second Ctrl-C.
 const EXIT: &[u8] = b"\x03\x03";
+/// How often an untrusted folder's question is looked at, until Claude trusts the folder.
+const TRUST_POLL: Duration = Duration::from_millis(250);
+/// The screen's height when looking for the question: no TUI shows it taller.
+const TRUST_ROWS: usize = 60;
 
 #[derive(Debug)]
 pub struct LinkConfig {
@@ -32,6 +39,34 @@ pub struct LinkConfig {
     pub terminal: OwnedFd,
     /// Prefix for log lines, e.g. `session_id=… shell_id=2`.
     pub log_context: String,
+    /// When Claude did not trust the folder as it started: where to see that it does.
+    pub untrusted: Option<UntrustedFolder>,
+}
+
+/// How the link learns that the person trusted the folder: Claude's question is not on the
+/// TUI's screen, and it was there before (the home's trust is not always recorded) or Claude's
+/// record trusts the folder now. Never while the question shows: trusted elsewhere (another
+/// Claude), this TUI still asks, and a prompt typed would answer "No, exit".
+pub struct UntrustedFolder {
+    pub trust: ClaudeTrust,
+    pub screen: Arc<TerminalOutput>,
+}
+
+impl std::fmt::Debug for UntrustedFolder {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_struct("UntrustedFolder").field("trust", &self.trust).finish_non_exhaustive()
+    }
+}
+
+impl UntrustedFolder {
+    /// Whether the folder is trusted now; `asked` remembers that the question was seen.
+    fn trusted(&self, asked: &mut bool) -> bool {
+        if asks_for_trust(&self.screen.screen_text(), TRUST_ROWS) {
+            *asked = true;
+            return false;
+        }
+        *asked || self.trust.trusted()
+    }
 }
 
 /// Follows Claude until the Session lets the link go. The TUI's exit is noticed by the
@@ -58,7 +93,10 @@ pub async fn run(
         transcript: None,
         context,
     };
-    let mut session = Session::new(link.conversation.clone());
+    let untrusted = config.untrusted;
+    let mut asked = false;
+    let mut trust_poll = tokio::time::interval(TRUST_POLL);
+    let mut session = Session::new(link.conversation.clone(), untrusted.is_some());
     if !report(AgentEvent::Bound {
         agent_session_id: link.conversation.clone(),
     }) || !link.report_all(session.snapshot(), &mut report)
@@ -70,6 +108,17 @@ pub async fn run(
             hook = hooks.recv() => {
                 let Some(hook) = hook else { return };
                 let observed = session.observe(&hook);
+                if !link.apply(observed, &mut session, &mut report).await {
+                    return;
+                }
+            }
+            _ = trust_poll.tick(), if session.untrusted() => {
+                let Some(untrusted) = &untrusted else { continue };
+                if !untrusted.trusted(&mut asked) {
+                    continue;
+                }
+                log::info!("event=claude.folder_trusted {}", link.context);
+                let observed = session.trusted();
                 if !link.apply(observed, &mut session, &mut report).await {
                     return;
                 }

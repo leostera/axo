@@ -12,8 +12,8 @@ mod link;
 pub mod session;
 
 pub use crate::channel::{LinkCommands, LinkRequests, command_channel};
-pub use launch::{ClaudeLaunch, ClaudePaths, ClaudeProcess, config_directory, launch, transcript_exists};
-pub use link::{LinkConfig, paste, run};
+pub use launch::{ClaudeLaunch, ClaudePaths, ClaudeProcess, ClaudeTrust, config_directory, launch, transcript_exists};
+pub use link::{LinkConfig, UntrustedFolder, paste, run};
 
 #[cfg(test)]
 mod tests;

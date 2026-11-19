@@ -9,6 +9,7 @@ What changed in each published version of Axo. Every publish raises the minor ve
 - OpenCode and Codex Sessions start again while a Pi Session is open. Their servers were stopped as soon as they started, and OpenCode reported that its server "did not say where it listens".
 - Claude Code's replies appear in Axo's conversation again. Claude Code 2.1.327 writes its reply to disk only after it reports the turn finished, so Axo kept only the prompt.
 - Codex and OpenCode can use Axo's tools from the moment they start. Their servers connect to Axo before they are ready, and those first calls were refused.
+- Claude Code Sessions in a folder Claude does not trust yet wait for you to answer Claude's trust question in its terminal and show as needing you. Prompts sent meanwhile are held and sent once you trust the folder, instead of being typed into the question, whose default answer exits Claude.
 
 ## 0.79 (Mac app build 351, axod 95)
 

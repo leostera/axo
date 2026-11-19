@@ -5,6 +5,10 @@
 //! format under `$CLAUDE_CONFIG_DIR/projects` (or `$HOME/.claude/projects`), then `Stop` with `echo: <text>`, and only then (as Claude does) the reply in the transcript. The prompt `hang`
 //! runs until Escape, which (as Claude does) posts no hook.
 //!
+//! In a folder its `.claude.json` (in `$CLAUDE_CONFIG_DIR`, or the home) does not trust, as
+//! Claude does, it first asks whether to trust it, with "No, exit" chosen, and runs no hook
+//! until answered: Down then Enter trusts the folder (and records it), Enter alone exits.
+//!
 //! It logs to `$AXO_FAKE_CLAUDE_LOG`, or `fake-claude.log` in its working directory.
 
 use std::io::{Read, Write};
@@ -57,6 +61,15 @@ fn main() {
         log(&format!("hook {name}"));
     };
     raw_terminal();
+    let record = if std::env::var_os("CLAUDE_CONFIG_DIR").is_some() {
+        format!("{config}/.claude.json")
+    } else {
+        format!("{home}/.claude.json")
+    };
+    if !trusted(&record, &cwd) && !ask_for_trust(&record, &cwd) {
+        log("exit untrusted");
+        return;
+    }
     hook("SessionStart", json!({ "source": if resumed { "resume" } else { "startup" }, "model": "claude-opus-5" }));
     let mut input = Vec::new();
     let mut byte = [0_u8; 1];
@@ -122,6 +135,56 @@ fn append(transcript: &str, record: &Value) {
     std::fs::create_dir_all(std::path::Path::new(transcript).parent().unwrap()).unwrap();
     let mut file = std::fs::OpenOptions::new().create(true).append(true).open(transcript).unwrap();
     file.write_all(format!("{record}\n").as_bytes()).unwrap();
+}
+
+/// Whether `.claude.json` at `record` trusts `cwd` or a folder above it.
+fn trusted(record: &str, cwd: &str) -> bool {
+    let config: Value = std::fs::read_to_string(record)
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default();
+    std::path::Path::new(cwd)
+        .ancestors()
+        .any(|folder| config["projects"][folder.to_str().unwrap_or_default()]["hasTrustDialogAccepted"] == true)
+}
+
+/// Claude's question, until the person answers: whether they trusted the folder.
+fn ask_for_trust(record: &str, cwd: &str) -> bool {
+    log("asks trust");
+    let mut stdout = std::io::stdout();
+    let _ = write!(
+        stdout,
+        " Accessing workspace:\r\n\r\n {cwd}\r\n\r\n Quick safety check: Is this a project you created or one you trust?\r\n\r\n ❯ No, exit\r\n   Yes, I trust this folder\r\n\r\n Enter to confirm · Esc to cancel\r\n"
+    );
+    let _ = stdout.flush();
+    // SAFETY: fd 0 is the PTY, owned by this process for its life.
+    let mut stdin = unsafe { <std::fs::File as std::os::fd::FromRawFd>::from_raw_fd(0) };
+    let (mut yes, mut input, mut byte) = (false, Vec::new(), [0_u8; 1]);
+    while stdin.read(&mut byte).map(|read| read == 1).unwrap_or(false) {
+        input.push(byte[0]);
+        if input.ends_with(b"\x1b[B") {
+            yes = true;
+        } else if input.ends_with(b"\x1b[A") {
+            yes = false;
+        } else if byte[0] == b'\r' {
+            break;
+        }
+    }
+    std::mem::forget(stdin);
+    if !yes {
+        return false;
+    }
+    let mut config: Value = std::fs::read_to_string(record)
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_else(|| json!({}));
+    config["projects"][cwd]["hasTrustDialogAccepted"] = json!(true);
+    std::fs::write(record, config.to_string()).unwrap();
+    // As Ink does, the question is cleared once answered.
+    let _ = write!(stdout, "\x1b[2J\x1b[H ❯ \r\n");
+    let _ = stdout.flush();
+    log("trusted");
+    true
 }
 
 fn post(url: &str, body: &Value) {

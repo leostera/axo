@@ -1,5 +1,6 @@
 //! Launch and link together, against the fake Claude Code (`testdata/fake_claude.rs`).
 
+use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -36,6 +37,13 @@ fn request(directory: &Path, conversation: &str) -> ClaudeLaunch {
         previous: None,
         size: WindowSize::DEFAULT,
     }
+}
+
+/// Records, as Claude does once the person says so, that Claude trusts `directory`'s work.
+fn trust(directory: &Path) {
+    let work = std::fs::canonicalize(directory.join("work")).unwrap();
+    let record = serde_json::json!({ "projects": { work.to_str().unwrap(): { "hasTrustDialogAccepted": true } } });
+    std::fs::write(directory.join(".claude.json"), record.to_string()).unwrap();
 }
 
 fn log(directory: &Path) -> String {
@@ -81,6 +89,7 @@ async fn prompts_are_typed_hooks_are_reported_and_the_conversation_resumes() {
     let directory = crate::test_directory();
     let conversation = axo_protocol::new_uuid_v4().unwrap();
     let launch_request = request(&directory, &conversation);
+    trust(&directory);
     let paths = launch_request.paths.clone();
     let process = tokio::task::spawn_blocking({
         let launch_request = launch_request.clone();
@@ -90,13 +99,15 @@ async fn prompts_are_typed_hooks_are_reported_and_the_conversation_resumes() {
     .unwrap()
     .unwrap();
     assert!(paths.is_running().unwrap(), "the TUI holds the lock");
-    let ClaudeProcess { pty, writer_lock, hooks, .. } = process;
+    let ClaudeProcess { pty, writer_lock, hooks, untrusted, .. } = process;
+    assert_eq!(untrusted, None, "Claude trusts the folder");
     let (commands, requests) = command_channel();
     let (sender, mut events) = mpsc::unbounded_channel();
     let config = LinkConfig {
         conversation: conversation.clone(),
         terminal: pty.master.try_clone().unwrap(),
         log_context: "test".into(),
+        untrusted: None,
     };
     let link = tokio::spawn(run(config, requests, hooks, move |event| sender.send(event).is_ok()));
     match events.recv().await.unwrap() {
@@ -168,4 +179,52 @@ async fn prompts_are_typed_hooks_are_reported_and_the_conversation_resumes() {
     axo_pty::process::signal(&again.pty.child, libc::SIGKILL);
     drop(again);
     std::fs::remove_dir_all(&directory).unwrap();
+}
+
+/// In a folder Claude does not trust, the Session waits on the person, and a prompt is held
+/// rather than typed into Claude's question (whose choice is "No, exit") until they answer.
+#[tokio::test(flavor = "multi_thread")]
+async fn in_an_untrusted_folder_prompts_wait_until_the_person_trusts_it() {
+    let directory = crate::test_directory();
+    let conversation = axo_protocol::new_uuid_v4().unwrap();
+    let launch_request = request(&directory, &conversation);
+    let process = tokio::task::spawn_blocking(move || launch(&launch_request)).await.unwrap().unwrap();
+    let ClaudeProcess { pty, writer_lock, hooks, untrusted, .. } = process;
+    let folder = untrusted.expect("Claude does not trust the folder");
+    let (commands, requests) = command_channel();
+    let (sender, mut events) = mpsc::unbounded_channel();
+    let config = LinkConfig {
+        conversation: conversation.clone(),
+        terminal: pty.master.try_clone().unwrap(),
+        log_context: "test".into(),
+        untrusted: Some(UntrustedFolder { trust: folder, screen: std::sync::Arc::clone(&pty.output) }),
+    };
+    let link = tokio::spawn(run(config, requests, hooks, move |event| sender.send(event).is_ok()));
+    let (waiting, _) = until(&mut events, "ui.prompt.start").await;
+    assert_eq!(waiting.last().unwrap().1["kind"], "trust");
+    until_log(&directory, "asks trust").await;
+
+    let sent = commands.send_message("hello claude", None, Some(&command(1)), &[], TIMEOUT).await.unwrap();
+    assert_eq!(sent, CommandResult::Accepted);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(!log(&directory).contains("prompt"), "nothing typed into the question:\n{}", log(&directory));
+    assert!(!log(&directory).contains("exit"), "{}", log(&directory));
+    // Trusted elsewhere (another Claude) while this TUI still asks: still nothing typed.
+    trust(&directory);
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    assert!(!log(&directory).contains("prompt"), "typed while asked:\n{}", log(&directory));
+
+    // The person, at the terminal: Down to "Yes, I trust this folder", then Enter.
+    axo_pty::process::write_all(pty.master.as_raw_fd(), b"\x1b[B", TIMEOUT).unwrap();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    axo_pty::process::write_all(pty.master.as_raw_fd(), b"\r", TIMEOUT).unwrap();
+    let (answered, _) = until(&mut events, "ui.prompt.end").await;
+    assert_eq!(answered.last().unwrap().1["kind"], "trust");
+    until_log(&directory, "prompt hello claude").await;
+    until(&mut events, "agent.settled").await;
+
+    assert_eq!(commands.shutdown(TIMEOUT).await.unwrap(), CommandResult::Accepted);
+    link.await.unwrap();
+    drop((pty, writer_lock));
+    let _ = std::fs::remove_dir_all(directory);
 }
