@@ -4,6 +4,16 @@ What changed in each published version of Axo. Every publish raises the minor ve
 
 ## Unreleased
 
+## 0.75 (Mac app build 347, axod 91)
+
+### Fixed
+
+- Coding-agent pickers show each agent’s logo and only the supported, runnable agents discovered on the selected host. Loading, failed checks and empty results no longer masquerade as a complete list of choices.
+- Agent availability is host-scoped, refreshed when changing hosts, and excludes private executable paths from relay responses.
+- Linux and Windows hosts use their OS marks in native and web host controls; known Macs retain hardware-specific icons. Mac peer-host menus now receive operating-system and hardware metadata too.
+- The authenticated account access and short-code host linking from 0.74 are unchanged.
+
+
 ## 0.74 (Mac app build 346, axod 90)
 
 ### Changed
