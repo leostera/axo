@@ -263,6 +263,22 @@ mod tests {
         let busy = runtime.block_on(tool.invoke(json!({"pid":42})));
         assert_eq!(busy.is_error, Some(true));
         assert!(serde_json::to_string(&busy).unwrap().contains("busy"));
+        let mut driver = cua_driver_core::tool::ToolRegistry::new();
+        driver.register(Box::new(InputTargets::new()));
+        let canonical = runtime
+            .block_on(driver.invoke("input_targets", json!({"pid":42,"session":"owned-fixture"})));
+        let canonical = serde_json::to_string(&canonical).unwrap();
+        assert!(canonical.contains("discovery is busy"), "{canonical}");
+        let driver = std::sync::Arc::new(driver);
+        driver.init_self_weak();
+        let gate = Box::leak(Box::new(crate::gate::Gate::new(None)));
+        let scripts = crate::scripts::registry(driver, gate);
+        let nested = runtime.block_on(scripts.invoke(
+            "run_script",
+            json!({"script":"return await cua.call('input_targets', {pid:42});"}),
+        ));
+        let nested = serde_json::to_string(&nested).unwrap();
+        assert!(nested.contains("discovery is busy"), "{nested}");
         let malformed =
             runtime.block_on(tool.invoke(json!({"pid":42,"value":"never-echo-this-value"})));
         assert_eq!(malformed.is_error, Some(true));
