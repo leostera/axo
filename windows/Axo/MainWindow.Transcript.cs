@@ -28,6 +28,8 @@ public partial class MainWindow
         var order = new List<MessageView>();
         var seen = new HashSet<MessageView>();
         var toolInputs = new Dictionary<string, string>();
+        string? currentRequest = null;
+        string? publishedPlan = null;
         void Remember(MessageView row) { if (seen.Add(row)) order.Add(row); }
         foreach (var entry in records)
         {
@@ -41,13 +43,15 @@ public partial class MainWindow
                 var callId = message.GetProperty("toolCallId").GetString()!;
                 var row = GetMessage(callId, "TOOL");
                 var input = toolInputs.TryGetValue(callId, out var supplied) ? "Input:\n" + supplied + "\n\nOutput:\n" : "";
-                row.Text = Tail(input + TranscriptText(content)); row.Complete = true; Remember(row);
+                row.Text = Tail(input + ToolPresentation.Content(content)); row.Complete = true; Remember(row);
                 continue;
             }
             if (role == "user")
             {
                 var row = GetMessage(key, "YOU");
                 row.Text = TranscriptText(content); row.Complete = true; Remember(row);
+                currentRequest = row.Text;
+                publishedPlan = null;
                 continue;
             }
             if (role != "assistant" || content.ValueKind != JsonValueKind.Array) continue;
@@ -66,8 +70,14 @@ public partial class MainWindow
                         break;
                     case "toolCall":
                         var toolId = block.GetProperty("id").GetString()!;
-                        var tool = GetMessage(toolId, "TOOL · " + block.GetProperty("name").GetString());
-                        toolInputs[toolId] = block.TryGetProperty("arguments", out var arguments) ? arguments.ToString() : "";
+                        var name = block.GetProperty("name").GetString()!;
+                        var arguments = block.TryGetProperty("arguments", out var suppliedArguments) ? suppliedArguments : default;
+                        var presentation = ToolPresentation.From(name, arguments);
+                        var tool = GetMessage(toolId, "TOOL · " + presentation.Title);
+                        tool.Label = "TOOL · " + presentation.Title;
+                        tool.RawDetails = arguments.ValueKind == JsonValueKind.Undefined ? "" : arguments.GetRawText();
+                        toolInputs[toolId] = presentation.Input;
+                        if (name is "update_plan" or "functions.update_plan") publishedPlan = presentation.Input;
                         if (tool.Text.Length == 0) tool.Text = toolInputs[toolId].Length > 0 ? toolInputs[toolId] : "Running…";
                         Remember(tool);
                         break;
@@ -75,6 +85,13 @@ public partial class MainWindow
                 index++;
             }
         }
+        if (currentRequest is not null)
+        {
+            CurrentTask.Text = "Current request: " + currentRequest;
+            CurrentTask.ToolTip = currentRequest;
+            CurrentTask.Visibility = System.Windows.Visibility.Visible;
+        }
+        PublishedPlan.Text = publishedPlan ?? "The agent has not published a plan.";
         // Late native flushes may add activity before an already visible final answer.
         // Reorder existing rows by canonical history, retaining in-flight streamed rows.
         for (int index = 0; index < order.Count; index++)

@@ -170,6 +170,8 @@ public partial class MainWindow : Window
         var id = selected;
         EmbeddedTerminal.Detach();
         messageCursor = 0; eventCursor = 0; messageIndex.Clear(); Messages.Clear();
+        CurrentTask.Text = ""; CurrentTask.Visibility = Visibility.Collapsed;
+        PublishedPlan.Text = "The agent has not published a plan.";
         SessionTitle.Text = session.Name; WorkspacePath.Text = session.Directory;
         Welcome.Visibility = Visibility.Collapsed; ChatScroll.Visibility = Visibility.Visible;
         ApprovalPanel.Visibility = Visibility.Collapsed; pendingRequest = null;
@@ -201,6 +203,8 @@ public partial class MainWindow : Window
         ChatScroll.Visibility = Visibility.Collapsed;
         pendingRequest = null;
         ApplyPending(JsonSerializer.SerializeToElement(Array.Empty<object>()));
+        CurrentTask.Text = ""; CurrentTask.Visibility = Visibility.Collapsed;
+        PublishedPlan.Text = "The agent has not published a plan.";
         SessionTitle.Text = "Axo Terminal";
         WorkspacePath.Text = "";
         EmbeddedTerminal.Detach(); SetTerminalVisible(false);
@@ -371,6 +375,13 @@ public partial class MainWindow : Window
                 questionInputs[question.GetProperty("id").GetString()!] = input; QuestionFields.Children.Add(input);
             }
         }
+        else if (method == "mcpServer/elicitation/request" && CodexInteraction.IsConfirmation(parameters))
+        {
+            ApprovalTitle.Text = "Codex needs your permission";
+            ApprovalDetail.Text = CodexInteraction.Describe(parameters);
+            ApproveButton.Content = "Allow requested access";
+            ActivityText.Text = "Waiting for your answer — review the permission request above";
+        }
         else if (method is "item/commandExecution/requestApproval" or "item/fileChange/requestApproval")
         {
             ApprovalTitle.Text = method.Contains("commandExecution") ? "Allow this command?" : "Allow these file changes?";
@@ -380,7 +391,7 @@ public partial class MainWindow : Window
         else
         {
             ApprovalTitle.Text = "Codex requested an unsupported interaction";
-            ApprovalDetail.Text = method + "\n" + parameters.GetRawText();
+            ApprovalDetail.Text = method + "\nThis request requires a form that Axo cannot safely display yet. Dismiss it to unblock Codex; private values must use protected input, not chat.";
             ApproveButton.Visibility = Visibility.Collapsed; DeclineButton.Content = "Dismiss request";
         }
     }
@@ -546,8 +557,12 @@ public sealed class SessionView : INotifyPropertyChanged
 public sealed class MessageView(string label) : INotifyPropertyChanged
 {
     string text = "";
-    public string Label { get; } = label;
-    public string Text { get => text; set { text = value; PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Text))); } }
+    string heading = label, rawDetails = "";
+    public string Label { get => heading; set { if (heading == value) return; heading = value; Changed(nameof(Label)); } }
+    public string RawDetails { get => rawDetails; set { if (rawDetails == value) return; rawDetails = value; Changed(nameof(RawDetails)); Changed(nameof(HasRawDetails)); } }
+    public bool HasRawDetails => rawDetails.Length != 0;
+    public string Text { get => text; set { if (text == value) return; text = value; Changed(nameof(Text)); } }
+    void Changed(string property) => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(property));
     public bool Complete { get; set; }
     public event PropertyChangedEventHandler? PropertyChanged;
 }

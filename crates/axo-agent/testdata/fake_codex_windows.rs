@@ -187,6 +187,20 @@ fn main() {
                     }
                     "wait" => {}
                     "crash" => std::process::exit(23),
+                    "mcp-confirm" | "mcp-form" => {
+                        pending = "mcp-permission-1".into();
+                        let fields = if text == "mcp-form" {
+                            json!({"secret":{"type":"string"}})
+                        } else {
+                            json!({})
+                        };
+                        send(
+                            json!({"id":pending,"method":"mcpServer/elicitation/request","params":{
+                            "threadId":thread,"turnId":active,"serverName":"node_repl","mode":"form",
+                            "message":"Allow fixture access?","requestedSchema":{"type":"object","properties":fields},
+                            "_meta":{"tool_params_display":{"tool":"owned fixture"}}}}),
+                        );
+                    }
                     "approval" => {
                         pending = "approval-1".into();
                         send(
@@ -231,7 +245,10 @@ fn main() {
                 json!({"id":id,"error":{"code":-32601,"message":format!("Unsupported fixture method: {method}")}}),
             ),
             None if id == pending => {
-                let decision = v["result"]["decision"].as_str().unwrap_or("cancel");
+                let decision = v["result"]["decision"]
+                    .as_str()
+                    .or_else(|| v["result"]["action"].as_str())
+                    .unwrap_or("cancel");
                 event(
                     "serverRequest/resolved",
                     json!({"threadId":thread,"requestId":pending}),
@@ -240,7 +257,11 @@ fn main() {
                     &thread,
                     &active,
                     "completed",
-                    &format!("Approval: {decision}"),
+                    &if pending == "mcp-permission-1" {
+                        format!("MCP: {decision} / {}", v["result"]["content"])
+                    } else {
+                        format!("Approval: {decision}")
+                    },
                 );
                 pending.clear();
             }

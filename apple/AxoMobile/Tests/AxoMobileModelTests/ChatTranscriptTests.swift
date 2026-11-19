@@ -13,6 +13,16 @@ func jsonValue(_ json: String) -> JSONValue {
 }
 
 final class ChatTranscriptTests: XCTestCase {
+  func testCodexCustomCodeAndCommandsAreNotRenderedAsEscapedJSON() {
+    let code = #"const path = String.raw`C:\work\file.rs`; console.log(path);"#
+    let input = ToolInput(name: "exec", kind: .generic, arguments: .object(["input": .string(code)]))
+    XCTAssertEqual(input?.kind, .code)
+    XCTAssertEqual(input?.text, code)
+    let command = ToolInput(name: "functions.exec_command", kind: .shell, arguments: .object(["cmd": .string(#"Get-Content C:\work\file.rs"#)]))
+    XCTAssertEqual(command?.kind, .command)
+    XCTAssertEqual(command?.text, #"Get-Content C:\work\file.rs"#)
+  }
+
   func testHiddenRecoveryNoticeNeverBecomesAHumanMessage() {
     let notice = ClientRecord(cursor: 2, id: "wake", line: #"{"type":"custom_message","id":"wake","customType":"axo_restart_continuation","display":false,"content":"runtime recovery notice"}"#)
     let transcript = ChatTranscript(records: [
