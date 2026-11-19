@@ -10,6 +10,10 @@ What changed in each published version of Axo. Every publish raises the minor ve
 
 - Pi Sessions expose native `/reload`, `/compact`, `/name`, `/model` and `/thinking` controls in client slash menus. These invoke SDK actions rather than becoming model prompts; reload retains command-ID replay protection across bridge replacement. Agent-specific catalogs remain separate.
 
+### Fixed
+
+- Full phone/Watch companion builds retain the canonical sandbox push entitlement. The signed archive gate now requires APNs, preventing a Watch update from dropping existing iPhone/iPad notification capability.
+
 ### Changed
 
 - Web and iPhone/iPad slash menus use compact command-left, description-right rows. The complete bounded command catalog is scrollable instead of stopping after eight web results; keyboard selection stays visible, with Home/End navigation and retained composer focus.

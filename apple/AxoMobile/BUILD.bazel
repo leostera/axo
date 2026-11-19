@@ -360,6 +360,7 @@ sh_test(
         "$(rootpath //:config.json)",
         "--channel",
         "development",
+        "--require-apns",
         "$(rootpath :AxoMobile_ipa)",
     ],
     data = ["//bazel/apple:distribution_preflight.py", "//:config.json", ":AxoMobile_ipa"],
