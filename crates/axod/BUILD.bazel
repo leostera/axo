@@ -85,6 +85,16 @@ rust_binary(
     ],
 )
 
+rust_test(
+    name = "fake_pi_tests",
+    srcs = ["testdata/fake_pi.rs"],
+    edition = "2024",
+    deps = [
+        "@crates//:libc",
+        "@crates//:serde_json",
+    ],
+)
+
 CONFORMANCE = [
     "daemon",
     "sessions",

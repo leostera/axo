@@ -44,10 +44,25 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value, json};
 
+/// Events and command replies share one writer: cloned socket handles alone
+/// do not stop their JSON framing writes from interleaving.
+#[derive(Clone)]
+struct BridgeWriter(Arc<Mutex<UnixStream>>);
+impl BridgeWriter {
+    fn new(stream: UnixStream) -> Self {
+        Self(Arc::new(Mutex::new(stream)))
+    }
+    fn record(&self, record: Value) -> std::io::Result<()> {
+        let mut line = record.to_string();
+        line.push('\n');
+        self.0.lock().unwrap().write_all(line.as_bytes())
+    }
+}
+
 #[derive(Default)]
 struct Pi {
     /// The bridge connection that authenticated last; events go to it.
-    bridge: Option<UnixStream>,
+    bridge: Option<BridgeWriter>,
     sequence: u64,
     /// The running turn: the id of its user record.
     turn: Option<String>,
@@ -121,8 +136,8 @@ impl Pi {
     fn publish(&mut self, stream: &str, name: &str, data: Value) {
         self.sequence += 1;
         let record = json!({ "type": "event", "streamId": stream, "sequence": self.sequence, "name": name, "data": data });
-        if let Some(bridge) = self.bridge.as_mut() {
-            let _ = writeln!(bridge, "{record}");
+        if let Some(bridge) = &self.bridge {
+            let _ = bridge.record(record);
         }
     }
 
@@ -232,39 +247,90 @@ fn run_turn(pi: &Arc<Mutex<Pi>>, session: &str, stream: &str, input: TurnInput) 
     }
 }
 
-fn answer(stream: &mut UnixStream, request: &Value, result: Value) {
-    let _ = writeln!(
-        stream,
-        "{}",
-        json!({ "type": "commandResult", "requestId": request["requestId"], "result": result })
+#[cfg(test)]
+mod bridge_tests {
+    use super::*;
+    #[test]
+    fn concurrent_events_and_command_replies_are_complete_json_records() {
+        let (socket, reader) = UnixStream::pair().unwrap();
+        let mut answers = BridgeWriter::new(socket);
+        reader
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut pi = Pi {
+            bridge: Some(answers.clone()),
+            ..Default::default()
+        };
+        let start = Arc::new(std::sync::Barrier::new(2));
+        let events_start = Arc::clone(&start);
+        let events = thread::spawn(move || {
+            events_start.wait();
+            for sequence in 0..32 {
+                pi.publish(
+                    "owned-fixture",
+                    "fixture.event",
+                    json!({"sequence":sequence,"text":"x".repeat(256*1024)}),
+                );
+            }
+        });
+        let replies = thread::spawn(move || {
+            start.wait();
+            for sequence in 0..32 {
+                answer(
+                    &mut answers,
+                    &json!({"requestId":sequence}),
+                    json!({"accepted":true,"text":"y".repeat(256*1024)}),
+                );
+            }
+        });
+        let records: Vec<_> = BufReader::new(reader)
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(&line.unwrap()))
+            .collect();
+        events.join().unwrap();
+        replies.join().unwrap();
+        assert_eq!(records.len(), 64);
+        assert!(
+            records.iter().all(Result::is_ok),
+            "concurrent bridge records interleaved"
+        );
+        assert_eq!(
+            records
+                .iter()
+                .filter(|record| record.as_ref().unwrap()["type"] == "event")
+                .count(),
+            32
+        );
+    }
+}
+
+fn answer(stream: &mut BridgeWriter, request: &Value, result: Value) {
+    let _ = stream.record(
+        json!({ "type": "commandResult", "requestId": request["requestId"], "result": result }),
     );
 }
 
-fn serve(pi: Arc<Mutex<Pi>>, mut stream: UnixStream, session: String, events: String) {
+fn serve(pi: Arc<Mutex<Pi>>, stream: UnixStream, session: String, events: String) {
     let token = env("AXO_PI_BRIDGE_TOKEN").unwrap_or_default();
     let reader = BufReader::new(stream.try_clone().expect("bridge socket"));
+    let mut stream = BridgeWriter::new(stream);
     let mut authenticated = false;
     for line in reader.lines() {
         let Ok(line) = line else { return };
         let Ok(record) = serde_json::from_str::<Value>(&line) else {
-            let _ = writeln!(
-                stream,
-                "{}",
-                json!({ "type": "protocolError", "message": "not JSON" })
-            );
+            let _ = stream.record(json!({ "type": "protocolError", "message": "not JSON" }));
             continue;
         };
         if record["type"] == "authenticate" {
             if record["token"] != json!(token) {
-                let _ = writeln!(
-                    stream,
-                    "{}",
-                    json!({ "type": "protocolError", "message": "wrong token" })
-                );
+                let _ = stream.record(json!({ "type": "protocolError", "message": "wrong token" }));
                 return;
             }
             authenticated = true;
-            pi.lock().unwrap().bridge = stream.try_clone().ok();
+            // Publish the new writer while holding the event-state lock through
+            // authentication and hello, so no old turn can precede the handshake.
+            let mut state = pi.lock().unwrap();
+            state.bridge = Some(stream.clone());
             let identity = json!({
                 "axoSessionId": env("AXO_SESSION_ID"),
                 "axoPaneId": env("AXO_PANE_ID"),
@@ -273,17 +339,9 @@ fn serve(pi: Arc<Mutex<Pi>>, mut stream: UnixStream, session: String, events: St
                 "cwd": working_directory(),
                 "processId": std::process::id(),
             });
-            let _ = writeln!(
-                stream,
-                "{}",
-                json!({ "type": "authenticated", "protocolVersion": 1 })
-            );
-            let _ = writeln!(
-                stream,
-                "{}",
-                json!({ "type": "hello", "protocolVersion": 1, "identity": identity })
-            );
-            let mut state = pi.lock().unwrap();
+            let _ = stream.record(json!({ "type": "authenticated", "protocolVersion": 1 }));
+            let _ = stream
+                .record(json!({ "type": "hello", "protocolVersion": 1, "identity": identity }));
             let current = state.state();
             state.publish(&events, "pi.state", current);
             state.publish(
