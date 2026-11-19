@@ -80,7 +80,7 @@ test("a HostDO ignores the client sockets another release left on it, and closes
 });
 
 /** How many schema steps each object has in this release. */
-const HOST_STEPS = 10;
+const HOST_STEPS = 11;
 const SESSION_STEPS = 3;
 const version = (h: Harness, className: string) =>
   objectRows<{ version: number }>(h, className, "SELECT version FROM schema_version").map((row) => row.version);
@@ -102,6 +102,20 @@ test("a HostDO and a SessionDO apply their schema once, and a newer release's ve
   assert.deepEqual(version(h, "AxoHostDO"), [HOST_STEPS]);
   assert.deepEqual(version(h, "AxoSessionDO"), [SESSION_STEPS]);
   assert.ok(hasTable(h, "AxoHostDO", "client_opens"));
+  assert.ok(hasTable(h, "AxoHostDO", "resolution_push"));
+  assert.ok(hasTable(h, "AxoHostDO", "settled_requests"));
+
+  // Upgrade the prior release in place: new cleanup state is an appended migration,
+  // not an edit to a migration that existing objects have already applied.
+  await h.restart(() => {
+    objectRows(h, "AxoHostDO", "UPDATE schema_version SET version=10; DROP TABLE resolution_push; DROP TABLE settled_requests", true);
+  });
+  daemon = await connectHost(h, session, host);
+  assert.equal((await sync(daemon, host, transcript, 2)).sessions.length, 1);
+  daemon.close();
+  assert.deepEqual(version(h, "AxoHostDO"), [HOST_STEPS]);
+  assert.ok(hasTable(h, "AxoHostDO", "resolution_push"));
+  assert.ok(hasTable(h, "AxoHostDO", "settled_requests"));
 
   // An object from before the version existed has the tables but no version: it runs every
   // step once, and they change nothing it holds.
