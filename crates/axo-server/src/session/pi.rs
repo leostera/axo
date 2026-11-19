@@ -15,13 +15,13 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use axo_agent::discovery::{self, SearchPlaces};
 use axo_agent::pi::link::{self, LinkConfig};
 use axo_agent::pi::{BridgeSocketPath, PiLaunch, PiProcess, SocketCleanup};
 use axo_agent::process::ProcessIdentity;
-use axo_agent::discovery::{self, SearchPlaces};
 use axo_agent::{
-    Activity, AgentCommand, AgentCommands, AgentEvent, AgentKind, CommandResult,
-    FORK_EXEC_WINDOW, RejectReason, WriterLock,
+    Activity, AgentCommand, AgentCommands, AgentEvent, AgentKind, CommandResult, FORK_EXEC_WINDOW,
+    RejectReason, WriterLock,
 };
 use axo_protocol::{Event, PaneRole, PiCommandInfo, PiModelInfo, SessionStatus, ThinkingLevel};
 use axo_pty::WindowSize;
@@ -368,11 +368,11 @@ fn launch(core: &Core, request: LaunchRequest, in_flight: LaunchInFlight) -> io:
     Ok(Launched {
         in_flight,
         agent: LaunchedAgent::Pi(LaunchedPi {
-        process,
-        bridge_token,
-        session_file,
-        bridge_socket,
-    }),
+            process,
+            bridge_token,
+            session_file,
+            bridge_socket,
+        }),
     })
 }
 
@@ -384,10 +384,14 @@ async fn launch_codex(
     in_flight: LaunchInFlight,
 ) -> io::Result<Launched> {
     let places = SearchPlaces::from_environment(AgentKind::Codex, &request.home);
-    let installed = discovery::discover(AgentKind::Codex, &places, discovery::VERSION_TIMEOUT).await?;
+    let installed =
+        discovery::discover(AgentKind::Codex, &places, discovery::VERSION_TIMEOUT).await?;
     let launch = axo_agent::codex::CodexLaunch {
         executable: installed.executable,
-        paths: axo_agent::codex::CodexPaths::new(&core.pi_directories.bridges, &request.session_uuid)?,
+        paths: axo_agent::codex::CodexPaths::new(
+            &core.pi_directories.bridges,
+            &request.session_uuid,
+        )?,
         initial_pwd: request.folder,
         session_uuid: request.session_uuid,
         pane_id: request.pane_id,
@@ -537,7 +541,10 @@ fn agent_brief() -> String {
 }
 
 /// Axo's MCP server for the Session's agent, as pi-axo registers it for Pi.
-fn axo_mcp_server(core: &Core, session_id: axo_protocol::SessionId) -> io::Result<axo_agent::axo_mcp::AxoMcp> {
+fn axo_mcp_server(
+    core: &Core,
+    session_id: axo_protocol::SessionId,
+) -> io::Result<axo_agent::axo_mcp::AxoMcp> {
     Ok(axo_agent::axo_mcp::AxoMcp {
         axod: std::env::current_exe()?,
         socket: core.agent_socket.clone(),
@@ -669,7 +676,11 @@ impl Session {
                     pane_id,
                     size: self.pane_size(shell_id),
                     conversation: self.row.agent_conversation.clone(),
-                    name: self.row.manual_name.clone().unwrap_or_else(|| self.row.name.clone()),
+                    name: self
+                        .row
+                        .manual_name
+                        .clone()
+                        .unwrap_or_else(|| self.row.name.clone()),
                     mcp: axo_mcp_server(&core, self.id)?,
                     previous,
                 })
@@ -926,16 +937,12 @@ impl Session {
                 let mailbox = self.mailbox();
                 // The server's tools act as this Session (RFD0073) while the server runs.
                 let registered = self.core.agent_servers.register(server.id(), self.id);
-                let following = axo_agent::codex::run(
-                    config,
-                    requests,
-                    Some(server),
-                    move |event| {
+                let following =
+                    axo_agent::codex::run(config, requests, Some(server), move |event| {
                         mailbox.upgrade().is_some_and(|mailbox| {
                             mailbox.send(Message::Link { runtime_id, event }).is_ok()
                         })
-                    },
-                );
+                    });
                 // The link owns the server: it stops when the link is let go, and only then
                 // is the registration.
                 let link_task = tokio::spawn(async move {
@@ -983,16 +990,12 @@ impl Session {
                 let mailbox = self.mailbox();
                 // The server's tools act as this Session (RFD0073) while the server runs.
                 let registered = self.core.agent_servers.register(server.id(), self.id);
-                let following = axo_agent::opencode::run(
-                    config,
-                    requests,
-                    Some(server),
-                    move |event| {
+                let following =
+                    axo_agent::opencode::run(config, requests, Some(server), move |event| {
                         mailbox.upgrade().is_some_and(|mailbox| {
                             mailbox.send(Message::Link { runtime_id, event }).is_ok()
                         })
-                    },
-                );
+                    });
                 // The link owns the server: it stops when the link is let go, and only then
                 // is the registration.
                 let link_task = tokio::spawn(async move {

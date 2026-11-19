@@ -410,10 +410,7 @@ fn forward_event(event: Event, context: &RelaySessionContext) {
         | Event::DaemonReady
         | Event::SessionFocus { .. }
         | Event::RelayStatus { .. }
-        | Event::PeerSessionsChanged
-        // Which devices answer is decided at the Mac alone (RFD0077).
-        | Event::DeviceRequested { .. }
-        | Event::DevicesChanged => {}
+        | Event::PeerSessionsChanged => {}
     }
 }
 

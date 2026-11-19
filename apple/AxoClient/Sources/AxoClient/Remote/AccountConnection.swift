@@ -147,10 +147,10 @@ public final class AccountConnection: Sendable {
   /// Answers what a Mac's agent asks (RFD0029). The Mac takes the first answer; a later one
   /// fails with `ElicitationError.notPending`.
   /// An accepted input request's values go `sealed` to the Mac: the cloud never reads them.
-  /// `device` is this device's signature over the answer: the Mac takes answers only from devices
+  /// The signed-in account authorizes the answer; no device enrollment is required.
   /// allowed in Axo there.
   public func resolveElicitation(
-    _ id: String, on host: UUID, action: ElicitationAnswer, device: DeviceProof, sealed: SealedInput? = nil
+    _ id: String, on host: UUID, action: ElicitationAnswer, device: DeviceProof? = nil, sealed: SealedInput? = nil
   ) async throws {
     let _: Resolved = try await connection(for: host).call(
       "axo.elicitation.resolve",
@@ -529,7 +529,7 @@ private struct ResolveParams: Encodable, Sendable {
   let elicitationId: String
   let action: ElicitationAnswer
   let sealed: SealedInput?
-  let device: DeviceProof
+  let device: DeviceProof?
 
   func encode(to encoder: Encoder) throws {
     var container = encoder.container(keyedBy: CodingKeys.self)
@@ -537,7 +537,7 @@ private struct ResolveParams: Encodable, Sendable {
     try container.encode(elicitationId, forKey: .elicitationId)
     try container.encode(action, forKey: .action)
     try container.encodeIfPresent(sealed, forKey: .sealed)
-    try container.encode(device, forKey: .device)
+    try container.encodeIfPresent(device, forKey: .device)
   }
 
   private enum CodingKeys: String, CodingKey { case hostId, elicitationId, action, sealed, device }

@@ -55,19 +55,29 @@ async fn a_claude_session_types_prompts_into_its_tui_and_keeps_a_transcript() {
     assert_eq!(record.agent, AgentKind::ClaudeCode);
     fixture.wait_for_pi(record.id).await;
     fixture
-        .until("the TUI's first hook", || claude_log(&fixture).contains("hook SessionStart"))
+        .until("the TUI's first hook", || {
+            claude_log(&fixture).contains("hook SessionStart")
+        })
         .await;
     let log = claude_log(&fixture);
     // The conversation is named after the Session; Axo's brief and MCP server come along.
     assert!(log.contains(&format!("tui new {}", record.id)), "{log}");
     assert!(log.contains("brief You run inside Axo"), "{log}");
-    assert!(log.contains(&format!("\"AXO_SESSION_ID\":\"{}\"", record.id)), "{log}");
+    assert!(
+        log.contains(&format!("\"AXO_SESSION_ID\":\"{}\"", record.id)),
+        "{log}"
+    );
 
     prompt(&fixture, &record, "hello claude", 1).await;
     fixture
-        .until("the prompt typed into the TUI", || claude_log(&fixture).contains("prompt hello claude"))
+        .until("the prompt typed into the TUI", || {
+            claude_log(&fixture).contains("prompt hello claude")
+        })
         .await;
-    let transcript = record.pi_session_file.clone().expect("every Session has a transcript");
+    let transcript = record
+        .pi_session_file
+        .clone()
+        .expect("every Session has a transcript");
     fixture
         .until("the answer in the transcript", || {
             fs::read_to_string(&transcript).is_ok_and(|text| text.contains("echo: hello claude"))
@@ -81,11 +91,15 @@ async fn after_a_restart_a_claude_session_resumes_its_conversation() {
     let record = claude_session(&fixture).await;
     fixture.wait_for_pi(record.id).await;
     fixture
-        .until("the TUI's first hook", || claude_log(&fixture).contains("hook SessionStart"))
+        .until("the TUI's first hook", || {
+            claude_log(&fixture).contains("hook SessionStart")
+        })
         .await;
     prompt(&fixture, &record, "first", 1).await;
     fixture
-        .until("the first turn", || claude_log(&fixture).contains("hook Stop"))
+        .until("the first turn", || {
+            claude_log(&fixture).contains("hook Stop")
+        })
         .await;
     fixture.restart().await;
     prompt(&fixture, &record, "again", 2).await;

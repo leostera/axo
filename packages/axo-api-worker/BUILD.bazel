@@ -99,15 +99,6 @@ node_test(
     tsx = True,
 )
 
-node_test(
-    name = "device_linking_test",
-    data = _DEPS + [":node_modules/tsx", ":test_files"],
-    tests = ["tests/device-linking.test.ts"],
-    concurrency = 1,
-    tests_in_data = True,
-    tsx = True,
-)
-
 # APNs protocol tests use ephemeral signing keys and an injected transport, never real devices.
 node_test(
     name = "apns_test",

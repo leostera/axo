@@ -1,8 +1,6 @@
 import AxoProtocol
 import Foundation
 
-struct PairingCancelled: Decodable, Sendable { let cancelled: Bool }
-
 struct ConfigGetRequest: Encodable {
   let key: AxoConfigKey
 }
@@ -138,10 +136,4 @@ enum AxodMethods {
   static let clientViewportSet = AxodMethod<ClientViewport, ViewportAcknowledgement>(.clientViewportSet)
   static let elicitationList = AxodMethod<NoParams, PendingElicitations>(.elicitationList)
   static let elicitationResolve = AxodMethod<LocalElicitationAnswer, ElicitationResolution>(.elicitationResolve)
-  static let devicePairingCreate = AxodMethod<NoParams, HostDeviceLinkCode>(.devicePairingCreate)
-  static let devicePairingStatus = AxodMethod<NoParams, DevicePairingStatus>(.devicePairingStatus)
-  static let devicePairingCancel = AxodMethod<NoParams, PairingCancelled>(.devicePairingCancel)
-  static let deviceList = AxodMethod<NoParams, AnsweringDevices>(.deviceList)
-  static let deviceDecide = AxodMethod<DecideDevice, DeviceDecided>(.deviceDecide)
-  static let deviceRevoke = AxodMethod<RevokeDevice, DeviceRevoked>(.deviceRevoke)
 }

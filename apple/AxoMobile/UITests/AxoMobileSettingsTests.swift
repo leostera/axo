@@ -12,21 +12,14 @@ final class AxoMobileSettingsTests: XCTestCase {
   }
 
   @MainActor
-  func testProfileLinkedDevicesShowsTheCameraEntryAndPrivatePairingCode() {
+  func testSignedInProfileDoesNotRequireDeviceEnrollment() {
     let app = launch("light")
     app.buttons["settings-account"].tapWhereItIs()
-    let linked = app.buttons["settings-linkedDevices"]
-    XCTAssertTrue(linked.waitForExistence(timeout: 5))
-    linked.tapWhereItIs()
-    XCTAssertTrue(app.navigationBars["Linked Axos"].waitForExistence(timeout: 5))
-    XCTAssertTrue(app.buttons["link-device"].exists)
-    Snapshots.save(XCUIScreen.main.screenshot().pngRepresentation, named: "linked-devices")
-    app.buttons["show-link-code"].tapWhereItIs()
-    XCTAssertTrue(app.navigationBars["Link this Axo"].waitForExistence(timeout: 5))
-    XCTAssertTrue(app.staticTexts["Waiting for approval"].waitForExistence(timeout: 5))
-    XCTAssertTrue(app.images["Private device linking code"].exists)
-    app.buttons["Cancel"].tapWhereItIs()
-    XCTAssertTrue(app.navigationBars["Linked Axos"].waitForExistence(timeout: 5))
+    XCTAssertTrue(app.navigationBars["Profile"].waitForExistence(timeout: 5))
+    XCTAssertFalse(app.buttons["link-device"].exists)
+    XCTAssertFalse(app.buttons["show-link-code"].exists)
+    XCTAssertFalse(app.staticTexts["Waiting for approval on your existing phone"].exists)
+    Snapshots.save(XCUIScreen.main.screenshot().pngRepresentation, named: "profile-without-enrollment")
   }
 
   @MainActor

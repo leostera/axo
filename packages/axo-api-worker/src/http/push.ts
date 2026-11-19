@@ -38,7 +38,7 @@ export async function notificationRequest(request: Request, env: Env, ctx: Execu
   const parsed = z.discriminatedUnion("operation", [
     z.strictObject({ ...common, operation: z.literal("read") }),
     z.strictObject({ ...common, operation: z.literal("answer"), action: z.enum(["accept", "decline"]),
-      digest: z.string().regex(/^[a-f0-9]{64}$/), expiresAt: z.number().int().positive(), device: deviceProofSchema }),
+      digest: z.string().regex(/^[a-f0-9]{64}$/), expiresAt: z.number().int().positive(), device: deviceProofSchema.optional() }),
   ]).safeParse(await boundedBody(request));
   if (!parsed.success) return json({ error: "Invalid notification request" }, 400);
   const { hostId, requestId } = parsed.data;
@@ -54,7 +54,7 @@ export async function notificationRequest(request: Request, env: Env, ctx: Execu
   return json({ error: settled ? "Request changed or is no longer pending" : "Answer was not confirmed; review in Axo" }, settled ? 409 : 422);
 }
 
-export async function boundedBody(request: Request): Promise<unknown> {
+async function boundedBody(request: Request): Promise<unknown> {
   if (!request.body) return null;
   const reader = request.body.getReader();
   const chunks: Uint8Array[] = [];

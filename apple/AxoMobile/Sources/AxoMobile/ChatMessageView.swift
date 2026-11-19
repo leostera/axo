@@ -470,17 +470,12 @@ struct InputCard: View {
   let question: AskedQuestion
   let canAnswer: Bool
   var failure: String?
-  /// Whether the person confirmed this Mac's key before (RFD0077).
-  let keyConfirmed: Bool
-  let confirmKey: () -> Void
   let answer: (ElicitationAnswer, [String: String]?) -> Void
   @State private var values: [String: String] = [:]
-  @State private var confirmedHere = false
   @FocusState private var focused: String?
 
   private var input: InputRequest { question.elicitation.input! }
-  private var trusted: Bool { keyConfirmed || confirmedHere }
-  private var complete: Bool { trusted && input.fields.allSatisfy { !(values[$0.id] ?? "").isEmpty } }
+  private var complete: Bool { input.fields.allSatisfy { !(values[$0.id] ?? "").isEmpty } }
   private var disabled: Bool { !canAnswer || question.answering != nil }
 
   var body: some View {
@@ -498,25 +493,8 @@ struct InputCard: View {
           .submitLabel(field.id == input.fields.last?.id ? .done : .next)
           .onSubmit { submit(after: field) }
       }
-      if trusted {
-        Text("Goes straight to your Mac, encrypted for it. The agent never sees it.")
-          .font(.caption).foregroundStyle(.secondary)
-      } else {
-        VStack(alignment: .leading, spacing: 6) {
-          Text("Before your values go to this Mac, check that Axo there (Settings › Devices) shows this key:")
-            .font(.caption).foregroundStyle(.secondary)
-          Text(InputSeal.fingerprint(of: input.key))
-            .font(.body.monospaced().weight(.semibold))
-            .textSelection(.enabled)
-            .accessibilityIdentifier("inputKeyFingerprint")
-          AnswerButton(title: "It matches", prominent: false) {
-            confirmKey()
-            confirmedHere = true
-          }
-          .disabled(disabled)
-          .accessibilityIdentifier("inputKeyMatches")
-        }
-      }
+      Text("Encrypted for your computer. The agent never sees these values.")
+        .font(.caption).foregroundStyle(.secondary)
       HStack(spacing: 10) {
         AnswerButton(title: "Fill in", prominent: true) { send() }
           .disabled(disabled || !complete)

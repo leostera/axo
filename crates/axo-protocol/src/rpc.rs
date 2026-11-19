@@ -129,16 +129,6 @@ pub mod method {
     pub const COMPUTER_INPUT: &str = "axo.computer.input";
     /// What a Session's agent can do through Axo, for pi-axo to put in its system prompt.
     pub const SESSION_BRIEF: &str = "axo.session.brief";
-    /// The phones and browsers allowed to answer this Mac's questions, those waiting to, and
-    /// this Mac's input key's fingerprint (RFD0077).
-    pub const DEVICE_LIST: &str = "axo.device.list";
-    pub const DEVICE_PAIRING_CREATE: &str = "axo.device.pairing.create";
-    pub const DEVICE_PAIRING_CANCEL: &str = "axo.device.pairing.cancel";
-    pub const DEVICE_PAIRING_STATUS: &str = "axo.device.pairing.status";
-    /// Axo.app allows a waiting device, or turns it away.
-    pub const DEVICE_DECIDE: &str = "axo.device.decide";
-    /// Axo.app stops taking an allowed device's answers.
-    pub const DEVICE_REVOKE: &str = "axo.device.revoke";
     /// The coding agents this Mac has, and what each can do (RFD0072).
     pub const AGENTS_LIST: &str = "axo.agents.list";
 
@@ -193,12 +183,6 @@ pub mod method {
         ASSETS_FETCH,
         COMPUTER_INPUT,
         SESSION_BRIEF,
-        DEVICE_LIST,
-        DEVICE_PAIRING_CREATE,
-        DEVICE_PAIRING_CANCEL,
-        DEVICE_PAIRING_STATUS,
-        DEVICE_DECIDE,
-        DEVICE_REVOKE,
         AGENTS_LIST,
     ];
 }

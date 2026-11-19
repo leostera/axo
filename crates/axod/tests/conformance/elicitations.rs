@@ -61,23 +61,6 @@ fn an_agents_question_is_shown_to_every_client_and_listed_until_answered() {
 }
 
 #[test]
-fn only_signed_axo_app_can_create_inspect_or_cancel_a_private_linking_code() {
-    let axod = Axod::start();
-    let create = axod.err("axo.device.pairing.create", json!({}));
-    assert_eq!(
-        create.code, NOT_A_PERSON,
-        "a CLI or agent cannot acquire a QR capability"
-    );
-    let status = axod.err("axo.device.pairing.status", json!({}));
-    assert_eq!(status.code, NOT_A_PERSON);
-    let cancel = axod.err("axo.device.pairing.cancel", json!({}));
-    assert_eq!(
-        cancel.code, NOT_A_PERSON,
-        "an agent cannot cancel the person's pairing"
-    );
-}
-
-#[test]
 fn only_axo_app_answers_on_this_mac() {
     let axod = Axod::start();
     let session = axod.new_session()["id"].clone();
@@ -277,20 +260,10 @@ fn thirty_two_pending_questions_do_not_allocate_a_thread_each() {
     });
 }
 
-/// Which devices answer this Mac is the person's to say, at the Mac, in Axo.app (RFD0077): any
-/// client may read the list, and only Axo.app, by code signature, allows or removes a device.
-/// The same uid is no such identity, on macOS or on Linux.
 #[test]
-fn only_axo_app_decides_which_devices_answer() {
+fn obsolete_device_enrollment_methods_are_not_offered() {
     let axod = Axod::start();
-    let devices = axod.ok("axo.device.list", json!({}));
-    assert_eq!(devices["allowed"], json!([]));
-    assert_eq!(devices["waiting"], json!([]));
-    let key =
-        "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBA=";
-    let decide = axod.err("axo.device.decide", json!({ "key": key, "allow": true }));
-    assert_eq!(decide.code, NOT_A_PERSON, "{decide:?}");
-    let revoke = axod.err("axo.device.revoke", json!({ "key": key }));
-    assert_eq!(revoke.code, NOT_A_PERSON, "{revoke:?}");
-    assert_eq!(axod.ok("axo.device.list", json!({}))["allowed"], json!([]));
+    assert_eq!(axod.err("axo.device.list", json!({})).code, -32601);
+    assert_eq!(axod.err("axo.device.decide", json!({})).code, -32601);
+    assert_eq!(axod.err("axo.device.revoke", json!({})).code, -32601);
 }

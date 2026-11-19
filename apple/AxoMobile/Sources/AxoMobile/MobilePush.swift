@@ -356,12 +356,9 @@ final class MobilePush: NSObject, UNUserNotificationCenterDelegate {
       let current = try await client.notificationQuestion(hostID: route.hostID, requestID: route.requestID)
       guard (try? await account.tokens.sessionToken()) == session,
         metadata.matches(current.elicitation, route: route, displayedMessage: displayedMessage) else { throw RelayError.httpStatus(409) }
-      let signer = try PhoneDeviceKey.existing()
-      let proof = try signer.prove(requestID: route.requestID.uuidString.lowercased(), action: action,
-        sealed: nil, name: UIDevice.current.model)
       guard !account.hasEndedSession, account.credentialRevision == credentialRevision else { return }
       try await client.answerNotification(hostID: route.hostID, requestID: route.requestID, digest: metadata.digest,
-        expiresAt: metadata.expiresAt, action: action, device: proof)
+        expiresAt: metadata.expiresAt, action: action)
       reportTest(action == .accept ? .actionAccepted : .actionDeclined)
       updatesRevision = UUID()
     } catch {

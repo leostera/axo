@@ -5,9 +5,9 @@
 
 use std::fs;
 
+use axo_protocol::SessionRecord;
 use axo_protocol::agent::AgentKind;
 use axo_protocol::rpc::{CreateSession, PromptDelivery, PromptText, SessionLocation};
-use axo_protocol::SessionRecord;
 
 use crate::sessions;
 use crate::test_support::Fixture;
@@ -63,15 +63,22 @@ async fn an_opencode_session_runs_the_tui_on_its_own_session_and_keeps_a_transcr
     let log = opencode_log(&fixture);
     assert_eq!(count(&log, "created "), 1, "{log}");
     // Axo's MCP server, configured for this Session; its instructions carry the brief.
-    let config = log.lines().find_map(|line| line.strip_prefix("config ")).expect(&log);
+    let config = log
+        .lines()
+        .find_map(|line| line.strip_prefix("config "))
+        .expect(&log);
     let config: serde_json::Value = serde_json::from_str(config).unwrap();
-    assert_eq!(config["mcp"]["axo"]["environment"]["AXO_SESSION_ID"], record.id.to_string());
+    assert_eq!(
+        config["mcp"]["axo"]["environment"]["AXO_SESSION_ID"],
+        record.id.to_string()
+    );
     assert_eq!(config["mcp"]["axo"]["command"][1], "mcp");
     fixture
         .until("the TUI on the session", || {
-            opencode_log(&fixture)
-                .lines()
-                .any(|line| line.starts_with("tui --server http://127.0.0.1:") && line.ends_with(&format!("--session {SESSION}")))
+            opencode_log(&fixture).lines().any(|line| {
+                line.starts_with("tui --server http://127.0.0.1:")
+                    && line.ends_with(&format!("--session {SESSION}"))
+            })
         })
         .await;
     assert!(opencode_log(&fixture).contains("tui password=true"));
@@ -79,11 +86,16 @@ async fn an_opencode_session_runs_the_tui_on_its_own_session_and_keeps_a_transcr
     prompt(&fixture, &record, "hello opencode", 1).await;
     fixture
         .until("the prompt to reach the server", || {
-            opencode_log(&fixture).contains(&format!("prompt {SESSION} delivery=none text=hello opencode"))
+            opencode_log(&fixture).contains(&format!(
+                "prompt {SESSION} delivery=none text=hello opencode"
+            ))
         })
         .await;
     // OpenCode's export becomes the Session's transcript, as Pi lines the cloud syncs.
-    let transcript = record.pi_session_file.clone().expect("every Session has a transcript");
+    let transcript = record
+        .pi_session_file
+        .clone()
+        .expect("every Session has a transcript");
     fixture
         .until("the answer in the transcript", || {
             fs::read_to_string(&transcript).is_ok_and(|text| text.contains("echo: hello opencode"))
@@ -108,8 +120,14 @@ async fn after_a_restart_an_opencode_session_rejoins_its_session_instead_of_crea
             opencode_log(&fixture).contains(&format!("prompt {SESSION} delivery=none text=again"))
         })
         .await;
-    fixture.until("the second TUI", || tuis(&fixture) == 2).await;
+    fixture
+        .until("the second TUI", || tuis(&fixture) == 2)
+        .await;
     let log = opencode_log(&fixture);
-    assert_eq!(count(&log, "created "), 1, "one session for the Session's life:\n{log}");
+    assert_eq!(
+        count(&log, "created "),
+        1,
+        "one session for the Session's life:\n{log}"
+    );
     assert_eq!(count(&log, "serve "), 2, "{log}");
 }

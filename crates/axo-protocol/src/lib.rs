@@ -10,8 +10,6 @@ pub mod asset;
 pub mod base64;
 pub mod cli;
 pub mod commands;
-pub mod device_pairing;
-pub mod device_unlinking;
 pub mod elicitation;
 mod event;
 mod ids;

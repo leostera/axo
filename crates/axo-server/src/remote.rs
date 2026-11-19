@@ -660,8 +660,15 @@ mod tests {
             json!({ "target": target(&fixture), "agent": "codex" }),
         )
         .await;
-        let id = codex["result"]["session"]["sessionId"].as_str().expect(&codex.to_string()).parse().unwrap();
-        assert_eq!(fixture.listed(id).unwrap().agent, axo_agent::AgentKind::Codex);
+        let id = codex["result"]["session"]["sessionId"]
+            .as_str()
+            .expect(&codex.to_string())
+            .parse()
+            .unwrap();
+        assert_eq!(
+            fixture.listed(id).unwrap().agent,
+            axo_agent::AgentKind::Codex
+        );
         let unknown = as_account(
             &handler,
             "axo.remote.session.create",

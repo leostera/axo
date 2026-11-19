@@ -18,11 +18,11 @@ struct SettingsView: View {
   @State private var confirmingSignOut = false
 
   enum Opening: String, Identifiable {
-    case settings, apps, linkedDevices
+    case settings, apps
     var id: String { rawValue }
   }
 
-  private enum Page: Hashable { case account, apps, appearance, chats, notifications, linkedDevices }
+  private enum Page: Hashable { case account, apps, appearance, chats, notifications }
 
   private var accountName: String {
     hosts.signedIn?.profile?.name ?? hosts.signedIn?.profile?.email ?? "Signed in"
@@ -51,7 +51,6 @@ struct SettingsView: View {
           case .appearance: appearancePage
           case .chats: chatsPage
           case .notifications: notificationsPage
-          case .linkedDevices: LinkedDevicesView(account: account, hosts: hosts, onboarding: opening == .linkedDevices)
           }
         }
         .toolbar {
@@ -74,12 +73,8 @@ struct SettingsView: View {
           }
         }
     }
-    .onAppear {
-      guard path.isEmpty else { return }
-      if opening == .apps { path.append(Page.apps) }
-      if opening == .linkedDevices { path.append(Page.linkedDevices) }
-    }
-    .task { if opening != .linkedDevices { await apps.refresh() } }
+    .onAppear { if opening == .apps, path.isEmpty { path.append(Page.apps) } }
+    .task { await apps.refresh() }
     .alert("Sign out of Axo on this device?", isPresented: $confirmingSignOut) {
       Button("Sign out", role: .destructive) { dismiss(); signOut() }
       Button("Cancel", role: .cancel) {}
@@ -146,9 +141,6 @@ struct SettingsView: View {
         SettingsCard {
           SettingsNavigationRow(title: accountName, icon: "person.crop.circle", subtitle: hosts.signedIn?.profile?.email,
             disclosure: false)
-        }
-        SettingsCard {
-          destination(.linkedDevices, "Linked Axos", icon: "qrcode.viewfinder", subtitle: "Link and approve devices from this phone")
         }
         SettingsCard { signOutButton }
         Text("Signing out ends this device’s session. Your hosts and conversations stay on your account.")

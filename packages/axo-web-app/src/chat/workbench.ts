@@ -13,8 +13,7 @@ import type {
   OpenRequest,
   SessionStatus,
 } from "@axo/app";
-import { keyFingerprint, sealInput, type DeviceProof } from "@axo/app";
-import { browserDevice, type AnswerDevice } from "./device.ts";
+import { sealInput, type DeviceProof } from "@axo/app";
 import { ASSET_LIMITS, ELICITATION_ERRORS, assetTypeOf, type Attachment, type HostModel, type PiCommand, type PiModel, type PiRuntime, type Sealed, type ThinkingLevel } from "@axo/protocol";
 import { safeFileName, type UploadAsset } from "./assets.ts";
 
@@ -85,7 +84,7 @@ export interface AccountLink {
   open(request: OpenRequest): Promise<ClientOpenResult>;
   older(sessionId: string, before: number, limit: number): Promise<OlderPage>;
   closeSession(sessionId: string): void;
-  resolveElicitation(hostId: string, elicitationId: string, action: ElicitationAnswer, device: DeviceProof, sealed?: Sealed): Promise<void>;
+  resolveElicitation(hostId: string, elicitationId: string, action: ElicitationAnswer, device: DeviceProof | undefined, sealed?: Sealed): Promise<void>;
   command(method: "axo.remote.session.create", params: { target: HostRef; agent?: CodingAgent }): Promise<{ session: CreatedSession }>;
   command(method: "axo.remote.session.prompt", params: { target: HostRef; sessionId: string; text: string; commandId: string; attachments?: Attachment[]; delivery?: Delivery }): Promise<unknown>;
   command(method: "axo.remote.session.restart", params: { target: HostRef; sessionId: string }): Promise<unknown>;
@@ -111,36 +110,6 @@ export interface ClientIdentity {
 export type Link = "connecting" | "connected" | "reconnecting" | "idle";
 
 /** What a Mac's agent asks the person (RFD0029), until it is resolved. */
-/**
- * The Macs' input keys the person confirmed (RFD0077): values are sealed only to one of them. A
- * key counts once the person saw its fingerprint here and in Axo on the Mac (Settings › Devices),
- * so a key the cloud swapped in, under any host id, gets nothing until the person confirms it.
- * The confirmation belongs to the key alone: host ids come from the cloud.
- */
-export const inputKeyPins = {
-  NAME: "axo.inputKeys.confirmed.v1",
-  LIMIT: 256,
-  memory: new Set<string>(),
-  confirmed(): string[] {
-    const storage = typeof localStorage === "undefined" ? undefined : localStorage;
-    try {
-      const kept: unknown = JSON.parse(storage?.getItem(this.NAME) ?? "[]");
-      if (Array.isArray(kept)) return [...kept.filter((key): key is string => typeof key === "string"), ...this.memory];
-    } catch { /* unreadable: nothing confirmed */ }
-    return [...this.memory];
-  },
-  isConfirmed(key: string): boolean {
-    return this.confirmed().includes(key);
-  },
-  /** The person saw the same fingerprint for `key` here and on the Mac. */
-  confirm(key: string): void {
-    if (this.isConfirmed(key)) return;
-    this.memory.add(key);
-    const storage = typeof localStorage === "undefined" ? undefined : localStorage;
-    storage?.setItem(this.NAME, JSON.stringify(this.confirmed().slice(-this.LIMIT)));
-  },
-};
-
 export interface AskedQuestion {
   readonly hostId: string;
   readonly elicitation: Elicitation;
@@ -432,8 +401,6 @@ export class ChatWorkbench {
   private cacheTimer: ReturnType<typeof setTimeout> | null = null;
   private stopWatchingCache: (() => void) | null = null;
 
-  /** This browser's key, which signs every answer (RFD0029). */
-  device: AnswerDevice = browserDevice();
 
   constructor(
     backend: ChatBackend,
@@ -1429,13 +1396,7 @@ export class ChatWorkbench {
     const input = question.elicitation.input;
     let sealed: Sealed | undefined;
     if (input && action === "accept") {
-      // The values leave this tab only sealed to a Mac key the person confirmed against Axo on
-      // that Mac (RFD0077): any other may be the cloud's, whichever host the request names.
-      if (!inputKeyPins.isConfirmed(input.key)) {
-        this.failure = `Check this Mac’s key first: compare ${await keyFingerprint(input.key)} with Axo on the Mac, in Settings › Devices. Nothing was sent.`;
-        this.changed();
-        return false;
-      }
+      // The authenticated account route supplies the host key (RFD0079).
       if (!values) return false;
       question.answering = action;
       this.changed();
@@ -1451,8 +1412,7 @@ export class ChatWorkbench {
     question.answering = action;
     this.changed();
     try {
-      const proof = await this.device.proof(elicitationId, action, sealed);
-      await this.connection.resolveElicitation(question.hostId, elicitationId, action, proof, sealed);
+      await this.connection.resolveElicitation(question.hostId, elicitationId, action, undefined, sealed);
       this.failure = null;
       this.changed();
       return true;

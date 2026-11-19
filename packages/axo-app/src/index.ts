@@ -531,7 +531,7 @@ export class AccountConnection {
    * Answers what a Mac asks (RFD0029). The Mac takes the first answer; a later one fails with
    * `ELICITATION_ERRORS.notPending`.
    */
-  async resolveElicitation(hostId: string, elicitationId: string, action: ElicitationAnswer, device: DeviceProof, sealed?: Sealed): Promise<void> {
+  async resolveElicitation(hostId: string, elicitationId: string, action: ElicitationAnswer, device?: DeviceProof, sealed?: Sealed): Promise<void> {
     elicitationResolveResultSchema.parse(await this.channelOf(hostId).request(ELICITATION_METHODS.resolve, { hostId, elicitationId, action, device, ...(sealed ? { sealed } : {}) }));
   }
 

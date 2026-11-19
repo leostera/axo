@@ -16,9 +16,8 @@ import { appsResults, type PiModel } from "@axo/protocol";
 import { oauthStart, parseRoute, parseSettingsRoute, routePath, settingsPath, signInTarget, type SettingsRoute } from "../src/chat/route.ts";
 import { parseAuthenticatedSession } from "../src/auth-session.ts";
 import { ChatCache } from "../src/chat/cache.ts";
-import { memoryDevice } from "../src/chat/device.ts";
 import { adjacentChat, chatSections, shownChatSections, defaultGrouping, groupOf, holdingSections, parseGrouping, SessionPins, SessionSeen } from "../src/chat/sidebar.ts";
-import { ChatWorkbench, inputKeyPins, lastActivity, recentChatList, shortAge, type AccountLink, type ChatBackend, type Session } from "../src/chat/workbench.ts";
+import { ChatWorkbench, lastActivity, recentChatList, shortAge, type AccountLink, type ChatBackend, type Session } from "../src/chat/workbench.ts";
 
 const hostId = "1e1e7f91-3d8f-4f97-8f71-4fc7d53313c6";
 const hostGeneration = "f9c5761c-3b2d-42a8-bb19-9a8c0b8cf230";
@@ -519,8 +518,8 @@ class FakeAccount implements AccountLink {
   resolves: Array<{ hostId: string; elicitationId: string; action: string; sealed?: { enc: string; ciphertext: string } }> = [];
   resolveFails: Error | null = null;
   resolveGate: Promise<void> | null = null;
-  devices: Array<{ key: string; signature: string }> = [];
-  async resolveElicitation(hostId: string, elicitationId: string, action: "accept" | "decline", device: { key: string; signature: string }, sealed?: { enc: string; ciphertext: string }) {
+  devices: Array<{ key: string; signature: string } | undefined> = [];
+  async resolveElicitation(hostId: string, elicitationId: string, action: "accept" | "decline", device: { key: string; signature: string } | undefined, sealed?: { enc: string; ciphertext: string }) {
     this.devices.push(device);
     this.resolves.push(sealed ? { hostId, elicitationId, action, sealed } : { hostId, elicitationId, action });
     await this.resolveGate;
@@ -562,7 +561,6 @@ async function workbenchWith(account = new FakeAccount(), retryDelay = 60_000, u
   };
   let id = 0;
   const workbench = new ChatWorkbench(backend, { current: () => "client-test-1", renew: () => "client-test-2" }, [1], () => `pending-${++id}`, retryDelay, uploadAsset, cache);
-  workbench.device = memoryDevice();
   workbench.start();
   await tick();
   return { workbench, account, connects: () => connects };
@@ -1073,52 +1071,26 @@ test("an answer that came too late removes the card; another failure lets the pe
   assert.equal(workbench.questions().length, 0);
 });
 
-test("a form's values leave only sealed, and only to a Mac key the person confirmed", async () => {
+test("a signed-in browser sends encrypted form values without enrollment or key confirmation", async () => {
   const { workbench, account } = await workbenchWith();
   const vectors = JSON.parse(readFileSync(new URL("../../../crates/axo-seal/testdata/vectors.json", import.meta.url), "utf8"));
   const input = { app: "Safari", window: "Sign in", origin: "https://github.com", fields: [{ id: "f0", label: "Password", kind: "password" as const }], key: vectors.publicKey };
-  const ask = (id: string, key = input.key, host = hostId) => account.events.elicitationRequested?.(host, { id, sessionId: sid(1), kind: "input" as const, askedBy: "computerUse" as const, message: "Fill Password in Safari.", input: { ...input, key }, createdAt: 1, expiresAt: 2 });
-  inputKeyPins.memory.clear();
-  // Not confirmed yet, even as the first key seen for this Mac: nothing goes (RFD0077).
-  ask("6c4e2f0a-1b2c-4d3e-8f9a-0b1c2d3e4f60");
-  await workbench.answerQuestion("6c4e2f0a-1b2c-4d3e-8f9a-0b1c2d3e4f60", "accept", { f0: "hunter2" });
-  assert.equal(account.resolves.length, 0);
-  assert.match(workbench.failure ?? "", /Check this Mac’s key first/);
-  inputKeyPins.confirm(input.key);
-  await workbench.answerQuestion("6c4e2f0a-1b2c-4d3e-8f9a-0b1c2d3e4f60", "accept", { f0: "hunter2" });
+  const id = "6c4e2f0a-1b2c-4d3e-8f9a-0b1c2d3e4f60";
+  account.events.elicitationRequested?.(hostId, { id, sessionId: sid(1), kind: "input", askedBy: "computerUse", message: "Fill Password in Safari.", input, createdAt: 1, expiresAt: 2 });
+  await workbench.answerQuestion(id, "accept", { f0: "fixture-password" });
   const [sent] = account.resolves;
   assert.equal(sent!.action, "accept");
-  assert.ok(sent!.sealed && !JSON.stringify(sent).includes("hunter2"));
-
-  // The cloud's own key, under a host id never seen before, gets nothing.
-  const other = "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBA=";
-  ask("6c4e2f0a-1b2c-4d3e-8f9a-0b1c2d3e4f61", other, crypto.randomUUID());
-  await workbench.answerQuestion("6c4e2f0a-1b2c-4d3e-8f9a-0b1c2d3e4f61", "accept", { f0: "hunter2" });
-  assert.equal(account.resolves.length, 1);
-  assert.match(workbench.failure ?? "", /Check this Mac’s key first/);
-  // Cancelling needs no key.
-  await workbench.answerQuestion("6c4e2f0a-1b2c-4d3e-8f9a-0b1c2d3e4f61", "decline");
-  assert.equal(account.resolves[1]!.action, "decline");
-  assert.equal(account.resolves[1]!.sealed, undefined);
+  assert.ok(sent!.sealed && !JSON.stringify(sent).includes("fixture-password"));
+  assert.deepEqual(account.devices, [undefined]);
 });
 
-test("every answer goes signed by this browser's key, each with its own signature", async () => {
+test("a signed-in browser answers without creating a device key", async () => {
   const { workbench, account } = await workbenchWith();
   const elicitation = { id: "6c4e2f0a-1b2c-4d3e-8f9a-0b1c2d3e4f70", sessionId: sid(1), kind: "confirm" as const, message: "Go?", createdAt: 1, expiresAt: 2 };
   account.events.elicitationRequested?.(hostId, elicitation);
-  account.resolveFails = Object.assign(new Error("The answer's signature is not for this answer."), { code: -32015 });
-  await workbench.answerQuestion(elicitation.id, "accept");
-  assert.equal(account.devices[0]!.key.length, 88);
-  account.resolveFails = null;
-  await workbench.answerQuestion(elicitation.id, "accept");
-  assert.equal(account.devices[1]!.key, account.devices[0]!.key);
-  assert.notEqual(account.devices[1]!.signature, account.devices[0]!.signature);
-});
-
-test("a browser names itself by its browser and system", async () => {
-  const { browserName } = await import("../src/chat/device.ts");
-  assert.equal(browserName("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15"), "Safari on Mac");
-  assert.equal(browserName("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36"), "Chrome on Windows");
+  await workbench.answerQuestion(elicitation.id, "decline");
+  assert.equal(account.resolves[0]!.action, "decline");
+  assert.deepEqual(account.devices, [undefined]);
 });
 
 // MARK: - Session controls (RFD0033)

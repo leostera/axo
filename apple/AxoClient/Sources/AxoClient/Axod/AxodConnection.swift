@@ -140,34 +140,6 @@ public final class AxodConnection: Sendable {
     }
   }
 
-  /// The phones and browsers that answer for this Mac, those asking to, and this Mac's input
-  /// key's fingerprint (RFD0077).
-  public func answeringDevices() async throws -> AnsweringDevices {
-    try await call(AxodMethods.deviceList)
-  }
-
-  public func createDeviceLinkCode() async throws -> HostDeviceLinkCode {
-    try await call(AxodMethods.devicePairingCreate)
-  }
-
-  public func devicePairingStatus() async throws -> DevicePairingStatus {
-    try await call(AxodMethods.devicePairingStatus)
-  }
-
-  public func cancelDeviceLinkCode() async throws {
-    _ = try await call(AxodMethods.devicePairingCancel)
-  }
-
-  /// Allows a waiting device, or turns it away. axod takes this only from Axo.app.
-  public func decideDevice(_ key: String, allow: Bool) async throws {
-    _ = try await call(AxodMethods.deviceDecide, DecideDevice(key: key, allow: allow))
-  }
-
-  /// Stops taking a device's answers. axod takes this only from Axo.app.
-  public func revokeDevice(_ key: String) async throws {
-    _ = try await call(AxodMethods.deviceRevoke, RevokeDevice(key: key))
-  }
-
   // MARK: - Sessions
 
   public func listSessionSnapshot() async throws -> TerminalSessionListSnapshot {

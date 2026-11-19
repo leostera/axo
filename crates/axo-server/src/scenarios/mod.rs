@@ -6,10 +6,10 @@
 mod attachments;
 mod claude;
 mod codex;
-mod opencode;
 mod idle_pis;
 mod input_key;
 mod lifecycle;
+mod opencode;
 mod peers;
 mod prompts;
 mod transcripts;

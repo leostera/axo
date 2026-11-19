@@ -12,7 +12,7 @@ public protocol AccountFeed: ChatFeed {
   func refresh() async throws -> ClientHello
   func renameHost(_ host: UUID, to name: String) async throws -> String
   func resolveElicitation(
-    _ id: String, on host: UUID, action: ElicitationAnswer, device: DeviceProof, sealed: SealedInput?) async throws
+    _ id: String, on host: UUID, action: ElicitationAnswer, device: DeviceProof?, sealed: SealedInput?) async throws
 }
 
 /// What a Mac's agent asks the person (RFD0029), until the Mac says it is settled.
@@ -100,12 +100,6 @@ public final class PhoneWorkbench {
   @ObservationIgnored private var protectedInteractions: Set<Selection> = []
   /// Why the last answer did not go, until the next one does.
   public private(set) var answerFailure: String?
-  /// The Macs' input keys the person confirmed (RFD0077).
-  public var inputKeyPins = InputKeyPins()
-  /// This phone's key, which signs every answer; made on first use.
-  public var device: (any DeviceSigner)?
-  /// What a Mac shows when this phone first answers it.
-  public var deviceName = "iPhone"
   /// A message is on its way; a second tap must not start a second chat.
   public private(set) var isSending = false
   /// The files in each chat's box (RFD0030), uploading or ready, kept like the words.
@@ -257,16 +251,6 @@ public final class PhoneWorkbench {
     questions.filter { $0.elicitation.sessionId == session }
   }
 
-  /// Whether the person confirmed this Mac key, so values may be sealed to it (RFD0077).
-  public func isInputKeyConfirmed(_ key: String) -> Bool {
-    inputKeyPins.isConfirmed(key)
-  }
-
-  /// The person saw the same fingerprint for `key` here and in Axo on the Mac.
-  public func confirmInputKey(_ key: String) {
-    inputKeyPins.confirm(key)
-  }
-
   /// Answers what a Mac's agent asks. The card stays until the Mac says it is settled; an answer
   /// that came too late (another device answered, or it expired) removes it.
   public func answer(_ id: String, _ action: ElicitationAnswer, values: [String: String]? = nil) async {
@@ -285,12 +269,7 @@ public final class PhoneWorkbench {
     let host = questions[index].hostID
     var sealed: SealedInput?
     if let input = questions[index].elicitation.input, action == .accept {
-      // The values leave the phone only sealed to a Mac key the person confirmed against Axo on
-      // that Mac (RFD0077): any other may be the cloud's, whichever host the request names.
-      guard inputKeyPins.isConfirmed(input.key) else {
-        answerFailure = "Check this Mac’s key first: compare \(InputSeal.fingerprint(of: input.key)) with Axo on the Mac, in Settings › Devices. Nothing was sent."
-        return false
-      }
+      // The authenticated account route supplies the host key (RFD0079).
       guard let values else { return false }
       do {
         sealed = try InputSeal.seal(values, to: input.key, requestID: id, origin: input.origin)
@@ -299,21 +278,9 @@ public final class PhoneWorkbench {
         return false
       }
     }
-    let proof: DeviceProof
-    do {
-      let signer = try device ?? PhoneDeviceKey.stored()
-      device = signer
-      proof = try signer.prove(requestID: id, action: action, sealed: sealed, name: deviceName)
-    } catch let error as PhoneDeviceKey.StorageError {
-      answerFailure = error.localizedDescription
-      return false
-    } catch {
-      answerFailure = "This device couldn’t sign the answer."
-      return false
-    }
     questions[index].answering = action
     do {
-      try await feed.resolveElicitation(id, on: host, action: action, device: proof, sealed: sealed)
+      try await feed.resolveElicitation(id, on: host, action: action, device: nil, sealed: sealed)
       answerFailure = nil
       return true
     } catch {

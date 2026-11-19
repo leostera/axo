@@ -5,8 +5,8 @@ import { atMost, budget, defineActor, defineGroup, defineLimit, defineMessage, d
 // - a confirm: the computer-use gate flags "click Pay now";
 // - an input: the agent asks for a card number that must reach Safari's field without passing
 //   through the agent or the cloud.
-// Authenticate (Face ID) is an answer with a device signature; it changes no ordering here,
-// so it is left out.
+// Signed-in account clients answer through the authenticated relay (RFD0079); no enrollment
+// or device signature is required. Local signed-app admission remains separate.
 //
 // Built: the gate asks (step 2), axod takes a local answer only from Axo.app by code signature
 // (step 3), and input (step 4): sealed values, binding to the elements axod read, hiding filled

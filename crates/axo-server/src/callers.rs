@@ -110,7 +110,9 @@ impl AgentServers {
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<u32, SessionId>> {
-        self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 }
 

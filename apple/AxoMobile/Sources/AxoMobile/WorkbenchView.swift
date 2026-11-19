@@ -282,10 +282,6 @@ struct WorkbenchView: View {
     }
     .task {
       await workbench.start()
-      if environment.account.needsDeviceOnboarding, !PreviewFixture.requested {
-        environment.account.acknowledgeDeviceOnboarding()
-        settings = .linkedDevices
-      }
       if PreviewFixture.appsOpen { openApps() }
       if PreviewFixture.chatOpen != nil {
         // The listing is applied as the socket's hello arrives, after `start` returns: wait for it

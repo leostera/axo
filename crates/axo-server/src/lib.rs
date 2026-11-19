@@ -19,8 +19,6 @@ mod brief;
 mod callers;
 mod catalog;
 mod core;
-mod device_pairing;
-mod devices;
 mod event_stream;
 mod events;
 mod handlers;
@@ -406,7 +404,6 @@ fn open_core(
         settings,
         viewport,
         lifeline: axo_agent::Lifeline::new()?,
-        devices: devices::AllowedDevices::open(server_directory.join(devices::DEVICES_FILE))?,
     }));
     Ok((core, previous_stop))
 }
@@ -520,8 +517,6 @@ fn rpc_handler(
         &assets,
         &questions,
         &computer,
-        &devices::DevicesExtension(Arc::clone(&core)),
-        &device_pairing::DevicePairingExtension(Arc::clone(&core)),
     ] {
         if let Err(conflict) = methods.add(extension) {
             panic!("{conflict}");

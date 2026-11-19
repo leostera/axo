@@ -50,7 +50,6 @@ import { DIRECT_CLIENT_ROLE, HostClients, isDirectClient } from "./host-clients"
 import { withoutWorkspace } from "./stored-metadata";
 import { PI3_FORMAT, type ClientRecord } from "@axo/protocol";
 import { z } from "zod";
-import { deviceLinkCommandSchema } from "./devices/linking";
 
 /**
  * One paired host (RFD0018, HostDO): owns the host's socket and presence, runs the sync
@@ -651,23 +650,6 @@ export class AxoHostDO extends AxoHostRelay {
    * A person's answer to what the Mac asked (RFD0029), from a ClientDO, which takes it only from
    * a signed-in person's client. The Mac decides: the first answer it takes wins.
    */
-  /** The relay cannot approve: axod requires the scanned capability or an existing hub's grant. */
-  async linkDevice(input: unknown): Promise<HostCommandOutcome> {
-    const parsed = deviceLinkCommandSchema.safeParse(input);
-    if (!parsed.success) return { error: { code: -32602, message: "Invalid device linking request" } };
-    const binding = parsed.data.operation === "redeem" ? parsed.data.claim
-      : parsed.data.operation === "link" ? parsed.data.grant : parsed.data.revocation;
-    const identity = this.identity();
-    if (!identity || identity.account_id !== binding.accountId || identity.host_id !== binding.hostId
-      || !this.presence().online || !await this.ctx.exports.AxoAccountDirectory.getByName(identity.account_id).isPushHostActive(identity.host_id))
-      return { error: { code: -32005, message: "Host unavailable" } };
-    return this.callHost({
-      method: parsed.data.operation === "redeem" ? "axo.remote.device.pairing.redeem"
-        : parsed.data.operation === "link" ? "axo.remote.device.link" : "axo.remote.device.unlink",
-      params: binding, deadlineMs: 15_000,
-    });
-  }
-
   async resolveElicitation(params: unknown): Promise<HostCommandOutcome> {
     const parsed = hostElicitationResolveParamsSchema.safeParse(params);
     if (!parsed.success) return { error: { code: -32602, message: "Invalid params" } };
@@ -986,7 +968,7 @@ export class AxoHostDO extends AxoHostRelay {
 
   async answerNotification(input: unknown): Promise<HostCommandOutcome> {
     const parsed = z.strictObject({ requestId: z.uuid(), digest: z.string().regex(/^[a-f0-9]{64}$/),
-      expiresAt: z.number().int().positive(), action: z.enum(["accept", "decline"]), device: deviceProofSchema }).safeParse(input);
+      expiresAt: z.number().int().positive(), action: z.enum(["accept", "decline"]), device: deviceProofSchema.optional() }).safeParse(input);
     if (!parsed.success) return { error: { code: -32602, message: "Invalid notification answer" } };
     const current = await this.notificationQuestion(parsed.data.requestId);
     if (!current || Array.from(current.elicitation.message).length > 240 || current.elicitation.expiresAt !== parsed.data.expiresAt

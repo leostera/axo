@@ -65,7 +65,7 @@ export const inputRequestSchema = z.object({
   origin: z.string().min(1).max(500).optional(),
   fields: z.array(z.object({ id: z.string().regex(/^f[0-9]$/), label: z.string().max(200), kind: inputFieldKindSchema }).strict()).min(1).max(INPUT_SEAL.maxFields),
   submit: z.string().min(1).max(200).optional(),
-  /** The Mac's input key: base64 of an uncompressed P-256 point. Pinned per Mac. */
+  /** The host's input key, supplied through the authenticated account route: base64 P-256. */
   key: z.base64().length(88),
 }).strict();
 export type InputRequest = z.infer<typeof inputRequestSchema>;
@@ -77,9 +77,8 @@ export const sealedSchema = z.object({
 export type Sealed = z.infer<typeof sealedSchema>;
 
 /**
- * What a phone or a browser sends with every answer (RFD0029): its key, its name and its ECDSA
- * P-256 signature over that answer alone. The Mac takes it only from a key the person allowed in
- * Axo there (RFD0077).
+ * Legacy answer proof accepted while installed 0.73 clients update (RFD0079).
+ * It grants no authority: the authenticated account route authorizes the human client.
  */
 export const deviceProofSchema = z.object({
   key: z.base64().length(88),

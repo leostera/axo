@@ -78,7 +78,6 @@ final class PhoneWorld {
       self.made.append(model)
       return model
     }
-    workbench.device = SoftwareDeviceSigner()
   }
 
   /// Answers the Macs' commands and opens every chat empty.
@@ -490,13 +489,7 @@ final class PhoneWorkbenchTests: XCTestCase {
     XCTAssertEqual(request.params["elicitationId"] as? String, id)
     XCTAssertEqual(request.params["action"] as? String, "accept")
     XCTAssertEqual(request.hostID, a.id.uuidString.lowercased())
-    // Signed by this phone's key, over this answer alone (RFD0029).
-    let proof = try XCTUnwrap(request.params["device"] as? [String: Any])
-    let signer = try XCTUnwrap(workbench.device)
-    XCTAssertEqual(proof["key"] as? String, signer.publicKey)
-    let signature = try P256.Signing.ECDSASignature(rawRepresentation: Data(base64Encoded: proof["signature"] as! String)!)
-    let key = try P256.Signing.PublicKey(x963Representation: Data(base64Encoded: signer.publicKey)!)
-    XCTAssertTrue(key.isValidSignature(signature, for: SoftwareDeviceSigner.message(requestID: id, action: .accept, sealed: nil)))
+    XCTAssertNil(request.params["device"], "a signed-in client does not need device enrollment")
     XCTAssertEqual(workbench.questions.first?.answering, .accept)
     await workbench.answer(id, .decline)
     channel.reply(to: request.id, result: #"{"resolved":true}"#)
@@ -509,47 +502,26 @@ final class PhoneWorkbenchTests: XCTestCase {
     try await eventually { workbench.questions.isEmpty }
   }
 
-  func testAFormsValuesLeaveOnlySealedAndOnlyToAKeyThePersonConfirmed() async throws {
+  func testAFormsValuesLeaveSealedWithoutEnrollmentOrKeyConfirmation() async throws {
     let a = Mac("A", online: true, sessions: [1])
     let world = PhoneWorld([a], answers: false)
     try await world.start()
     let workbench = world.workbench!
-    workbench.inputKeyPins = InputKeyPins(defaults: UserDefaults(suiteName: "axo-phone-pins-\(UUID())")!)
     let channel = try await world.transport.channel()
     let key = P256.KeyAgreement.PrivateKey().publicKey.x963Representation.base64EncodedString()
-    func ask(_ id: String, key: String, host: UUID) {
-      channel.notify(
-        "axo.elicitation.requested",
-        #"{"hostId":"\#(host.uuidString.lowercased())","elicitation":{"id":"\#(id)","sessionId":"\#((1 as SessionID).rawValue)","kind":"input","askedBy":"computerUse","message":"Fill Password in Safari.","input":{"app":"Safari","window":"Sign in","origin":"https://github.com","fields":[{"id":"f0","label":"Password","kind":"password"}],"key":"\#(key)"},"createdAt":1,"expiresAt":2}}"#)
-    }
-
-    // A key the person has not confirmed gets nothing, even the first one seen for a Mac.
-    let first = "6c4e2f0a-1b2c-4d3e-8f9a-0b1c2d3e4f60"
-    ask(first, key: key, host: a.id)
+    let id = "6c4e2f0a-1b2c-4d3e-8f9a-0b1c2d3e4f60"
+    channel.notify("axo.elicitation.requested",
+      #"{"hostId":"\#(a.id.uuidString.lowercased())","elicitation":{"id":"\#(id)","sessionId":"\#((1 as SessionID).rawValue)","kind":"input","askedBy":"computerUse","message":"Fill Password in Safari.","input":{"app":"Safari","window":"Sign in","origin":"https://github.com","fields":[{"id":"f0","label":"Password","kind":"password"}],"key":"\#(key)"},"createdAt":1,"expiresAt":2}}"#)
     try await eventually { workbench.questions.count == 1 }
-    XCTAssertFalse(workbench.isInputKeyConfirmed(key))
-    await workbench.answer(first, .accept, values: ["f0": "hunter2"])
-    XCTAssertFalse(channel.hasRequest)
-    XCTAssertEqual(workbench.answerFailure?.contains(InputSeal.fingerprint(of: key)), true)
-
-    // Confirmed against the Mac: sealed to it alone.
-    workbench.confirmInputKey(key)
-    let answering = Task { await workbench.answer(first, .accept, values: ["f0": "hunter2"]) }
+    let answering = Task { await workbench.answer(id, .accept, values: ["f0": "fixture-password"]) }
     let request = try await channel.nextRequest("axo.elicitation.resolve")
     let sealed = request.params["sealed"] as? [String: Any]
     XCTAssertNotNil(sealed?["enc"] as? String)
-    XCTAssertFalse("\(request.params)".contains("hunter2"))
+    XCTAssertNotNil(sealed?["ciphertext"] as? String)
+    XCTAssertNil(request.params["device"], "account authentication is enough; no signing key is accessed")
+    XCTAssertFalse("\(request.params)".contains("fixture-password"))
     channel.reply(to: request.id, result: #"{"resolved":true}"#)
     await answering.value
-
-    // The cloud swaps in its own key, under a host ID the phone has never seen: nothing goes.
-    let second = "6c4e2f0a-1b2c-4d3e-8f9a-0b1c2d3e4f61"
-    let cloudKey = P256.KeyAgreement.PrivateKey().publicKey.x963Representation.base64EncodedString()
-    ask(second, key: cloudKey, host: UUID())
-    try await eventually { workbench.questions.count == 2 }
-    await workbench.answer(second, .accept, values: ["f0": "hunter2"])
-    XCTAssertFalse(channel.hasRequest)
-    XCTAssertFalse(workbench.isInputKeyConfirmed(cloudKey))
   }
 
   func testAnAnswerThatCameTooLateRemovesTheCard() async throws {

@@ -16,7 +16,7 @@
 		<true/>
 	</dict>
 	<key>NSCameraUsageDescription</key>
-	<string>Axo uses the camera to take a photo or scan a private device-linking code.</string>
+	<string>Axo uses the camera when you take a photo to send with a message.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Axo listens while you say a message, and turns it into words on this device. Audio never leaves it.</string>
 	<key>UIBackgroundModes</key>

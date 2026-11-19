@@ -31,13 +31,15 @@ impl Extension for Agents {
 pub(crate) async fn list(home: &std::path::Path) -> Vec<rpc::AgentAvailability> {
     let lookups = AgentKind::ALL.map(|kind| {
         let places = SearchPlaces::from_environment(kind, home);
-        tokio::spawn(async move {
-            discovery::discover(kind, &places, discovery::VERSION_TIMEOUT).await
-        })
+        tokio::spawn(
+            async move { discovery::discover(kind, &places, discovery::VERSION_TIMEOUT).await },
+        )
     });
     let mut agents = Vec::new();
     for (kind, lookup) in AgentKind::ALL.into_iter().zip(lookups) {
-        let found = lookup.await.unwrap_or_else(|_| Err(discovery::DiscoveryError::NotInstalled(kind)));
+        let found = lookup
+            .await
+            .unwrap_or_else(|_| Err(discovery::DiscoveryError::NotInstalled(kind)));
         agents.push(availability(kind, found));
     }
     agents

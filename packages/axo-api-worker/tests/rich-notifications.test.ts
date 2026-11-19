@@ -64,7 +64,7 @@ test("short complete questions carry authenticated-action metadata; truncated qu
   assert.equal(long.axoRequest, undefined);
 });
 
-test("current confirm-only content is immutable and answers require native authentication and a device proof", async t => {
+test("current confirm-only content is immutable and signed-in native clients answer without device enrollment", async t => {
   const { sent, native, host, daemon, sessionId, post } = await fixture(t);
   const asked = { ...question(sessionId), title: "Release approval" };
   daemon.send({ jsonrpc: "2.0", method: "axo.elicitation.requested", params: asked });
@@ -86,15 +86,13 @@ test("current confirm-only content is immutable and answers require native authe
   assert.equal(retained.title, asked.title);
   const answer = { operation: "answer", hostId: host.hostId, requestId: asked.id, action: "accept",
     digest: sent[0].axoRequest.digest, expiresAt: asked.expiresAt };
-  assert.equal((await post("api/v1/account/push/request", answer)).status, 400, "missing device proof");
-  const device = { key: Buffer.alloc(65, 1).toString("base64"), name: "Fixture", signature: Buffer.alloc(64, 2).toString("base64") };
-  assert.equal((await post("api/v1/account/push/request", { ...answer, digest: "0".repeat(64), device })).status, 409);
-  // The cloud does not approve: it forwards the existing proof to the authoritative Mac.
-  const answering = post("api/v1/account/push/request", { ...answer, device });
+  assert.equal((await post("api/v1/account/push/request", { ...answer, digest: "0".repeat(64) })).status, 409);
+  // The account session authorizes this human action; the host still settles the live request.
+  const answering = post("api/v1/account/push/request", answer);
   for (;;) {
     const frame = await daemon.next() as any;
     if (frame.method !== "axo.elicitation.resolve") continue;
-    assert.deepEqual(frame.params.device, device);
+    assert.equal(frame.params.device, undefined);
     daemon.send({ jsonrpc: "2.0", id: frame.id, result: { resolved: true } });
     break;
   }
@@ -105,7 +103,7 @@ test("current confirm-only content is immutable and answers require native authe
   assert.equal(cleanup.axo.requestId, asked.id);
   assert.equal(cleanup.axo.sessionId, sessionId);
   assert.deepEqual(cleanup.aps, { "content-available": 1 });
-  assert.equal((await post("api/v1/account/push/request", { ...answer, device })).status, 409);
+  assert.equal((await post("api/v1/account/push/request", answer)).status, 409);
   daemon.send({ jsonrpc: "2.0", method: "axo.elicitation.requested", params: asked });
   await new Promise(resolve => setTimeout(resolve, 50));
   assert.equal((await post("api/v1/account/push/request", read)).status, 409, "a late replay cannot resurrect a settled request");

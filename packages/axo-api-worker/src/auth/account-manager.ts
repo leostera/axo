@@ -1,5 +1,4 @@
 import { DurableObject } from "cloudflare:workers";
-import { DeviceLinkMailboxes } from "../devices/mailbox";
 import { accountAssets } from "../assets/store";
 import { signInSchema, type SignIn } from "./sign-in-lease";
 import { Keyring, type KeyEnvironment } from "./keys";
@@ -165,12 +164,6 @@ export class AxoAccountManager extends DurableObject<Env> {
 
   isPushHostActive(hostId: string): boolean {
     return this.ctx.storage.sql.exec("SELECT 1 FROM account_hosts WHERE host_id=? AND revoked_at IS NULL", hostId).toArray().length === 1;
-  }
-
-  async deviceLinkMailbox(owner: { accountId: string; sessionDigest: string }, input: unknown) {
-    if (owner.accountId !== this.accountId()) return { status: 403, value: { error: "Invalid account" } };
-    return new DeviceLinkMailboxes(this.ctx.storage,
-      () => this.verifyPushSession(owner.sessionDigest, Date.now())).command(owner, input);
   }
 
   /** Push enrollment never accepts host credentials or browser sessions. */

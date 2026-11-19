@@ -70,15 +70,6 @@ pub enum Event {
         session_id: SessionId,
         action: ElicitationAction,
     },
-    /// A phone or a browser answered without being allowed at this Mac yet: Axo.app asks the
-    /// person (RFD0077). Never forwarded to the relay.
-    #[serde(rename = "device.requested")]
-    DeviceRequested {
-        device: crate::elicitation::Device,
-    },
-    /// The allowed or waiting devices changed: read `axo.device.list` again.
-    #[serde(rename = "devices.changed")]
-    DevicesChanged,
     /// Axod has finished starting: the Pis it started have come up (or failed, or took too
     /// long). Sent once per Axod; `axo.daemon.health`'s `ready` says the same to a late client.
     #[serde(rename = "daemon.ready")]
@@ -108,8 +99,6 @@ impl Event {
             Event::ElicitationRequested { elicitation } => Some(elicitation.session_id),
             Event::RelayStatus { .. }
             | Event::PeerSessionsChanged
-            | Event::DeviceRequested { .. }
-            | Event::DevicesChanged
             | Event::DaemonReady
             | Event::SubscriptionLagged => None,
         }

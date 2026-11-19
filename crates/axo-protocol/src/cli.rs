@@ -770,34 +770,10 @@ pub const EXCLUDED: &[(&str, &str)] = &[
     ),
     (
         method::ELICITATION_RESOLVE,
-        "Only the person, through signed Axo.app or a signed device, can answer",
+        "Only the person, through signed Axo.app or an authenticated account client, can answer",
     ),
     (method::ASSETS_FETCH, "Restricted to axod's own binary"),
     (method::COMPUTER_INPUT, "Restricted protected-input channel"),
-    (
-        method::DEVICE_LIST,
-        "Axo.app's Settings › Devices; which devices answer is decided there",
-    ),
-    (
-        method::DEVICE_DECIDE,
-        "Only the person at the Mac, in signed Axo.app, allows a device",
-    ),
-    (
-        method::DEVICE_PAIRING_CREATE,
-        "Private QR capabilities are shown only by signed Axo.app",
-    ),
-    (
-        method::DEVICE_PAIRING_CANCEL,
-        "Only signed Axo.app manages its private linking codes",
-    ),
-    (
-        method::DEVICE_PAIRING_STATUS,
-        "Signed Axo.app reconciles its private linking screen",
-    ),
-    (
-        method::DEVICE_REVOKE,
-        "Only the person at the Mac, in signed Axo.app, removes a device",
-    ),
 ];
 
 fn typed<T: for<'de> Deserialize<'de> + Serialize>(
