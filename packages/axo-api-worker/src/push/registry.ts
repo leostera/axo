@@ -147,10 +147,9 @@ export class AxoPushRegistry extends DurableObject<Env> {
       || current.sessionId !== route.sessionId || current.expiresAt !== route.expiresAt) return null;
     if (!this.current(row)) return null;
     const question = row.previews === 1 ? await host.notificationQuestion(route.requestId) : null;
-    const notice = question ? await ApnsRequestNotice.withQuestion({
+    const notice = question ? await ApnsRequestNotice.withElicitation({
       accountId: route.accountId, hostId: route.hostId, sessionId: route.sessionId, requestId: route.requestId,
-    }, route.expiresAt, question.elicitation.message,
-      question.elicitation.title ?? (question.elicitation.askedBy === "computerUse" ? "Mac action" : "Agent question")) : new ApnsRequestNotice({
+    }, route.expiresAt, question.elicitation) : new ApnsRequestNotice({
       accountId: route.accountId, hostId: route.hostId, sessionId: route.sessionId, requestId: route.requestId,
     }, route.expiresAt);
     const provider = await this.getProvider();

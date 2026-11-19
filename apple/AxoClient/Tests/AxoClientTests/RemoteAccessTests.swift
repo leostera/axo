@@ -112,6 +112,30 @@ final class AccountClientTests: XCTestCase {
     XCTAssertNil(disabled["destination"])
   }
 
+  func testNotificationRepliesSendOnlySealedValuesAndNeverRetryUncertainTransport() async throws {
+    let loader = StubLoader(status: 200, body: #"{"resolved":true}"#)
+    let sealed = SealedInput(enc: "fixture-key", ciphertext: "fixture-ciphertext")
+    try await makeClient(loader).replyToNotification(hostID: hostID, requestID: UUID(),
+      digest: String(repeating: "a", count: 64), expiresAt: 200_000, sealed: sealed)
+    let request = try XCTUnwrap(loader.requests.first)
+    XCTAssertEqual(request.url?.path, "/api/v1/account/push/request")
+    XCTAssertNil(request.url?.query)
+    XCTAssertFalse(request.httpShouldHandleCookies)
+    let payload = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(request.httpBody)) as? [String: Any])
+    XCTAssertEqual(payload["operation"] as? String, "reply")
+    XCTAssertEqual(payload["sealed"] as? [String: String], ["enc": sealed.enc, "ciphertext": sealed.ciphertext])
+    XCTAssertNil(payload["values"])
+    XCTAssertNil(payload["text"])
+    XCTAssertNil(payload["device"])
+    let uncertain = StubLoader(failure: URLError(.timedOut))
+    do {
+      try await makeClient(uncertain).replyToNotification(hostID: hostID, requestID: UUID(),
+        digest: String(repeating: "a", count: 64), expiresAt: 200_000, sealed: sealed)
+      XCTFail("an uncertain response is not success")
+    } catch {}
+    XCTAssertEqual(uncertain.requests.count, 1)
+  }
+
   func testInvalidPushInputNeverReachesTransport() async {
     let loader = StubLoader(status: 200, body: #"{"revision":1}"#)
     do {

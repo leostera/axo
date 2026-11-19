@@ -182,12 +182,22 @@ public struct AccountClient: HostPairingIssuing, Sendable {
     guard result.resolved else { throw AxoClientError.invalidResponse("notification answer was not confirmed") }
   }
 
+  public func replyToNotification(hostID: UUID, requestID: UUID, digest: String, expiresAt: Int64,
+    sealed: SealedInput) async throws
+  {
+    struct Result: Decodable { let resolved: Bool }
+    let result: Result = try await notificationOperation(["operation": "reply", "hostId": hostID.uuidString.lowercased(),
+      "requestId": requestID.uuidString.lowercased(), "digest": digest, "expiresAt": expiresAt,
+      "sealed": ["enc": sealed.enc, "ciphertext": sealed.ciphertext]])
+    guard result.resolved else { throw AxoClientError.invalidResponse("notification reply was not confirmed") }
+  }
+
   private func notificationOperation<Value: Decodable>(_ body: [String: Any]) async throws -> Value {
     var request = URLRequest(url: endpoint.webURL("/api/v1/account/push/request"))
     request.httpMethod = "POST"
     request.timeoutInterval = 10
     request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-    request.httpBody = try JSONSerialization.data(withJSONObject: body)
+    request.httpBody = try JSONSerialization.data(withJSONObject: body, options: [.withoutEscapingSlashes])
     request = try await RelayCredentials.authorize(request, with: tokens)
     return try await send(request)
   }

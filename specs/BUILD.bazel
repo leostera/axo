@@ -10,6 +10,8 @@ sh_test(
         "check-push.ts",
         "elicitations/push.ts",
         "elicitations/notification-actions.ts",
+        "elicitations/notification-replies.ts",
+        "elicitations/account-access.ts",
         "//:node_modules/@leostera/feynman",
     ],
     target_compatible_with = ["@platforms//os:macos"],

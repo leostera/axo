@@ -1,6 +1,7 @@
 import { importPKCS8, SignJWT } from "jose";
 import { z } from "zod";
-import { elicitationTitleSchema } from "@axo/protocol";
+import { elicitationTitleSchema, type Elicitation } from "@axo/protocol";
+import { notificationTextInput, textInputDigest } from "./text-input";
 import { notificationContentSchema, questionDigest, questionPreview, NOTIFICATION_CONFIRM_CATEGORY, NOTIFICATION_REVIEW_CATEGORY, type NotificationContent } from "./content";
 
 /** Topics are installed identities, not aliases. Never send an old-ID token to the new topic. */
@@ -23,7 +24,7 @@ export class ApnsRequestNotice {
   readonly #route: z.infer<typeof routeSchema>;
   readonly expiresAt: number;
 
-  constructor(route: unknown, expiresAt: number, private readonly preview?: { title: string; body: string; digest: string | null }) {
+  constructor(route: unknown, expiresAt: number, private readonly preview?: { title: string; body: string; digest: string | null; kind?: "textInput" }) {
     this.#route = routeSchema.parse(route);
     if (!Number.isSafeInteger(expiresAt) || expiresAt <= 0) throw new Error("Invalid push expiry");
     this.expiresAt = expiresAt;
@@ -37,18 +38,29 @@ export class ApnsRequestNotice {
       digest: preview.complete ? await questionDigest(message) : null });
   }
 
-  /** Sensitive input always uses the generic constructor. No fields, values or proofs enter APNs. */
+  static async withElicitation(route: unknown, expiresAt: number, question: Elicitation): Promise<ApnsRequestNotice> {
+    if (question.kind === "confirm" && !question.input) {
+      return this.withQuestion(route, expiresAt, question.message,
+        question.title ?? (question.askedBy === "computerUse" ? "Mac action" : "Agent question"));
+    }
+    const input = notificationTextInput(question);
+    if (!input) return new ApnsRequestNotice(route, expiresAt);
+    return new ApnsRequestNotice(route, expiresAt, { title: question.title ?? "Input needed",
+      body: input.body, digest: await textInputDigest(input), kind: "textInput" });
+  }
+
+  /** Secrets/forms stay generic. Typed reply values never enter APNs or this payload. */
   get body(): string {
     return JSON.stringify({
       aps: {
         alert: this.preview ? { title: this.preview.title, body: this.preview.body }
           : { title: "Axo", body: "A request needs your attention." },
-        ...(this.preview ? { category: this.preview.digest ? NOTIFICATION_CONFIRM_CATEGORY : NOTIFICATION_REVIEW_CATEGORY } : {}),
+        ...(this.preview ? { category: this.preview.kind === "textInput" ? "AXO_INPUT_TEXT_V1" : this.preview.digest ? NOTIFICATION_CONFIRM_CATEGORY : NOTIFICATION_REVIEW_CATEGORY } : {}),
         sound: "default",
         "thread-id": "axo.requests",
       },
       axo: { version: 1, ...this.#route },
-      ...(this.preview?.digest ? { axoRequest: { version: 1, digest: this.preview.digest, expiresAt: this.expiresAt } } : {}),
+      ...(this.preview?.digest ? { [this.preview.kind === "textInput" ? "axoInput" : "axoRequest"]: { version: 1, digest: this.preview.digest, expiresAt: this.expiresAt } } : {}),
     });
   }
 }

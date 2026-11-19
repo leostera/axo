@@ -61,6 +61,7 @@ final class MobilePush: NSObject, UNUserNotificationCenterDelegate {
         UNNotificationAction(identifier: Self.yesAction, title: "Yes", options: [.authenticationRequired]),
         UNNotificationAction(identifier: Self.noAction, title: "No", options: [.authenticationRequired]),
       ], intentIdentifiers: [], options: []),
+      RequestNotificationReplyAction.category(),
       UNNotificationCategory(identifier: Self.reviewCategory, actions: [], intentIdentifiers: [], options: []),
     ])
   }
@@ -269,6 +270,12 @@ final class MobilePush: NSObject, UNUserNotificationCenterDelegate {
       let remote = response.notification.request.trigger is UNPushNotificationTrigger
       if response.actionIdentifier == UNNotificationDefaultActionIdentifier {
         await self.openInbox(route, remoteReceipt: remote)
+      } else if remote && response.notification.request.content.categoryIdentifier == RequestNotificationReplyAction.categoryIdentifier,
+        response.actionIdentifier == RequestNotificationReplyAction.actionIdentifier,
+        let textResponse = response as? UNTextInputNotificationResponse,
+        let metadata = RequestNotificationAction(userInfo: response.notification.request.content.userInfo)
+      {
+        await self.reply(route, metadata: metadata, displayedBody: response.notification.request.content.body, text: textResponse.userText)
       } else if remote && response.notification.request.content.categoryIdentifier == Self.confirmCategory,
         let metadata = RequestNotificationAction(userInfo: response.notification.request.content.userInfo),
         let action = Self.answer(for: response.actionIdentifier)
@@ -362,17 +369,54 @@ final class MobilePush: NSObject, UNUserNotificationCenterDelegate {
       reportTest(action == .accept ? .actionAccepted : .actionDeclined)
       updatesRevision = UUID()
     } catch {
-      reportTest(.actionNotConfirmed)
-      // An uncertain answer is never retried. The next explicit action must review live state.
-      let content = UNMutableNotificationContent()
-      content.title = "Review in Axo"
-      content.body = "The answer was not confirmed. Open Axo before trying again."
-      content.categoryIdentifier = Self.reviewCategory
-      content.userInfo = ["axo": ["version": 1, "accountId": route.accountID.uuidString.lowercased(),
-        "hostId": route.hostID.uuidString.lowercased(), "sessionId": route.sessionID.uuidString.lowercased(),
-        "requestId": route.requestID.uuidString.lowercased()]]
-      try? await UNUserNotificationCenter.current().add(UNNotificationRequest(
-        identifier: "axo-answer-review-" + route.requestID.uuidString, content: content, trigger: nil))
+      await reviewUnconfirmedAnswer(route)
+    }
+  }
+
+  private func reviewUnconfirmedAnswer(_ route: RequestNotificationRoute) async {
+    reportTest(.actionNotConfirmed)
+    // An uncertain answer is never retried. The next explicit action must review live state.
+    let content = UNMutableNotificationContent()
+    content.title = "Review in Axo"
+    content.body = "The answer was not confirmed. Open Axo before trying again."
+    content.categoryIdentifier = Self.reviewCategory
+    content.userInfo = ["axo": ["version": 1, "accountId": route.accountID.uuidString.lowercased(),
+      "hostId": route.hostID.uuidString.lowercased(), "sessionId": route.sessionID.uuidString.lowercased(),
+      "requestId": route.requestID.uuidString.lowercased()]]
+    try? await UNUserNotificationCenter.current().add(UNNotificationRequest(
+      identifier: "axo-answer-review-" + route.requestID.uuidString, content: content, trigger: nil))
+  }
+
+  private func reply(_ route: RequestNotificationRoute, metadata: RequestNotificationAction, displayedBody: String, text: String) async {
+    guard richPreviews, let account,
+      let session = try? await account.tokens.sessionToken(), session.accountID == route.accountID,
+      !answersInFlight.contains(route.requestID) else { return }
+    answersInFlight.insert(route.requestID)
+    defer { answersInFlight.remove(route.requestID) }
+    let revision = account.credentialRevision
+    let client = AccountClient(endpoint: endpoint, tokens: StaticSessionToken(session))
+    do {
+      let current = try await client.notificationQuestion(hostID: route.hostID, requestID: route.requestID)
+      guard (try? await account.tokens.sessionToken()) == session,
+        let input = metadata.textInput(current.elicitation, route: route, displayedBody: displayedBody)
+      else { throw RelayError.httpStatus(409) }
+      let sealed = try input.seal(text, requestID: current.elicitation.id)
+      guard !account.hasEndedSession, account.credentialRevision == revision else { return }
+      // Durable fence BEFORE the only dispatch. Reconnect and OS callback redelivery cannot replay it.
+      guard RequestNotificationReplyLedger().claim(route, expiresAt: metadata.expiresAt) else { throw RelayError.httpStatus(409) }
+      try await client.replyToNotification(hostID: route.hostID, requestID: route.requestID,
+        digest: metadata.digest, expiresAt: metadata.expiresAt, sealed: sealed)
+      rememberResolution(route)
+      let center = UNUserNotificationCenter.current()
+      let delivered = await center.deliveredNotifications()
+      center.removeDeliveredNotifications(withIdentifiers: delivered.filter {
+        RequestNotificationRoute(userInfo: $0.request.content.userInfo) == route
+      }.map { $0.request.identifier })
+      deliveryRevision = UUID()
+      updatesRevision = UUID()
+      reportTest(.actionAccepted)
+    } catch {
+      if !account.hasEndedSession, account.credentialRevision == revision { await reviewUnconfirmedAnswer(route) }
     }
   }
 

@@ -1,6 +1,6 @@
 import { authExports, json, requireAccount } from "../auth/account-access";
 import { pushRegistrationSchema } from "../push/registration";
-import { deviceProofSchema } from "@axo/protocol";
+import { deviceProofSchema, sealedSchema } from "@axo/protocol";
 import { hostDOName } from "../host-do";
 import { z } from "zod";
 
@@ -39,7 +39,9 @@ export async function notificationRequest(request: Request, env: Env, ctx: Execu
     z.strictObject({ ...common, operation: z.literal("read") }),
     z.strictObject({ ...common, operation: z.literal("answer"), action: z.enum(["accept", "decline"]),
       digest: z.string().regex(/^[a-f0-9]{64}$/), expiresAt: z.number().int().positive(), device: deviceProofSchema.optional() }),
-  ]).safeParse(await boundedBody(request));
+    z.strictObject({ ...common, operation: z.literal("reply"), digest: z.string().regex(/^[a-f0-9]{64}$/),
+      expiresAt: z.number().int().positive(), sealed: sealedSchema }),
+  ]).safeParse(await boundedBody(request, 24_576));
   if (!parsed.success) return json({ error: "Invalid notification request" }, 400);
   const { hostId, requestId } = parsed.data;
   const host = ctx.exports.AxoHostDO.getByName(hostDOName(caller.accountId, hostId));
@@ -48,13 +50,13 @@ export async function notificationRequest(request: Request, env: Env, ctx: Execu
     return current ? json(current) : json({ error: "Request is no longer pending" }, 409);
   }
   const { operation: _operation, hostId: _host, ...answer } = parsed.data;
-  const outcome = await host.answerNotification(answer);
+  const outcome = parsed.data.operation === "reply" ? await host.replyToNotification(answer) : await host.answerNotification(answer);
   if ("result" in outcome) return json(outcome.result);
   const settled = [-32011, -32002, -32005].includes(outcome.error.code);
   return json({ error: settled ? "Request changed or is no longer pending" : "Answer was not confirmed; review in Axo" }, settled ? 409 : 422);
 }
 
-async function boundedBody(request: Request): Promise<unknown> {
+async function boundedBody(request: Request, limit = 8192): Promise<unknown> {
   if (!request.body) return null;
   const reader = request.body.getReader();
   const chunks: Uint8Array[] = [];
@@ -64,7 +66,7 @@ async function boundedBody(request: Request): Promise<unknown> {
       const { done, value } = await reader.read();
       if (done) break;
       length += value.length;
-      if (length > 8192) { await reader.cancel(); return null; }
+      if (length > limit) { await reader.cancel(); return null; }
       if (value.length > 0) chunks.push(value);
     }
     const bytes = new Uint8Array(length);

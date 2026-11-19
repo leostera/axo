@@ -1,6 +1,7 @@
 import { deliverHostNoticeBatch } from "./host-notice-delivery";
 import type { PushRoute } from "./push/registry";
 import { questionDigest } from "./push/content";
+import { notificationTextInput, textInputDigest } from "./push/text-input";
 import type { ShareAdmission } from "./auth/account-manager";
 import { signInLeaseMs, type SignIn } from "./auth/sign-in-lease";
 import {
@@ -12,6 +13,7 @@ import {
   elicitationResolvedSchema,
   elicitationSchema,
   deviceProofSchema,
+  sealedSchema,
   hostElicitationResolveParamsSchema,
   HOST_SYNC_METHODS,
   LIMITS,
@@ -957,14 +959,14 @@ export class AxoHostDO extends AxoHostRelay {
       requestId: pending.id, expiresAt: pending.expiresAt };
   }
 
-  /** Safe confirm-only projection. Sensitive input metadata never enters the action endpoint. */
+  /** Only confirmations and complete, non-secret single-text-field requests support inline actions. */
   async notificationQuestion(requestId: string): Promise<{ elicitation: Elicitation; hostGeneration: string } | null> {
     if (!await this.pendingPush(requestId)) return null;
     const pending = this.pendingElicitations().find(value => value.id === requestId);
     const presence = this.presence();
-    if (!pending || pending.kind !== "confirm" || pending.input !== undefined || !presence.online || !presence.hostGeneration) return null;
-    const { input: _sensitive, ...elicitation } = pending;
-    return { elicitation, hostGeneration: presence.hostGeneration };
+    if (!pending || !presence.online || !presence.hostGeneration) return null;
+    if (!(pending.kind === "confirm" && pending.input === undefined) && !notificationTextInput(pending)) return null;
+    return { elicitation: pending, hostGeneration: presence.hostGeneration };
   }
 
   async answerNotification(input: unknown): Promise<HostCommandOutcome> {
@@ -972,11 +974,25 @@ export class AxoHostDO extends AxoHostRelay {
       expiresAt: z.number().int().positive(), action: z.enum(["accept", "decline"]), device: deviceProofSchema.optional() }).safeParse(input);
     if (!parsed.success) return { error: { code: -32602, message: "Invalid notification answer" } };
     const current = await this.notificationQuestion(parsed.data.requestId);
-    if (!current || Array.from(current.elicitation.message).length > 240 || current.elicitation.expiresAt !== parsed.data.expiresAt
+    if (!current || current.elicitation.kind !== "confirm" || current.elicitation.input !== undefined
+      || Array.from(current.elicitation.message).length > 240 || current.elicitation.expiresAt !== parsed.data.expiresAt
       || await questionDigest(current.elicitation.message) !== parsed.data.digest)
       return { error: { code: ELICITATION_ERRORS.notPending, message: "Request changed or is no longer pending" } };
     return this.resolveElicitation({ target: { hostId: this.identity()!.host_id, hostGeneration: current.hostGeneration },
       elicitationId: parsed.data.requestId, action: parsed.data.action, device: parsed.data.device });
+  }
+
+  async replyToNotification(input: unknown): Promise<HostCommandOutcome> {
+    const parsed = z.strictObject({ requestId: z.uuid(), digest: z.string().regex(/^[a-f0-9]{64}$/),
+      expiresAt: z.number().int().positive(), sealed: sealedSchema }).safeParse(input);
+    if (!parsed.success) return { error: { code: -32602, message: "Invalid notification reply" } };
+    const current = await this.notificationQuestion(parsed.data.requestId);
+    const eligible = current && notificationTextInput(current.elicitation);
+    if (!current || !eligible || current.elicitation.expiresAt !== parsed.data.expiresAt
+      || await textInputDigest(eligible) !== parsed.data.digest)
+      return { error: { code: ELICITATION_ERRORS.notPending, message: "Request changed or is no longer pending" } };
+    return this.resolveElicitation({ target: { hostId: this.identity()!.host_id, hostGeneration: current.hostGeneration },
+      elicitationId: parsed.data.requestId, action: "accept", sealed: parsed.data.sealed });
   }
 
   protected override nextWorkDeadline(): number | null {

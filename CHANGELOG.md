@@ -4,6 +4,13 @@ What changed in each published version of Axo. Every publish raises the minor ve
 
 ## Unreleased
 
+## 0.76 (Mac app build 348, axod 92)
+
+### Added
+
+- Reply directly to a single non-secret text-input request from an iPhone or iPad notification. The native Reply → Send action requires unlocking and checks the complete current destination before sending encrypted input.
+- Passwords, codes, forms and incomplete previews still open in Axo. Replies are never automatically retried after uncertainty, and answering elsewhere clears the notification.
+
 ## 0.75 (Mac app build 347, axod 91)
 
 ### Fixed
