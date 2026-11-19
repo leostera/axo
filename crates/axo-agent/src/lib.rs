@@ -14,6 +14,7 @@ pub mod catalog;
 mod channel;
 #[cfg(unix)]
 pub mod claude;
+pub mod version;
 // The Unix TUI and Windows stdio clients have different process/transport contracts.
 #[cfg(unix)]
 #[path = "codex/mod.rs"]
@@ -26,11 +27,11 @@ mod command;
 #[cfg(unix)]
 pub mod discovery;
 #[cfg(unix)]
-pub mod opencode;
-#[cfg(unix)]
 mod history;
 #[cfg(unix)]
 mod lock;
+#[cfg(unix)]
+pub mod opencode;
 #[cfg(unix)]
 pub mod pi;
 #[cfg(unix)]
@@ -43,13 +44,13 @@ pub mod transcript;
 mod vocabulary;
 
 pub use activity::Activity;
+pub use axo_protocol::agent::{AgentKind, Capabilities, Deliveries, UnknownAgent};
+#[cfg(unix)]
+pub use axo_pty::lifeline::{LIFELINE_FD, Lifeline};
 #[cfg(unix)]
 pub use command::AgentCommand;
 #[cfg(unix)]
 pub use history::{HistoryIdentity, ensure_existing_history, recoverable_history};
-pub use axo_protocol::agent::{AgentKind, Capabilities, Deliveries, UnknownAgent};
-#[cfg(unix)]
-pub use axo_pty::lifeline::{LIFELINE_FD, Lifeline};
 #[cfg(unix)]
 pub use lock::{FORK_EXEC_WINDOW, WriterLock};
 #[cfg(unix)]

@@ -1,6 +1,7 @@
 //! Local Windows vertical slice of axod. Shares Axo IDs, folder-based Sessions and SQLite,
 //! with a Codex app-server agent and a per-user named-pipe transport. Apple-only extensions
 //! are deliberately absent from negotiation. No listener is exposed to the network.
+mod agents;
 mod computer;
 mod controls;
 mod credentials;
@@ -37,6 +38,7 @@ const MAX_EVENT_BYTES: usize = 4 * 1024 * 1024;
 const METHODS: &[&str] = &[
     method::PROTOCOL_NEGOTIATE,
     method::DAEMON_HEALTH,
+    method::AGENTS_LIST,
     method::SESSION_CREATE,
     method::SESSION_LIST,
     method::SESSION_RENAME,
@@ -432,6 +434,11 @@ impl Backend {
         Ok(self.sessions.lock().unwrap().entry(id).or_default().clone())
     }
 
+    fn agents(&self) -> rpc::AgentsList {
+        // Local dispatch and remote adapters already own a blocking worker.
+        tokio::runtime::Handle::current().block_on(agents::list(&self.codex))
+    }
+
     fn record(&self, id: SessionId) -> io::Result<Value> {
         let row = axo_store::open_session_row(&self.database.lock().unwrap(), id)?;
         let session = self.session(id)?;
@@ -681,6 +688,10 @@ impl Backend {
             method::DAEMON_HEALTH => Ok(
                 json!({"version":env!("CARGO_PKG_VERSION"),"buildNumber":option_env!("AXO_BUILD_NUMBER").unwrap_or("1").parse::<u64>().unwrap_or(1),"status":"running","ready":true,"platform":"windows","agent":"codex","codexExecutable":self.codex}),
             ),
+            method::AGENTS_LIST => {
+                let _: rpc::NoParams = parse(params)?;
+                serde_json::to_value(self.agents()).map_err(Into::into)
+            }
             method::SESSION_CREATE => self.create_session(parse(params)?).map_err(Into::into),
             method::SESSION_LIST => {
                 let ids = axo_store::coding::list_sessions(&self.database.lock().unwrap(), false)?;

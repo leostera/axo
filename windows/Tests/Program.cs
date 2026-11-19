@@ -170,6 +170,10 @@ try
     }
     var n = await client.CallAsync("axo.protocol.negotiate", new { protocolVersion = 1 });
     Assert(n.GetProperty("agent").GetString() == "codex", "Windows negotiation reports Codex");
+    var agents = (await client.CallAsync("axo.agents.list")).GetProperty("agents").EnumerateArray().ToArray();
+    Assert(agents.Length == 4 && agents.Count(a=>a.GetProperty("installed").GetBoolean()) == 1
+        && agents.Single(a=>a.GetProperty("installed").GetBoolean()).GetProperty("agent").GetString() == "codex",
+        "agent discovery advertises only the configured, launchable Windows adapter");
     Assert((await client.CallAsync("axo.protocol.negotiate",new{protocolVersion=2})).GetProperty("protocolVersion").GetInt32()==2,"Windows supports the shared protocol version alongside the first preview's version");
     Assert(await Fails("axo.protocol.negotiate", new { protocolVersion = 500 }), "unsupported protocol is rejected");
     Assert(await Fails("axo.session.pi.restart.force.v2", new { }), "Pi-only method is not advertised or implemented");
@@ -250,6 +254,9 @@ try
     Assert(relay.Registration.GetProperty("hostKind").GetString()=="windows","pairing and authenticated WebSocket registration identify Windows");
     Assert(relay.Messages(id).Contains("Echo: hello\nsecond line"),"Codex messages upload through the existing relay transcript format");
     var target=new{hostId=relay.Registration.GetProperty("hostId").GetString(),hostGeneration=relay.Registration.GetProperty("hostGeneration").GetString()};
+    var discovered=await relay.CallAsync("axo.remote.agents.list",new{target});
+    Assert(discovered.GetProperty("result").GetProperty("agents").EnumerateArray().Select(a=>a.GetString()).SequenceEqual(new[]{"codex"}),
+        "account clients can discover Codex before creating a Windows Session");
     var remote=await relay.CallAsync("axo.remote.workspace.list",new{target});
     Assert(remote.TryGetProperty("error", out _), "obsolete remote workspace RPCs are not restored");
     await relay.WaitAsync(()=>relay.Manifest.GetProperty("sessions").EnumerateArray().Any(s=>s.GetProperty("sessionId").GetString()==id && s.GetProperty("metadata").GetProperty("folderName").GetString()==Path.GetFileName(workspace)), "Session folder metadata was not synced through the current relay catalog");
