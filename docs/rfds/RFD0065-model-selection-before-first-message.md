@@ -76,6 +76,25 @@ moves the previous host's model choice across machines.
 - After creation, normal model controls address that Session. Preserve existing approval-before-
   Send fences and original-destination dictation; model selection grants no execution authority.
 
+## Agent-specific discovery
+
+Discovery is owned by the host and selected agent, not by a Session. Reuse the executable
+resolution used for launching agents. Separate installed-agent discovery from on-demand model
+catalog lookup. Scope lookup results and draft intent to host generation, agent, and configuration
+context; switching agents must not reuse another agent's catalog or model choice.
+
+| Agent | Candidate metadata path |
+| --- | --- |
+| Pi | `pi --list-models` confirms the CLI surface. Prefer the same runtime registry for structured IDs and exact thinking capabilities. |
+| OpenCode | [`opencode models`](https://opencode.ai/docs/cli/commands/). Verify the installed version's output and provider availability semantics. |
+| Codex | Initialize a dedicated app-server connection, page `model/list`, then close it. No `thread/start`, `thread/resume` or `turn/start`. Verify version-dependent authentication behavior before enabling this probe. |
+| Claude Code | [Agent SDK `supportedModels()`](https://platform.claude.com/docs/en/agent-sdk/typescript) is the documented metadata surface. No standalone CLI listing was verified. Enable only after an integration test proves metadata-only initialization requires no prompt, durable conversation, or unintended tool startup. |
+
+Do not trigger sign-in during discovery. When a verified probe is unavailable, keep host default
+available and distinguish unsupported, sign-in required, failure and a genuinely empty catalog.
+These are proposed host adapters, not current support. Existing Sessions still use their actual
+runtime for in-session changes.
+
 ## Implementation questions
 
 The server must establish the first-prompt barrier, not rely solely on client call ordering.
