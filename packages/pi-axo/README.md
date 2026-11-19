@@ -76,7 +76,15 @@ Triage and redaction send the scrubbed text to those model providers. Any model 
 
 ## Session title, emoji, and activity
 
-On the first user turn of an unnamed conversation, the extension adds a structured prompt section asking Pi to call `axo_set_title` in that same turn with a concise title and one representative emoji. The tool remains available to update both when the conversation's focus materially changes; the prompt discourages renaming on routine turns. Titles are persisted through Pi's public `setSessionName()` API, and the current emoji is saved as a Pi custom entry that does not enter model context. Axod receives only validated title/emoji metadata through the exact bound bridge and stores the sidebar projection locally.
+On the first user turn of an unnamed conversation, the extension adds a structured prompt section asking Pi to call `await tools.axo_set_title({ title, emoji })` through codemode in that same turn with a concise title and one representative emoji. The tool has codemode-only exposure (no separate model declaration) and remains available to update both when the conversation's focus materially changes; the prompt discourages renaming on routine turns. Titles are persisted through Pi's public `setSessionName()` API, and the current emoji is saved as a Pi custom entry that does not enter model context. Axod receives only validated title/emoji metadata through the exact bound bridge and stores the sidebar projection locally. Naming guidance also refreshes on hidden recovery turns; it must not depend on the title tool appearing in the active declarations.
+
+### Restart continuation
+
+Interrupted work uses the public Pi custom-message API with `display: false`, `deliverAs: "followUp"` and `triggerTurn: true` ([RFD0081](../../docs/rfds/RFD0081-hidden-restart-continuation.md)). This is hidden, not message-free: the runtime notice persists and enters model context, without becoming a human prompt or approval. Axod admits recovery only for interrupted work, once per replacement runtime. Explicit Stop, real queued prompts and uncertain dispatches retain their existing safeguards; no private Pi SDK patch is needed.
+
+### Extension tool exposure
+
+The local title tool is codemode-only. Axo MCP tools already use codemode exposure (`mcp.ts`). The other `registerTool` site (`remote-view.ts`) creates presentation proxies for tool calls executed on another host; those are not additional local capabilities and retain their replay behavior. No built-in coding tools or unrelated extensions are reconfigured.
 
 The extension also forwards Pi's public agent-settled and blocking-UI-prompt lifecycle events. Axod derives sidebar status as ready, working, or needs attention from those events. A starting/disconnected Pi binding is not presented as ready. The attention indicator means Pi is currently waiting in a blocking UI prompt; arbitrary terminal output is never inspected to infer status.
 

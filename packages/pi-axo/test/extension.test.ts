@@ -72,7 +72,11 @@ test("bridges Pi events and remote commands without owning the Pi process", asyn
     sendUserMessage(text: string, options?: unknown) {
       sentMessages.push({ text, options });
     },
-    resumeTurn() { resumes++; },
+    sendMessage(message: unknown, options: unknown) {
+      assert.equal((message as { display: boolean }).display, false);
+      assert.deepEqual(options, { deliverAs: "followUp", triggerTurn: true });
+      resumes++;
+    },
     appendEntry(customType: string, data: unknown) {
       entries.push({ type: "custom", customType, data });
     },
@@ -97,6 +101,7 @@ test("bridges Pi events and remote commands without owning the Pi process", asyn
       return "No";
     }, notify: () => {} },
     isIdle: () => idle,
+    hasPendingMessages: () => false,
     get model() {
       return model;
     },

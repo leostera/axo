@@ -29,6 +29,18 @@ node_test(
     timeout = "short",
 )
 
+sh_test(
+    name = "recovery_test",
+    srcs = ["check-spec.sh"],
+    args = ["check-recovery.ts"],
+    data = [
+        "check-recovery.ts",
+        "setup/restart-continuation.ts",
+        "//:node_modules/@leostera/feynman",
+    ],
+    target_compatible_with = ["@platforms//os:macos"],
+)
+
 # RFD0070: a script's actions go through the gate; every rule of the model is needed.
 sh_test(
     name = "tools_ask_test",

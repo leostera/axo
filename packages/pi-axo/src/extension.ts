@@ -70,8 +70,6 @@ function errorCode(error: unknown): string {
 export async function installAxoPiExtension(pi: ExtensionAPI, config: AxoPiExtensionConfig): Promise<void> {
   let context: ExtensionContext | undefined;
   let identity: PiSessionIdentity | undefined;
-  const continuationApi = pi as ExtensionAPI & { resumeTurn?: () => void };
-  const resumeTurn = continuationApi.resumeTurn;
   const remote = new RemoteCommands({
     isIdle: () => context?.isIdle() ?? true,
     entries: () => context?.sessionManager.getEntries() ?? [],
@@ -95,12 +93,12 @@ export async function installAxoPiExtension(pi: ExtensionAPI, config: AxoPiExten
   });
   const continuation = new ResumeTurnControl({
     isIdle: () => context?.isIdle() ?? false,
-    hasQueuedPrompts: () => remote.heldCount > 0,
-    resume: typeof resumeTurn === "function" ? () => resumeTurn.call(pi) : undefined,
-    unsupported: () => {
-      console.warn("Axo automatic continuation unavailable: Pi SDK lacks message-free resumeTurn");
-      if (context?.hasUI) context.ui.notify("Automatic restart continuation requires a Pi build exposing resumeTurn. This build does not support it.", "warning");
-    },
+    hasQueuedPrompts: () => remote.heldCount > 0 || (context?.hasPendingMessages() ?? false),
+    resume: () => pi.sendMessage({
+      customType: "axo_restart_continuation",
+      display: false,
+      content: "Axo restarted this runtime while work was in progress. Continue the original user’s unfinished request using the saved conversation. This is a runtime recovery notice, not a new user request or approval. Do not repeat completed actions. Reconcile the outcome of interrupted side effects before retrying; if their outcome cannot be determined, ask the user.",
+    }, { deliverAs: "followUp", triggerTurn: true }),
   });
   const elicitations = new PiElicitations(async (id, action) => {
     await bridge.publishElicitationAnswer(id, action);

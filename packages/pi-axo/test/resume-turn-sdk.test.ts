@@ -15,11 +15,9 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { installAxoPiExtension } from "../src/extension.js";
 
-// Runs against both supported and older SDKs. An older SDK must explicitly refuse, not
-// silently turn a recovery instruction into a user/custom message. Use the same test with
-// the resumeTurn SDK build to exercise the real provider/extension/socket path.
+// Exercise the installed, unmodified SDK through its real bridge and provider path.
 test(
-  "real SDK bridge resumes message-free or explicitly refuses an unsupported SDK",
+  "real SDK bridge resumes once with a hidden runtime notice, never a fabricated human prompt",
   { timeout: 10_000 },
   async (t) => {
     const root = await mkdtemp(join(tmpdir(), "axo-resume-sdk-"));
@@ -31,7 +29,13 @@ test(
     manager.appendMessage({ role: "user", content: [{ type: "text", text: "original saved request" }], timestamp: 1 });
     const socketPath = join(root, "bridge.sock");
     const faux = createFauxCore({ provider: "faux", models: [{ id: "faux-1" }] });
-    faux.setResponses([fauxAssistantMessage("resumed without another prompt")]);
+    faux.setResponses([(context) => {
+      const input = JSON.stringify(context.messages);
+      assert.match(input, /original saved request/);
+      assert.match(input, /runtime recovery notice, not a new user request or approval/);
+      assert.match(input, /Do not repeat completed actions/);
+      return fauxAssistantMessage("resumed without another human prompt");
+    }]);
     const runtime = await ModelRuntime.create({
       authPath: join(root, "auth.json"),
       modelsPath: null,
@@ -94,10 +98,6 @@ test(
     });
     const errors: unknown[] = [];
     await session.bindExtensions({ onError: (error) => errors.push(error) });
-    const supported = "resumeTurn" in session && typeof session.resumeTurn === "function";
-    if (process.env.AXO_TEST_REQUIRE_RESUME_TURN === "1")
-      assert.ok(supported, "this run requires the resumeTurn SDK, not the unsupported-SDK branch");
-    t.diagnostic(`resumeTurn SDK capability: ${supported ? "supported" : "explicit refusal"}`);
     const socket = connect(socketPath);
     t.after(() => socket.destroy());
     let buffer = "";
@@ -127,18 +127,23 @@ test(
       for (;;) {
         const record = await next();
         if (record.type === "commandResult" && record.requestId === requestId) {
-          assert.deepEqual(record.result, supported ? { accepted: true } : { accepted: false, reason: "unavailable" });
+          assert.deepEqual(record.result, { accepted: true });
           break;
         }
       }
       await session.waitForIdle();
     }
-    assert.equal(faux.state.callCount, supported ? 1 : 0, "duplicate recovery must not start a second turn");
+    assert.equal(faux.state.callCount, 1, "duplicate recovery must not start a second turn");
     assert.equal(
       manager.getEntries().filter((entry) => entry.type === "message" && entry.message.role === "user").length,
       1,
     );
-    assert.equal(manager.getEntries().filter((entry) => entry.type === "custom_message").length, 0);
+    const notices = manager.getEntries().filter((entry) => entry.type === "custom_message");
+    assert.equal(notices.length, 1);
+    assert.equal(notices[0]?.display, false);
+    assert.equal(notices[0]?.customType, "axo_restart_continuation");
+    assert.ok(manager.getEntries().some((entry) => entry.type === "message"
+      && entry.message.role === "assistant" && JSON.stringify(entry.message.content).includes("resumed without another human prompt")));
     assert.deepEqual(errors, []);
   },
 );

@@ -53,10 +53,12 @@ test("axo_set_title can update an existing session title repeatedly", async () =
 
   const tool = registeredTool as {
     description: string;
+    exposure: string;
     execute: (...args: any[]) => Promise<{ content: Array<{ type: string; text: string }>; details: unknown }>;
   };
 
   assert.match(tool.description, /Set or update/u);
+  assert.equal(tool.exposure, "codemode");
 
   const firstResult = await tool.execute("call-1", { title: "Explore Axo", emoji: "🌱" }, undefined, undefined, context);
   const secondResult = await tool.execute("call-2", { title: "Ship Axo", emoji: "🚀" }, undefined, undefined, context);
@@ -76,13 +78,22 @@ test("axo_set_title can update an existing session title repeatedly", async () =
   assert.ok(beforeAgentStart);
   const event = {
     messageType: "user",
-    systemPromptOptions: { selectedTools: ["axo_set_title"], sections: {} as Record<string, string> },
+    systemPromptOptions: { selectedTools: ["codemode"], sections: {} as Record<string, string> },
   };
   beforeAgentStart(event, context);
   const guidance = event.systemPromptOptions.sections.axo_session_title ?? "";
   assert.match(guidance, /changes materially/u);
+  assert.match(guidance, /await tools\.axo_set_title\(\{ title, emoji \}\)/u);
   // Titles lead with a project keyword; the working directory suggests one.
   assert.match(guidance, /<keyword>: <focus>/u);
   assert.match(guidance, /evalkit: prepare release/u);
   assert.match(guidance, /keyword is probably `axo-title-test`/u);
+  // A hidden restart wake must get current guidance, not a stale direct-tool instruction.
+  event.messageType = "custom";
+  event.systemPromptOptions.sections.axo_session_title = "old direct-tool guidance";
+  beforeAgentStart(event, context);
+  assert.equal(event.systemPromptOptions.sections.axo_session_title, guidance);
+  event.systemPromptOptions.selectedTools = [];
+  beforeAgentStart(event, context);
+  assert.equal(event.systemPromptOptions.sections.axo_session_title, undefined);
 });

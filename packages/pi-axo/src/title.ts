@@ -37,7 +37,7 @@ function projectHint(cwd: string): string {
 function firstMessageNamingGuidance(cwd: string): string {
   return [
     "Name this Axo Session from the intent of the user's first request in this conversation.",
-    "Before answering the first request, call axo_set_title with a title and one representative emoji in the separate emoji field.",
+    "Before answering the first request, use codemode to call `await tools.axo_set_title({ title, emoji })` with a title and one representative emoji in the separate emoji field.",
     TITLE_STYLE + projectHint(cwd),
     "Do not include the emoji in the title, ask the user to name the session, or make a separate model request just for naming.",
   ].join(" ");
@@ -46,7 +46,7 @@ function firstMessageNamingGuidance(cwd: string): string {
 function existingTitleGuidance(cwd: string): string {
   return [
     "Keep this Axo Session's title and emoji representative of its current focus.",
-    "If the conversation's focus changes materially or the current title becomes inaccurate, call axo_set_title again to update the title and emoji.",
+    "If the conversation's focus changes materially or the current title becomes inaccurate, use codemode to call `await tools.axo_set_title({ title, emoji })` again to update the title and emoji.",
     TITLE_STYLE + projectHint(cwd),
     "Do not rename on routine turns.",
   ].join(" ");
@@ -101,6 +101,8 @@ export function installAxoSessionNaming(
 ): void {
   pi.registerTool({
     name: TITLE_TOOL,
+    exposure: "codemode",
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     label: "Set Axo Session Title",
     description: `Set or update this Axo Session's title and representative emoji. ${TITLE_STYLE} Update it when the conversation's focus materially changes; do not rename on routine turns.`,
     promptSnippet: "Set or update the Axo Session title and emoji to reflect the conversation's current focus.",
@@ -149,8 +151,12 @@ export function installAxoSessionNaming(
 
   pi.on("before_agent_start", (event, context) => {
     const title = publishCurrentMetadata(context);
-    if (event.messageType !== "user") return;
-    if (!event.systemPromptOptions.selectedTools.includes(TITLE_TOOL)) return;
+    // Codemode-only tools are callable without appearing in selectedTools. Refresh this
+    // section on custom recovery turns too, including Sessions with an old saved prompt.
+    if (!event.systemPromptOptions.selectedTools.includes("codemode")) {
+      delete event.systemPromptOptions.sections.axo_session_title;
+      return;
+    }
     event.systemPromptOptions.sections.axo_session_title = title === undefined
       ? firstMessageNamingGuidance(context.cwd)
       : existingTitleGuidance(context.cwd);
