@@ -13,6 +13,17 @@ func jsonValue(_ json: String) -> JSONValue {
 }
 
 final class ChatTranscriptTests: XCTestCase {
+  func testHiddenRecoveryNoticeNeverBecomesAHumanMessage() {
+    let notice = ClientRecord(cursor: 2, id: "wake", line: #"{"type":"custom_message","id":"wake","customType":"axo_restart_continuation","display":false,"content":"runtime recovery notice"}"#)
+    let transcript = ChatTranscript(records: [
+      piRecord(1, message: #"{"role":"user","content":"Original request"}"#), notice,
+      piRecord(3, message: #"{"role":"custom","customType":"axo_restart_continuation","display":false,"content":"runtime recovery notice"}"#),
+      piRecord(4, message: #"{"role":"assistant","content":"Continuing the original request"}"#),
+    ])
+    XCTAssertEqual(transcript.messages.map(\.text), ["Original request", "Continuing the original request"])
+    XCTAssertEqual(transcript.messages.map(\.role), [.user, .assistant])
+  }
+
   func testTerminalOnlyAndUntitledPromptsDoNotBecomeRemoteQuestionCards() {
     for kind in ["select", "editor", "custom"] {
       var transcript = ChatTranscript()

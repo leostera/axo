@@ -115,6 +115,7 @@ private struct AxoMobileAccountRoot: View {
         SignInView(endpoint: environment.endpoint, account: environment.account)
       case .signedIn:
         WorkbenchView(environment: environment)
+          .id(environment.account.accountID)
       }
     }
     .environment(sidewaysScrolling)

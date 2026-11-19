@@ -15,6 +15,7 @@ final class VoicePromptTests: XCTestCase {
     engine.say(HeardText(settled: "Hello", tentative: ""))
     voice.finish(.draft)
     try await until { voice.state == .idle }
+    voice.consume(try XCTUnwrap(voice.transcript))
     voice.start()
     try await until { voice.isListening }
     XCTAssertEqual(engine.preparations, 1, "A model already set up is not set up again")
@@ -42,8 +43,13 @@ final class VoicePromptTests: XCTestCase {
     XCTAssertEqual(voice.transcript?.delivery, .draft)
     XCTAssertEqual(voice.state, .idle)
 
+    let previous = try XCTUnwrap(voice.transcript)
     voice.start()
-    XCTAssertNil(voice.transcript, "A new dictation drops the last one's words")
+    XCTAssertEqual(voice.transcript, previous, "A second tap must not overwrite words before handoff")
+    XCTAssertEqual(engine.starts, 1)
+    voice.consume(previous)
+    voice.start()
+    XCTAssertNil(voice.transcript)
     try await until { voice.isListening }
     voice.finish(.send)
     try await until { voice.transcript != nil }
@@ -340,6 +346,49 @@ final class VoicePromptTests: XCTestCase {
     try await until { voice.transcript != nil }
     XCTAssertEqual(voice.transcript?.text, "Recovered draft")
     XCTAssertEqual(voice.transcript?.delivery, .draft)
+  }
+
+  func testLateRecognitionAfterFinalHandoffCannotRecreateACheckpoint() async throws {
+    let engine = FakeDictation()
+    let voice = VoicePrompt(engine: engine)
+    var checkpoints: [VoiceTranscript?] = []
+    voice.checkpoint = { checkpoints.append($0) }
+    voice.start(in: PhoneWorkbench.Selection(host: UUID(), session: nil))
+    try await until { voice.isListening }
+    engine.say(HeardText(settled: "Hello", tentative: ""))
+    voice.finish(.draft)
+    try await until { voice.transcript != nil }
+    voice.consume(try XCTUnwrap(voice.transcript))
+    let count = checkpoints.count
+    engine.say(HeardText(settled: "late duplicate", tentative: ""))
+    XCTAssertEqual(checkpoints.count, count)
+    XCTAssertNil(voice.transcript)
+  }
+
+  func testRecognitionCheckpointsDoNotDependOnAComposerAndCancelDiscardsThem() async throws {
+    let engine = FakeDictation()
+    let voice = VoicePrompt(engine: engine)
+    var checkpoints: [VoiceTranscript?] = []
+    voice.checkpoint = { checkpoints.append($0) }
+    let destination = PhoneWorkbench.Selection(host: UUID(), session: nil)
+    voice.start(in: destination)
+    try await until { voice.isListening }
+    engine.say(HeardText(settled: "Keep", tentative: " these words"))
+    let partial = try XCTUnwrap(checkpoints.last ?? nil)
+    XCTAssertEqual(partial.text, "Keep these words")
+    XCTAssertEqual(partial.destination, destination)
+    voice.interrupt()
+    XCTAssertEqual(voice.transcript?.id, partial.id)
+    XCTAssertEqual(voice.transcript?.delivery, .draft)
+    voice.consume(try XCTUnwrap(voice.transcript))
+    voice.start(in: destination)
+    try await until { voice.isListening }
+    engine.say(HeardText(settled: "Discard", tentative: ""))
+    voice.cancel()
+    XCTAssertNil(checkpoints.last ?? nil)
+    let count = checkpoints.count
+    engine.say(HeardText(settled: "late words", tentative: ""))
+    XCTAssertEqual(checkpoints.count, count)
   }
 
   func testRecordingWakeLockRestoresPriorStateAndIsIdempotent() {

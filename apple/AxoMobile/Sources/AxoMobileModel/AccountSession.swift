@@ -25,6 +25,8 @@ public final class AccountSession {
   }
 
   public private(set) var state: State
+  /// Stable scope for local drafts; never a credential or an authority to send.
+  public private(set) var accountID: UUID?
   /// Changes on every successful sign-in or sign-out, including a switch between accounts.
   public private(set) var credentialRevision = UUID()
   /// Explicit sign-out wins over a later foreground restore of previously unavailable storage.
@@ -44,7 +46,9 @@ public final class AccountSession {
     tokens = access
     // Unreadable storage starts signed out without deleting anything; `restoreStoredSession`
     // signs back in once it can be read.
-    state = (try? store.load()) == nil ? .signedOut : .signedIn
+    let stored = try? store.load()
+    accountID = stored?.accountID
+    state = stored == nil ? .signedOut : .signedIn
   }
 
   /// Keeps `token` and signs in. If it cannot be kept the phone stays signed out: a token that
@@ -57,6 +61,7 @@ public final class AccountSession {
       return
     }
     signInFailure = nil
+    accountID = token.accountID
     hasEndedSession = false
     tokenAccess.setEnded(false)
     state = .signedIn
@@ -71,6 +76,7 @@ public final class AccountSession {
       return false
     }
     hasEndedSession = true
+    accountID = nil
     tokenAccess.setEnded(true)
     state = .signedOut
     credentialRevision = UUID()
@@ -80,6 +86,7 @@ public final class AccountSession {
   /// A transferred session was durably revoked in the other app. No credential is re-imported.
   public func noteTransferredSessionRevoked() {
     hasEndedSession = true
+    accountID = nil
     tokenAccess.setEnded(true)
     state = .signedOut
     credentialRevision = UUID()
@@ -88,7 +95,8 @@ public final class AccountSession {
   /// A background launch can occur while the Keychain is locked. Restore on foreground once
   /// available, but never undo a sign-out made in this app process.
   public func restoreStoredSession() {
-    guard state == .signedOut, !hasEndedSession, (try? store.load()) != nil else { return }
+    guard state == .signedOut, !hasEndedSession, let token = try? store.load() else { return }
+    accountID = token.accountID
     state = .signedIn
     credentialRevision = UUID()
   }

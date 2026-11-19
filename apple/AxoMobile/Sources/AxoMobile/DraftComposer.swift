@@ -41,7 +41,7 @@ struct DraftComposer: View {
 
   private func take(_ transcript: VoiceTranscript) {
     guard let destination = transcript.destination, voice?.consume(transcript) == true else { return }
-    phone.setDraft(transcript.appending(to: phone.draft(for: destination)), for: destination)
+    phone.keepVoiceTranscript(transcript)
     if transcript.delivery == .send, phone.selection == destination, canSend, !phone.isSending { send(.interrupt) }
   }
 

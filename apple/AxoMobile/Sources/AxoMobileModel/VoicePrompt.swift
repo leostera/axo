@@ -106,7 +106,12 @@ public enum VoicePromptError: LocalizedError, Equatable {
 public final class VoicePrompt {
   public private(set) var state: VoicePromptState = .idle
   /// The last finished dictation, for the screen to put in the box or send.
-  public private(set) var transcript: VoiceTranscript?
+  public private(set) var transcript: VoiceTranscript? {
+    didSet { if let transcript { checkpoint?(transcript) } }
+  }
+  /// Synchronous local checkpoints; restoring one is always a draft, never a Send.
+  @ObservationIgnored public var checkpoint: (@MainActor (VoiceTranscript?) -> Void)?
+  @ObservationIgnored private var recordingID = UUID()
 
   @ObservationIgnored private let engine: any DictationEngine
   @ObservationIgnored private var prepared = false
@@ -140,9 +145,9 @@ public final class VoicePrompt {
   /// Asks for the microphone, sets up the speech model if it is not yet, and starts listening:
   /// one tap, however much of that is needed.
   public func start(in destination: PhoneWorkbench.Selection? = nil) {
-    guard !isBusy else { return }
+    guard !isBusy, transcript == nil else { return }
     self.destination = destination
-    transcript = nil
+    recordingID = UUID()
     lastHeard = HeardText()
     generation += 1
     let current = generation
@@ -168,8 +173,9 @@ public final class VoicePrompt {
         state = .preparing(VoiceSetupProgress(stage: .finishing))
         try await engine.start(
           heard: { [weak self] heard in
-            guard let self, current == self.generation else { return }
+            guard let self, current == self.generation, self.isBusy else { return }
             self.lastHeard = heard
+            self.checkpointHeard()
             if self.isListening { self.state = .listening(heard) }
           },
           interrupted: { [weak self] in
@@ -182,7 +188,7 @@ public final class VoicePrompt {
         guard current == generation else { return }
         await engine.cancel()
         guard current == generation else { return }
-        state = .failed(error.localizedDescription)
+        if !recoverHeardDraft() { state = .failed(error.localizedDescription) }
       }
     }
   }
@@ -192,6 +198,7 @@ public final class VoicePrompt {
   public func retargetNewChat(from previous: PhoneWorkbench.Selection, to next: PhoneWorkbench.Selection) {
     guard previous.session == nil, next.session == nil, destination == previous else { return }
     destination = next
+    if transcript == nil { checkpointHeard() }
     destinationOptionsChanged()
     if let transcript {
       self.transcript = VoiceTranscript(id: transcript.id, text: transcript.text, delivery: .draft, destination: next)
@@ -226,7 +233,7 @@ public final class VoicePrompt {
           if !recoverHeardDraft() { fail(.noSpeech, current) }
           return
         }
-        transcript = VoiceTranscript(text: text, delivery: destinationAtSend == destinationRevision ? delivery : .draft, destination: destination)
+        transcript = VoiceTranscript(id: recordingID, text: text, delivery: destinationAtSend == destinationRevision ? delivery : .draft, destination: destination)
         state = .idle
       } catch {
         guard current == generation else { return }
@@ -248,7 +255,7 @@ public final class VoicePrompt {
   private func recoverHeardDraft() -> Bool {
     let text = (lastHeard.settled + lastHeard.tentative).trimmingCharacters(in: .whitespacesAndNewlines)
     guard !text.isEmpty else { return false }
-    transcript = VoiceTranscript(text: text, delivery: .draft, destination: destination)
+    transcript = VoiceTranscript(id: recordingID, text: text, delivery: .draft, destination: destination)
     state = .idle
     return true
   }
@@ -259,7 +266,14 @@ public final class VoicePrompt {
     retireWork()
     transcript = nil
     lastHeard = HeardText()
+    checkpoint?(nil)
     state = .idle
+  }
+
+  private func checkpointHeard() {
+    let text = (lastHeard.settled + lastHeard.tentative).trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !text.isEmpty else { return }
+    checkpoint?(VoiceTranscript(id: recordingID, text: text, delivery: .draft, destination: destination))
   }
 
   /// Takes a failure off the screen.

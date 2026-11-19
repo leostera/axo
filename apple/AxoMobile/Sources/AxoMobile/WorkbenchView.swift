@@ -97,6 +97,10 @@ struct WorkbenchView: View {
         let uploads = PreviewAttachmentUploads(mode: ProcessInfo.processInfo.environment["AXO_MOBILE_PREVIEW_UPLOAD"])
         _workbench = State(initialValue: PhoneWorkbench(
           hosts: HostsModel(profile: PreviewPairing()), feed: feed, account: account,
+          draftStore: ProcessInfo.processInfo.environment["AXO_MOBILE_PREVIEW_DRAFT_STORE"]
+            .flatMap(UUID.init(uuidString:)).map { id in
+              DraftTextStore(url: DraftTextStore.location(accountID: id))
+            },
           uploadAsset: { data, name, mimeType in try await uploads.upload(data, name: name, mimeType: mimeType) },
           makeWorkbench: { host in
             HostWorkbenchModel(
@@ -114,6 +118,7 @@ struct WorkbenchView: View {
     assetLoader = AssetLoader { hex in try await assets.download(hex: hex) }
     _workbench = State(initialValue: PhoneWorkbench(
       hosts: HostsModel(profile: client), feed: feed, account: account,
+      draftStore: account.accountID.map { DraftTextStore(url: DraftTextStore.location(accountID: $0)) },
       uploadAsset: { data, name, mimeType in try await assets.upload(data, name: name, mimeType: mimeType) },
       makeWorkbench: { host in
         HostWorkbenchModel(
@@ -342,6 +347,13 @@ struct WorkbenchView: View {
     } message: {
       Text(environment.account.signInFailure ?? "Unlock this device and try again.")
     }
+    .task { voice?.checkpoint = { [workbench] in workbench.checkpointVoice($0) } }
+    .overlay(alignment: .top) {
+      if let failure = workbench.draftStorageFailure {
+        Text(failure).font(.footnote).padding(12).background(.regularMaterial)
+          .accessibilityIdentifier("draft-storage-failure")
+      }
+    }
     .onDisappear { keepInterruptedVoice() }
     .onChange(of: workbench.selection) { _, destination in
       // An explicit host choice moves the same unsent draft, including its microphone.
@@ -469,9 +481,9 @@ struct WorkbenchView: View {
 
   private func keepInterruptedVoice() {
     voice?.interrupt()
-    guard let voice, let transcript = voice.transcript, let destination = transcript.destination,
+    guard let voice, let transcript = voice.transcript, transcript.destination != nil,
       voice.consume(transcript) else { return }
-    workbench.setDraft(transcript.appending(to: workbench.draft(for: destination)), for: destination)
+    workbench.keepVoiceTranscript(transcript)
   }
 
   // MARK: - The menu

@@ -36,7 +36,7 @@ extension AccountConnection: AccountFeed {}
 @MainActor
 @Observable
 public final class PhoneWorkbench {
-  public struct Selection: Hashable, Sendable {
+  public struct Selection: Hashable, Codable, Sendable {
     public let host: UUID
     public let session: SessionID?
 
@@ -58,6 +58,10 @@ public final class PhoneWorkbench {
   /// What is typed in each chat's box, kept while other chats are open. A new chat's is keyed by
   /// its Mac with no Session.
   private var drafts: [Selection: String] = [:]
+  @ObservationIgnored private let draftStore: DraftTextStore?
+  @ObservationIgnored private let draftAccountID: UUID?
+  @ObservationIgnored private var voiceCheckpoint: DraftTextStore.Checkpoint?
+  public private(set) var draftStorageFailure: String?
   /// Preferences never cross host generations; pending initialization stays with its created chat.
   private var draftModels: [RemoteHostRef: DraftModelChoice] = [:]
   private var initialModels: [Selection: DraftModelChoice] = [:]
@@ -218,6 +222,7 @@ public final class PhoneWorkbench {
 
   public init(
     hosts: HostsModel, feed: any AccountFeed, account: AccountSession,
+    draftStore: DraftTextStore? = nil,
     reconnectDelays: [Duration] = [.milliseconds(500), .seconds(1), .seconds(2), .seconds(5), .seconds(15)],
     uploadAsset: @escaping @Sendable (Data, String, String) async throws -> Attachment = { _, _, _ in
       throw AxoClientError.invalidResponse("attachments are unavailable here")
@@ -228,6 +233,12 @@ public final class PhoneWorkbench {
     self.hosts = hosts
     self.feed = feed
     self.account = account
+    self.draftStore = draftStore
+    self.draftAccountID = account.accountID
+    if let draftStore {
+      drafts = Dictionary(uniqueKeysWithValues: draftStore.restoredTexts().map { ($0.destination, $0.text) })
+      draftStorageFailure = draftStore.failure
+    }
     self.reconnectDelays = reconnectDelays
     self.makeWorkbench = makeWorkbench
   }
@@ -535,10 +546,11 @@ public final class PhoneWorkbench {
     voice?.retargetNewChat(from: draft, to: destination)
     let text = self.draft(for: draft)
     let files = attachments(for: draft)
-    setDraft("", for: draft)
+    drafts[draft] = nil
+    if !text.isEmpty { drafts[destination] = text }
+    saveDraftTexts()
     draftFiles[draft] = nil
     select(host: hostID, session: nil)
-    if !text.isEmpty { setDraft(text, for: Selection(host: hostID, session: nil)) }
     if !files.isEmpty { draftFiles[Selection(host: hostID, session: nil)] = files }
   }
 
@@ -558,6 +570,31 @@ public final class PhoneWorkbench {
 
   public func setDraft(_ text: String, for selection: Selection) {
     drafts[selection] = text.isEmpty ? nil : text
+    saveDraftTexts()
+  }
+
+  /// Save partial recognition independently of a mounted composer. Cancel explicitly clears it.
+  public func checkpointVoice(_ transcript: VoiceTranscript?) {
+    if let transcript, let destination = transcript.destination {
+      voiceCheckpoint = DraftTextStore.Checkpoint(id: transcript.id, destination: destination, text: transcript.text)
+    } else {
+      voiceCheckpoint = nil
+    }
+    saveDraftTexts()
+  }
+
+  /// The base draft and recording checkpoint change in one atomic snapshot, never two appends.
+  public func keepVoiceTranscript(_ transcript: VoiceTranscript) {
+    guard let destination = transcript.destination else { return }
+    if voiceCheckpoint?.id == transcript.id { voiceCheckpoint = nil }
+    drafts[destination] = transcript.appending(to: draft(for: destination))
+    saveDraftTexts()
+  }
+
+  private func saveDraftTexts() {
+    guard let draftStore, !account.hasEndedSession, account.accountID == draftAccountID else { return }
+    draftStore.save(texts: drafts.map { DraftTextStore.Text(destination: $0.key, text: $0.value) }, voice: voiceCheckpoint)
+    draftStorageFailure = draftStore.failure
   }
 
   /// A file in a chat's box: uploading to the account, ready to send, or refused.

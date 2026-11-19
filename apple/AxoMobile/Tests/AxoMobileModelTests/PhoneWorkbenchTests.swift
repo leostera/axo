@@ -59,7 +59,7 @@ final class PhoneWorld {
 
   init(
     _ macs: [Mac], createsSession: SessionID? = 99, refusesPrompts: Bool = false,
-    answers: Bool = true,
+    answers: Bool = true, draftStore: DraftTextStore? = nil,
     uploadAsset: @escaping @Sendable (Data, String, String) async throws -> Attachment = { _, _, _ in
       throw AxoClientError.invalidResponse("no uploads in this test")
     }
@@ -70,7 +70,7 @@ final class PhoneWorld {
     let feed = feed
     let account = account
     workbench = PhoneWorkbench(
-      hosts: HostsModel(profile: NoProfile()), feed: feed, account: account, reconnectDelays: [.milliseconds(10)],
+      hosts: HostsModel(profile: NoProfile()), feed: feed, account: account, draftStore: draftStore, reconnectDelays: [.milliseconds(10)],
       uploadAsset: uploadAsset
     ) { [unowned self] remote in
       let model = HostWorkbenchModel(

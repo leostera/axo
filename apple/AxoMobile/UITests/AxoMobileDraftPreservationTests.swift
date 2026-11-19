@@ -38,6 +38,33 @@ final class AxoMobileDraftPreservationTests: XCTestCase {
   }
 
   @MainActor
+  func testRecognizedWordsAndTypedPrefixSurviveColdRelaunchWithoutSending() {
+    continueAfterFailure = false
+    let app = XCUIApplication()
+    app.launchEnvironment = ["AXO_PHONE_PREVIEW": "1", "AXO_MOBILE_PREVIEW_DRAFT_STORE": UUID().uuidString]
+    app.launch()
+    let editor = app.textViews["composer"]
+    XCTAssertTrue(editor.waitForExistence(timeout: 15))
+    editor.tapWhereItIs()
+    editor.typeText("Typed prefix")
+    app.buttons["voice-start"].tapWhereItIs()
+    let heard = app.staticTexts["voice-heard"]
+    XCTAssertTrue(heard.waitForExistence(timeout: 5))
+    let complete = NSPredicate(format: "label == %@", "Make the tests pass")
+    XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: complete, object: heard)], timeout: 8), .completed)
+    app.terminate()
+    app.launch()
+    XCTAssertTrue(editor.waitForExistence(timeout: 15))
+    XCTAssertEqual(editor.value as? String, "Typed prefix Make the tests pass")
+    XCTAssertEqual(app.staticTexts["conversation-title"].label, "New chat")
+    XCTAssertTrue(app.buttons["voice-start"].exists, "Restoration must not restart recording")
+    app.terminate()
+    app.launch()
+    XCTAssertTrue(editor.waitForExistence(timeout: 15))
+    XCTAssertEqual(editor.value as? String, "Typed prefix Make the tests pass", "No repeated checkpoint append")
+  }
+
+  @MainActor
   func testTypedNewChatDraftSurvivesHostAndAgentChanges() {
     let app = launch()
     let editor = app.textViews["composer"]
