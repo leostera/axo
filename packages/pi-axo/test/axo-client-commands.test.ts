@@ -114,15 +114,26 @@ test("/axo-share sent from an Axo client runs the command instead of reaching th
     get: (target, key) => key in target ? target[key as "notify"] : key === "then" ? undefined : () => undefined,
   }) as unknown as ExtensionUIContext;
   const errors: unknown[] = [];
-  await session.bindExtensions({ uiContext: ui, mode: "tui", onError: error => { errors.push(error); } });
+  let reloads = 0;
+  let reloadFinished = false;
+  await session.bindExtensions({ uiContext: ui, mode: "tui", onError: error => { errors.push(error); },
+    commandContextActions: {
+      waitForIdle: () => session.waitForIdle(),
+      newSession: async () => ({ cancelled: true }),
+      fork: async () => ({ cancelled: true }),
+      navigateTree: async () => ({ cancelled: true }),
+      switchSession: async () => ({ cancelled: true }),
+      reload: async () => { reloads += 1; await session.reload(); reloadFinished = true; },
+    },
+  });
   t.after(() => assert.deepEqual(errors, [], "no extension errors"));
 
   // The command must exist in this Pi at all.
   assert.ok(session.extensionRunner.getCommand("axo-share"), "pi-axo registers /axo-share");
 
-  const socket = connect({ path: process.env.AXO_PI_BRIDGE_SOCKET! });
+  let socket = connect({ path: process.env.AXO_PI_BRIDGE_SOCKET! });
   t.after(() => socket.destroy());
-  const next = lines(socket);
+  let next = lines(socket);
   await once(socket, "connect");
   socket.write(`${JSON.stringify({ type: "authenticate", protocolVersion: 1, token: bridgeToken })}\n`);
   assert.equal((await next()).type, "authenticated");
@@ -144,6 +155,24 @@ test("/axo-share sent from an Axo client runs the command instead of reaching th
   await eventually("the /axo-share command to run", () => notices.some(notice => notice.includes("Sharing works in Pi sessions that Axo runs")));
   assert.equal(faux.state.callCount, 0, "the model never saw /axo-share");
   assert.deepEqual(userTexts(), [], "/axo-share is not a user message");
+
+  // Pi\'s native /reload is not an ordinary prompt, and a repeated command ID cannot reload twice.
+  socket.write(`${JSON.stringify({ type: "command", requestId: "reload", axoSessionId,
+    action: { kind: "send", text: "/reload", commandId: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee" } })}\n`);
+  await eventually("native reload and bridge replacement", () => reloadFinished);
+  socket.destroy();
+  socket = connect({ path: process.env.AXO_PI_BRIDGE_SOCKET! });
+  next = lines(socket);
+  await once(socket, "connect");
+  socket.write(`${JSON.stringify({ type: "authenticate", protocolVersion: 1, token: bridgeToken })}\n`);
+  assert.equal((await next()).type, "authenticated");
+  assert.equal((await next()).type, "hello");
+  assert.deepEqual(await send("reload-repeat", "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", "/reload"), { accepted: true });
+  assert.equal(reloads, 1);
+  assert.equal(faux.state.callCount, 0, "native controls never reach the model");
+  assert.deepEqual(userTexts(), []);
+  assert.deepEqual(await send("name", "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff", "/name Renamed through Axo"), { accepted: true });
+  await eventually("native rename action", () => session.sessionManager.getSessionName() === "Renamed through Axo");
 
   // An ordinary client prompt still becomes a turn, so the check above can fail.
   assert.deepEqual(await send("hello", "66666666-7777-4888-8999-aaaaaaaaaaaa", "hello"), { accepted: true });

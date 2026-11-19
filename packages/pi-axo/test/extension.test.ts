@@ -156,12 +156,10 @@ test("bridges Pi events and remote commands without owning the Pi process", asyn
       thinkingLevel: "high",
     }]);
     const listedCommands = await next();
-    assert.deepEqual(listedCommands.type === "event" && [listedCommands.name, listedCommands.data], ["pi.commands", {
-      commands: [
-        { name: "axo-import", description: "", source: "extension" },
-        { name: "axo-share", description: "", source: "extension" },
-      ],
-    }]);
+    assert.equal(listedCommands.type === "event" && listedCommands.name, "pi.commands");
+    if (listedCommands.type !== "event") throw Error("expected command catalog");
+    assert.deepEqual((listedCommands.data as { commands: { name: string }[] }).commands.map(command => command.name),
+      ["reload", "compact", "name", "model", "thinking", "axo-import", "axo-share"]);
     const listedModels = await next();
     assert.deepEqual(listedModels.type === "event" && [listedModels.name, listedModels.data], ["pi.models", {
       models: [

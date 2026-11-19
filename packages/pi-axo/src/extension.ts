@@ -7,7 +7,8 @@ import { installAxoSessionNaming } from "./title.js";
 import { registerShareCommand } from "./share-command.js";
 import { messageEvent, ProgressThrottle, toolEvent, turnEndEvent } from "./events.js";
 import { QUEUED_ENTRY, RECEIPT_ENTRY, RemoteCommands, type ClientPrompt } from "./remote-commands.js";
-import { commandList, modelList, piState } from "./pi-state.js";
+import { modelList, piState } from "./pi-state.js";
+import { nativeCommandCatalog, nativeCommandText, registerNativeCommands } from "./native-commands.js";
 import { promptContent, showAttachmentLines, type PromptContent } from "./attachments.js";
 import type { ThinkingLevel } from "./pi-state.js";
 import { ResumeTurnControl } from "./resume-turn.js";
@@ -70,6 +71,7 @@ function errorCode(error: unknown): string {
 export async function installAxoPiExtension(pi: ExtensionAPI, config: AxoPiExtensionConfig): Promise<void> {
   let context: ExtensionContext | undefined;
   let identity: PiSessionIdentity | undefined;
+  registerNativeCommands(pi);
   const remote = new RemoteCommands({
     isIdle: () => context?.isIdle() ?? true,
     entries: () => context?.sessionManager.getEntries() ?? [],
@@ -84,6 +86,7 @@ export async function installAxoPiExtension(pi: ExtensionAPI, config: AxoPiExten
         console.error("Axo Pi bridge: a held prompt's attachment is gone; it was not sent");
         return "command";
       }
+      if (typeof content === "string") content = nativeCommandText(content, pi.getCommands());
       const runs = !isExtensionCommand(pi, content);
       pi.sendUserMessage(content, as === "steer" && runs ? { ...AS_TYPED, deliverAs: "steer" } : AS_TYPED);
       return runs ? "run" : "command";
@@ -146,6 +149,10 @@ export async function installAxoPiExtension(pi: ExtensionAPI, config: AxoPiExten
     let content: PromptContent = "";
     if (command.action.kind === "send") {
       try {
+        if ((command.action.attachments?.length ?? 0) > 0
+          && nativeCommandText(command.action.text, pi.getCommands()) !== command.action.text) {
+          return { accepted: false as const, reason: "invalid" as const };
+        }
         content = promptContent(command.action.text, command.action.attachments ?? []);
       } catch {
         // axod fetched the files a moment ago; one gone now fails the prompt, never half of it.
@@ -156,10 +163,14 @@ export async function installAxoPiExtension(pi: ExtensionAPI, config: AxoPiExten
     // A client's prompt (RFD0024): taken at most once, with a receipt, queued in the log while Pi
     // works (RFD0033). Its files were read above, so one already gone is refused now.
     // An interrupt goes the same way even without one: a stop moves Pi's own queue into its editor.
-    if (command.action.kind === "send" && (command.action.commandId !== undefined || command.action.delivery === "interrupt")) {
+    const native = command.action.kind === "send"
+      && nativeCommandText(command.action.text, pi.getCommands()) !== command.action.text;
+    if (command.action.kind === "send" && (command.action.commandId !== undefined || command.action.delivery === "interrupt" || native)) {
       const prompt = { text: command.action.text, attachments: command.action.attachments ?? [] };
       const commandId = command.action.commandId ?? randomUUID();
-      return remote.prompt(commandId, prompt, command.action.delivery ?? "followUp") === "busy"
+      // Native controls require an idle SDK command context, never a mid-turn steering slot.
+      const delivery = native && command.action.delivery === "steer" ? "followUp" : command.action.delivery ?? "followUp";
+      return remote.prompt(commandId, prompt, delivery) === "busy"
         ? { accepted: false as const, reason: "busy" as const }
         : { accepted: true as const };
     }
@@ -171,7 +182,7 @@ export async function installAxoPiExtension(pi: ExtensionAPI, config: AxoPiExten
     }
 
     if (activeContext.isIdle()) {
-      pi.sendUserMessage(content, AS_TYPED);
+      pi.sendUserMessage(typeof content === "string" ? nativeCommandText(content, pi.getCommands()) : content, AS_TYPED);
       return { accepted: true as const };
     }
     const deliverAs = command.action.delivery;
@@ -205,7 +216,7 @@ export async function installAxoPiExtension(pi: ExtensionAPI, config: AxoPiExten
   // Each is also sent to an Axod that connects later, after its activity snapshot.
   const stateEvent = (sessionContext: ExtensionContext) => ({ name: "pi.state", data: piState(sessionContext.model, pi.getThinkingLevel()) });
   const catalogEvents = (sessionContext: ExtensionContext) => [
-    { name: "pi.commands", data: { commands: commandList(pi.getCommands()) } },
+    { name: "pi.commands", data: { commands: nativeCommandCatalog(pi.getCommands()) } },
     { name: "pi.models", data: { models: modelList(sessionContext.modelRegistry.getAvailable()) } },
   ];
   const publishState = (sessionContext: ExtensionContext) => {
