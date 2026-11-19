@@ -92,6 +92,7 @@ try
 {
     if(!live)
     {
+        TranscriptLog.CheckProtocol(Assert);
         Exception? viewError=null;
         var views=new Thread(()=>
         {

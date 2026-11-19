@@ -17,7 +17,7 @@ sealed class RelayFixture : IAsyncDisposable
     readonly WebApplication app;
     readonly SemaphoreSlim sendLock = new(1,1);
     readonly ConcurrentDictionary<string,TaskCompletionSource<JsonElement>> calls=[];
-    readonly ConcurrentDictionary<string,List<string>> records=[];
+    readonly ConcurrentDictionary<string,TranscriptLog> records=[];
     WebSocket? socket;
     int callId;
     string credential="",credentialId="";
@@ -25,6 +25,7 @@ sealed class RelayFixture : IAsyncDisposable
     public JsonElement Registration {get;private set;}
     public JsonElement Manifest {get;private set;}
     public int Connections {get;private set;}
+    public int Truncations {get;private set;}
     public ConcurrentQueue<JsonElement> Progress {get;}=[];
     public ConcurrentQueue<JsonElement> Questions {get;}=[];
     public const string Account="0f3af604-5e8d-4bb6-9556-111122223333";
@@ -84,14 +85,18 @@ sealed class RelayFixture : IAsyncDisposable
                     Manifest=p.Clone();
                     reply=new{round=p.GetProperty("round").GetInt64(),applied=true,sessions=p.GetProperty("sessions").EnumerateArray().Select(s=>
                     {
-                        var id=s.GetProperty("sessionId").GetString()!;var upload=s.GetProperty("upload");var held=records.GetOrAdd(id,_=>[]);
-                        lock(held){if(upload.ValueKind==JsonValueKind.Object&&held.Count==upload.GetProperty("count").GetInt32()&&held.Count>0)return new{sessionId=id,state="synced",epoch=1,count=held.Count,chain=upload.GetProperty("chain").GetString()};}
-                        return new{sessionId=id,state="unknown",epoch=1,count=0,chain=(string?)null};
+                        var id=s.GetProperty("sessionId").GetString()!;var held=records.GetOrAdd(id,_=>new());
+                        lock(held){held.Round=p.GetProperty("round").GetInt64();return new{sessionId=id,state=held.Known?"known":"unknown",epoch=held.Epoch,count=held.Lines.Count,chain=held.Chain(held.Lines.Count)};}
                     }).ToArray()};break;
                 case "axo.host.session.append":
-                    var sessionId=p.GetProperty("sessionId").GetString()!;var lines=records.GetOrAdd(sessionId,_=>[]);int from=p.GetProperty("from").GetInt32();
-                    lock(lines){foreach(var r in p.GetProperty("records").EnumerateArray()){if(lines.Count>=from)lines[from-1]=r.GetProperty("line").GetString()!;else lines.Add(r.GetProperty("line").GetString()!);from++;}}
-                    reply=new{outcome="committed",epoch=1,count=from-1};break;
+                    var log=records.GetOrAdd(p.GetProperty("sessionId").GetString()!,_=>new());
+                    lock(log)reply=log.Append(p);break;
+                case "axo.host.session.chainAt":
+                    var queried=records.GetOrAdd(p.GetProperty("sessionId").GetString()!,_=>new());
+                    lock(queried)reply=new{round=p.GetProperty("round").GetInt64(),chains=p.GetProperty("positions").EnumerateArray().Select(position=>queried.Chain(position.GetInt32())).ToArray()};break;
+                case "axo.host.session.truncate":
+                    var truncated=records.GetOrAdd(p.GetProperty("sessionId").GetString()!,_=>new());
+                    lock(truncated){var before=truncated.Epoch;reply=truncated.Truncate(p);if(truncated.Epoch!=before)Truncations++;}break;
                 case "axo.host.session.progress":Progress.Enqueue(p.Clone());break;
                 case "axo.elicitation.requested":Questions.Enqueue(p.Clone());break;
                 case "axo.host.heartbeat":reply=new{ok=true};break;
@@ -116,7 +121,7 @@ sealed class RelayFixture : IAsyncDisposable
     public JsonElement[] Records(string id)
     {
         if(!records.TryGetValue(id,out var list))return[];
-        lock(list)return list.Select(line=>{using var doc=JsonDocument.Parse(line);return doc.RootElement.Clone();}).ToArray();
+        lock(list)return list.Lines.Select(line=>{using var doc=JsonDocument.Parse(line);return doc.RootElement.Clone();}).ToArray();
     }
     public string[] Messages(string id) => Records(id)
         .Where(record=>record.GetProperty("type").GetString()=="message")
