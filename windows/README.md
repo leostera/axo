@@ -179,6 +179,13 @@ you are ready; terminal processes and active turns stop at that point. Previous 
 on disk. There is no automatic download/update feed, startup registration or Authenticode signature
 yet; the manifest checks package integrity, not publisher identity.
 
+An installed shortcut preserves a configured profile through `Axo.exe --profile <absolute JSON path>`.
+The file contains only `ServerDirectory`, `DesktopConfig`, `PipeName` and an optional
+`CodexExecutable`; it points at existing data rather than copying conversations or credentials.
+Unknown fields and non-absolute paths are rejected before changing the process configuration.
+Installing from a development profile and later updating therefore reopen the same linked account
+and Sessions. With no profile or environment override, the standard per-user defaults are unchanged.
+
 ## Mac interface reference
 
 The Windows client follows the committed Mac interface rather than adding a separate design:
