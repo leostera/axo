@@ -141,7 +141,7 @@ public partial class MainWindow
     void ApplyRelayStatus(JsonElement value) { relayStatus = value.Clone(); settings?.ApplyStatus(value); }
     async void Quit(object sender, RoutedEventArgs e)
     {
-        if (closed) return; closed = true; lifetime.Cancel(); trayClock.Stop(); sidebarClock.Stop();
+        if (closed) return; closed = true; lifetime.Cancel(); trayClock.Stop(); sidebarClock.Stop(); transcriptClock.Stop();
         if (subscription is not null) { try { await daemon.CallAsync("axo.session.unsubscribe", new { subscriptionId = subscription }); } catch { } }
         Microsoft.Win32.SystemEvents.UserPreferenceChanged -= SystemThemeChanged;
         tray?.Dispose(); trayFrame?.Dispose(); mark?.Dispose(); settings?.Close(); Application.Current.Shutdown();

@@ -1,8 +1,74 @@
-// Deterministic app-server fixture. No model calls, sign-in, shell commands or external IO.
+// Deterministic app-server fixture. No model calls, sign-in or shell commands.
+// Its native rollout is written only inside the test-owned Session folder.
 use serde_json::{Value, json};
 use std::io::{self, BufRead, Write};
 
+thread_local! {
+    static SOURCE: std::cell::RefCell<Option<std::path::PathBuf>> = const { std::cell::RefCell::new(None) };
+}
+fn native(kind: &str, payload: Value) {
+    SOURCE.with_borrow(|source| {
+        if let Some(path) = source {
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+                .unwrap();
+            let timestamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as u64;
+            writeln!(
+                file,
+                "{}",
+                json!({"timestamp":timestamp,"type":kind,"payload":payload})
+            )
+            .unwrap();
+        }
+    });
+}
+fn source(thread: &str) -> std::path::PathBuf {
+    let path = std::env::current_dir()
+        .unwrap()
+        .join(format!("{thread}.jsonl"));
+    let fresh = !path.exists();
+    SOURCE.with_borrow_mut(|source| *source = Some(path.clone()));
+    if fresh {
+        native(
+            "session_meta",
+            json!({"id":thread,"cwd":std::env::current_dir().unwrap()}),
+        );
+    }
+    path
+}
+fn record(value: &Value) {
+    let p = &value["params"];
+    if value["method"] == "item/completed" {
+        let item = &p["item"];
+        let payload = match item["type"].as_str() {
+            Some("userMessage") => {
+                json!({"type":"message","role":"user","content":item["content"]})
+            }
+            Some("agentMessage") => {
+                json!({"type":"message","role":"assistant","content":[{"type":"output_text","text":item["text"]}]})
+            }
+            Some("reasoning") => {
+                json!({"type":"reasoning","summary":item["summary"].as_array().unwrap().iter().map(|text| json!({"type":"summary_text","text":text})).collect::<Vec<_>>(),"encrypted_content":"OPAQUE_NOT_DISPLAYABLE"})
+            }
+            Some("commandExecution") => {
+                native(
+                    "response_item",
+                    json!({"type":"function_call","name":"bash","call_id":item["id"],"arguments":json!({"command":item["command"]}).to_string()}),
+                );
+                json!({"type":"function_call_output","call_id":item["id"],"output":item["aggregatedOutput"]})
+            }
+            _ => return,
+        };
+        native("response_item", payload);
+    }
+}
 fn send(value: Value) {
+    record(&value);
     println!("{value}");
     io::stdout().flush().unwrap();
 }
@@ -43,10 +109,15 @@ fn main() {
                 json!({"id":id,"result":{"userAgent":"axo-fixture","platformFamily":"windows","platformOs":"windows"}}),
             ),
             Some("initialized") => {}
-            Some("thread/start") => send(json!({"id":id,"result":{"thread":{"id":thread}}})),
+            Some("thread/start") => {
+                send(json!({"id":id,"result":{"thread":{"id":thread,"path":source(&thread)}}}))
+            }
+            Some("thread/read") => {
+                send(json!({"id":id,"result":{"thread":{"id":thread,"path":source(&thread)}}}))
+            }
             Some("thread/resume") => {
                 thread = p["threadId"].as_str().unwrap().into();
-                send(json!({"id":id,"result":{"thread":{"id":thread}}}));
+                send(json!({"id":id,"result":{"thread":{"id":thread,"path":source(&thread)}}}));
             }
             Some("model/list") => send(
                 json!({"id":id,"result":{"data":[{"id":"fixture","model":"fixture","displayName":"Fixture model","supportedReasoningEfforts":[{"reasoningEffort":"low"},{"reasoningEffort":"high"}],"defaultReasoningEffort":"low","inputModalities":["text","image"],"isDefault":true}],"nextCursor":null}}),
@@ -78,6 +149,17 @@ fn main() {
                 );
                 send(json!({"id":id,"result":{"turn":{"id":active,"status":"inProgress"}}}));
                 match text {
+                    "rich-transcript" => {
+                        event(
+                            "item/completed",
+                            json!({"threadId":thread,"turnId":active,"item":{"type":"reasoning","id":format!("{active}-reasoning"),"summary":["Checking the owned fixture before editing."]}}),
+                        );
+                        event(
+                            "item/completed",
+                            json!({"threadId":thread,"turnId":active,"item":{"type":"commandExecution","id":format!("{active}-tool"),"command":"fixture --no-execution","aggregatedOutput":"RICH_TOOL_OUTPUT","status":"completed","exitCode":0}}),
+                        );
+                        complete(&thread, &active, "completed", "Rich transcript complete");
+                    }
                     "stream-reconciliation" => {
                         let item = format!("{active}-assistant");
                         event(

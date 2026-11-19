@@ -12,6 +12,7 @@ mod panes;
 mod relay;
 mod security;
 mod terminal;
+mod transcript;
 pub use mcp::serve_stdio as serve_mcp;
 
 use axo_agent::codex::{Codex, message_text};
@@ -52,6 +53,7 @@ const METHODS: &[&str] = &[
     "axo.session.model.set",
     "axo.session.open",
     "axo.session.messages",
+    "axo.session.transcript",
     "axo.session.interrupt",
     "axo.session.events.poll",
     "axo.session.approval.respond",
@@ -134,6 +136,7 @@ struct LiveSession {
 struct Backend {
     database: Mutex<axo_store::Connection>,
     sessions: Mutex<HashMap<SessionId, Arc<LiveSession>>>,
+    transcripts: Mutex<HashMap<SessionId, transcript::Fingerprint>>,
     codex: PathBuf,
     stop: tokio::sync::Notify,
     directory: PathBuf,
@@ -177,6 +180,7 @@ pub fn serve(
             computer: computer::Computer::load(&directory)?,
             pipe: pipe.clone(),
             database: Mutex::new(database),
+            transcripts: Mutex::new(HashMap::new()),
             sessions: Mutex::new(HashMap::new()),
             codex,
             stop: tokio::sync::Notify::new(),
@@ -774,6 +778,10 @@ impl Backend {
                     json!({"messages":axo_store::coding::messages(&self.database.lock().unwrap(),p.session_id,p.after)?}),
                 )
             }
+            "axo.session.transcript" => {
+                let id = sid(params)?;
+                Ok(json!({"path":self.write_transcript(id)?}))
+            }
             "axo.session.events.poll" => {
                 let p: Poll = parse(params)?;
                 let session = self.session(p.session_id)?;
@@ -1001,6 +1009,7 @@ impl Backend {
             .as_str()
             .ok_or_else(|| io::Error::other("Codex did not return a thread ID"))?;
         axo_store::coding::set_thread_id(&self.database.lock().unwrap(), id, thread)?;
+        self.remember_conversation(id, &result)?;
         let mut runtime = session.runtime.lock().unwrap();
         runtime.agent = Some(agent.clone());
         runtime.status = Some(SessionStatus::Ready);
@@ -1199,6 +1208,16 @@ impl Backend {
         ) || event.get("id").is_some();
         let settled = method == "turn/completed";
         if settled {
+            // Never request on the reader callback itself: it also delivers the reply.
+            let backend = self.clone();
+            std::thread::spawn(move || {
+                if let Err(error) = backend.locate_conversation(id) {
+                    log::warn!(
+                        "event=codex.conversation_unlocated error_kind={:?}",
+                        error.kind()
+                    );
+                }
+            });
             let backend = self.clone();
             std::thread::spawn(move || backend.drain(id));
         }
@@ -1274,6 +1293,7 @@ mod tests {
             computer: computer::Computer::default(),
             pipe: String::new(),
             database: Mutex::new(db),
+            transcripts: Mutex::new(HashMap::new()),
             sessions: Mutex::new(HashMap::new()),
             codex: PathBuf::from("codex"),
             stop: tokio::sync::Notify::new(),
@@ -1326,6 +1346,80 @@ mod tests {
         assert!(events.iter().any(|event| matches!(event.as_ref(),
             Event::SessionSnapshot { session } if session.id == record.id && session.agent == record.agent)));
         backend.unsubscribe(&subscription).unwrap();
+    }
+
+    #[test]
+    fn native_activity_is_cached_and_retained_when_its_source_is_temporarily_missing() {
+        let mut backend = backend();
+        let root =
+            std::env::temp_dir().join(format!("axo-history-{}", SessionId::new_v4().unwrap()));
+        std::fs::create_dir_all(&root).unwrap();
+        backend.directory = root.clone();
+        let id = SessionId::new_v4().unwrap();
+        let source = root.join("native.jsonl");
+        let native = [
+            json!({"type":"session_meta","timestamp":"2026-01-01T00:00:00Z","payload":{"id":"native"}}),
+            json!({"type":"response_item","timestamp":"2026-01-01T00:00:01Z","payload":{"type":"function_call","name":"bash","call_id":"tool","arguments":"{\"command\":\"fixture\"}"}}),
+            json!({"type":"response_item","timestamp":"2026-01-01T00:00:02Z","payload":{"type":"function_call_output","call_id":"tool","output":"retained tool output"}}),
+        ].iter().map(Value::to_string).collect::<Vec<_>>().join("\n");
+        std::fs::write(&source, native + "\n").unwrap();
+        {
+            let db = backend.database.lock().unwrap();
+            axo_store::coding::insert_session(&db, id, &root, "History", None).unwrap();
+            axo_store::coding::set_conversation_path(&db, id, &source).unwrap();
+            axo_store::coding::save_message(&db, id, "reply", "assistant", "first reply").unwrap();
+        }
+        let path = backend.write_transcript(id).unwrap();
+        assert!(
+            std::fs::read_to_string(&path)
+                .unwrap()
+                .contains("retained tool output")
+        );
+        let stamp = std::fs::metadata(&path).unwrap().modified().unwrap();
+        backend.write_transcript(id).unwrap();
+        assert_eq!(std::fs::metadata(&path).unwrap().modified().unwrap(), stamp);
+        {
+            use std::io::Write;
+            let mut file = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&source)
+                .unwrap();
+            writeln!(file, "{}", json!({"type":"response_item","timestamp":"2026-01-01T00:00:03Z","payload":{"type":"function_call","name":"bash","call_id":"tool-2","arguments":"{}"}})).unwrap();
+            writeln!(file, "{}", json!({"type":"response_item","timestamp":"2026-01-01T00:00:04Z","payload":{"type":"function_call_output","call_id":"tool-2","output":"new tool output"}})).unwrap();
+        }
+        backend.write_transcript(id).unwrap();
+        assert!(
+            std::fs::read_to_string(&path)
+                .unwrap()
+                .contains("new tool output")
+        );
+        let archived = root.join("native.moved");
+        std::fs::rename(&source, &archived).unwrap();
+        axo_store::coding::save_message(
+            &backend.database.lock().unwrap(),
+            id,
+            "reply",
+            "assistant",
+            "updated reply",
+        )
+        .unwrap();
+        backend.write_transcript(id).unwrap();
+        let retained = std::fs::read_to_string(&path).unwrap();
+        assert!(retained.contains("retained tool output") && retained.contains("updated reply"));
+        std::fs::rename(&archived, &source).unwrap();
+        backend.write_transcript(id).unwrap();
+        let restored = std::fs::read_to_string(&path).unwrap();
+        let results = restored
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .filter(|record| {
+                record["message"]["role"] == "toolResult"
+                    && record["message"]["toolCallId"] == "tool"
+            })
+            .count();
+        assert_eq!(results, 1);
+        drop(backend);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

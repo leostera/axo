@@ -177,6 +177,14 @@ impl Backend {
         }
         match agent.request("turn/start", params) {
             Ok(result) => {
+                // A new thread may acquire its native path only after its first input.
+                // Failure here must not turn an accepted prompt into a retry/duplicate.
+                if let Err(error) = self.locate_conversation(id) {
+                    log::warn!(
+                        "event=codex.conversation_unlocated error_kind={:?}",
+                        error.kind()
+                    );
+                }
                 let mut r = session.runtime.lock().unwrap();
                 if r.status == Some(SessionStatus::Working) && r.turn.is_none() {
                     r.turn = result["turn"]["id"].as_str().map(str::to_owned);

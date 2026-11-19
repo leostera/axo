@@ -20,6 +20,10 @@ pub fn initialize(database: &Connection) -> io::Result<()> {
             UNIQUE(session_id, item_id)
         );
         CREATE INDEX IF NOT EXISTS coding_messages_by_session ON coding_messages(session_id, sequence);
+        CREATE TABLE IF NOT EXISTS coding_conversations (
+            session_id TEXT PRIMARY KEY REFERENCES sessions(id),
+            path TEXT NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS coding_commands (
             session_id TEXT NOT NULL REFERENCES sessions(id),
             command_id TEXT NOT NULL,
@@ -192,6 +196,44 @@ pub fn list_sessions(database: &Connection, archived: bool) -> io::Result<Vec<Se
     .map_err(io::Error::other)?
     .collect::<Result<Vec<_>, _>>()
     .map_err(io::Error::other)
+}
+
+/// A locator for the agent-owned history, not another copy of that conversation.
+pub fn set_conversation_path(database: &Connection, id: SessionId, path: &Path) -> io::Result<()> {
+    if !path.is_absolute() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Conversation path must be absolute",
+        ));
+    }
+    let path = path.to_str().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Conversation path must be UTF-8",
+        )
+    })?;
+    database
+        .execute(
+            "INSERT INTO coding_conversations(session_id,path) VALUES (?1,?2)
+        ON CONFLICT(session_id) DO UPDATE SET path=excluded.path",
+            params![id.to_string(), path],
+        )
+        .map_err(io::Error::other)?;
+    Ok(())
+}
+
+pub fn conversation_path(
+    database: &Connection,
+    id: SessionId,
+) -> io::Result<Option<std::path::PathBuf>> {
+    database
+        .query_row(
+            "SELECT path FROM coding_conversations WHERE session_id=?1",
+            [id.to_string()],
+            |row| row.get::<_, String>(0).map(std::path::PathBuf::from),
+        )
+        .optional()
+        .map_err(io::Error::other)
 }
 
 pub fn save_message(
@@ -397,6 +439,23 @@ mod tests {
             save_message_with_command(&db, id, "u3", "user", "same", Some("command-2")).is_err()
         );
     }
+    #[test]
+    fn native_history_locator_is_additive_and_requires_an_absolute_path() {
+        let mut db = Connection::open_in_memory().unwrap();
+        crate::initialize_database(&mut db).unwrap();
+        initialize(&db).unwrap();
+        let id = SessionId::new_v4().unwrap();
+        let folder = std::env::current_dir().unwrap();
+        insert_session(&db, id, &folder, "Native history", None).unwrap();
+        assert!(conversation_path(&db, id).unwrap().is_none());
+        assert!(set_conversation_path(&db, id, Path::new("relative.jsonl")).is_err());
+        let path = folder.join("native.jsonl");
+        set_conversation_path(&db, id, &path).unwrap();
+        initialize(&db).unwrap();
+        assert_eq!(conversation_path(&db, id).unwrap(), Some(path));
+        assert!(messages(&db, id, 0).unwrap().is_empty());
+    }
+
     #[test]
     fn reply_timestamp_is_persisted_once_and_legacy_rows_keep_their_stamp() {
         let mut db = Connection::open_in_memory().unwrap();

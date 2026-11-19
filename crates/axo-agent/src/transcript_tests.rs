@@ -30,10 +30,12 @@ fn assert_pi_transcript(text: &str) -> Vec<Value> {
         header,
         serde_json::json!({ "type": "session", "version": 3, "id": "5d0c4c4e-1d2b-4c8e-9f60-0a1b2c3d4e5f", "timestamp": "2026-11-18T12:00:00.000Z", "cwd": "/work" })
     );
+    #[cfg(unix)]
     let mut hashed = crate::pi::pi3::Transcript::start(lines[0]);
     lines[1..]
         .iter()
         .map(|line| {
+            #[cfg(unix)]
             assert!(hashed.push(line).is_some(), "not a pi/3 line: {line}");
             serde_json::from_str(line).unwrap()
         })
@@ -52,7 +54,10 @@ fn texts(entries: &[Value], role: &str) -> Vec<String> {
 fn a_codex_rollout_becomes_a_pi_transcript_with_its_conversation() {
     let entries = assert_pi_transcript(&convert(AgentKind::Codex, CODEX_ROLLOUT).unwrap());
     let user = texts(&entries, "user");
-    assert!(user.iter().any(|text| text.contains("List the files")), "{user:?}");
+    assert!(
+        user.iter().any(|text| text.contains("List the files")),
+        "{user:?}"
+    );
     assert!(!texts(&entries, "assistant").is_empty());
 }
 
@@ -90,7 +95,10 @@ fn conversion_is_deterministic() {
         (AgentKind::ClaudeCode, CLAUDE_SESSION),
         (AgentKind::OpenCode, OPENCODE_EXPORT),
     ] {
-        assert_eq!(convert(kind, native).unwrap(), convert(kind, native).unwrap());
+        assert_eq!(
+            convert(kind, native).unwrap(),
+            convert(kind, native).unwrap()
+        );
     }
 }
 
@@ -189,7 +197,6 @@ fn the_transcript_is_replaced_whole_and_only_when_it_changed() {
     assert!(!directory.join("s.jsonl.writing").exists());
     std::fs::remove_dir_all(directory).unwrap();
 }
-
 
 #[test]
 fn timestamps_are_written_as_pi_writes_them() {

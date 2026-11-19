@@ -33,8 +33,12 @@ pub enum TranscriptError {
 impl fmt::Display for TranscriptError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            TranscriptError::NotConverted(kind) => write!(formatter, "{kind} writes its own transcript"),
-            TranscriptError::Conversion(error) => write!(formatter, "ATXF could not convert it: {error}"),
+            TranscriptError::NotConverted(kind) => {
+                write!(formatter, "{kind} writes its own transcript")
+            }
+            TranscriptError::Conversion(error) => {
+                write!(formatter, "ATXF could not convert it: {error}")
+            }
         }
     }
 }
@@ -77,11 +81,16 @@ pub fn rfc3339_utc(unix_seconds: i64) -> String {
     let z = days + 719_468;
     let era = z.div_euclid(146_097);
     let day_of_era = z.rem_euclid(146_097);
-    let year_of_era = (day_of_era - day_of_era / 1460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let year_of_era =
+        (day_of_era - day_of_era / 1460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
     let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
     let month_index = (5 * day_of_year + 2) / 153;
     let day = day_of_year - (153 * month_index + 2) / 5 + 1;
-    let month = if month_index < 10 { month_index + 3 } else { month_index - 9 };
+    let month = if month_index < 10 {
+        month_index + 3
+    } else {
+        month_index - 9
+    };
     let year = year_of_era + era * 400 + i64::from(month <= 2);
     format!(
         "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}.000Z",
@@ -106,7 +115,11 @@ impl PiHeader {
 
 /// The Pi session lines for `native`, `kind`'s conversation as the agent stores it, under
 /// `header`.
-pub fn pi_lines(kind: AgentKind, native: &str, header: &PiHeader) -> Result<String, TranscriptError> {
+pub fn pi_lines(
+    kind: AgentKind,
+    native: &str,
+    header: &PiHeader,
+) -> Result<String, TranscriptError> {
     let transcript = converter(kind)?
         .to_atxf(native, false)
         .map_err(TranscriptError::Conversion)?;
@@ -118,6 +131,103 @@ pub fn pi_lines(kind: AgentKind, native: &str, header: &PiHeader) -> Result<Stri
     for line in written.lines().skip(1).filter(|line| !line.is_empty()) {
         lines.push_str(line);
         lines.push('\n');
+    }
+    Ok(lines)
+}
+
+/// Enriches an existing text projection with activity from a converted native conversation.
+/// Text ids, prompt receipts and stream timestamps remain owned by the existing projection;
+/// native reasoning and tool identities come from the lossless converter, never text matching.
+pub fn with_activity(presentation: &str, native: &str) -> io::Result<String> {
+    use serde_json::{Value, json};
+    struct Group {
+        timestamp: i64,
+        records: Vec<Value>,
+    }
+    fn records(lines: &str) -> io::Result<Vec<Value>> {
+        lines
+            .lines()
+            .filter(|line| !line.is_empty())
+            .map(|line| serde_json::from_str(line).map_err(io::Error::other))
+            .collect()
+    }
+    fn timestamp(record: &Value) -> io::Result<i64> {
+        record["message"]["timestamp"]
+            .as_i64()
+            .ok_or_else(|| io::Error::other("Transcript message has no millisecond timestamp"))
+    }
+    let mut existing = records(presentation)?.into_iter();
+    let header = existing
+        .next()
+        .filter(|record| record["type"] == "session")
+        .ok_or_else(|| io::Error::other("Transcript has no session header"))?;
+    let mut groups = Vec::new();
+    let mut receipt = Vec::new();
+    for record in existing {
+        if record["type"] == "custom" && record["customType"] == "axo.command" {
+            receipt.push(record);
+            continue;
+        }
+        let at = timestamp(&record)?;
+        receipt.push(record);
+        groups.push(Group {
+            timestamp: at,
+            records: std::mem::take(&mut receipt),
+        });
+    }
+    if !receipt.is_empty() {
+        return Err(io::Error::other("Prompt receipt has no following message"));
+    }
+    for mut record in records(native)? {
+        if record["type"] != "message" {
+            continue;
+        }
+        let message = &mut record["message"];
+        match message["role"].as_str() {
+            Some("toolResult") => {}
+            Some("assistant") => {
+                let Some(content) = message["content"].as_array_mut() else {
+                    continue;
+                };
+                content.retain(|block| {
+                    block["type"] == "toolCall"
+                        || (block["type"] == "thinking"
+                            && block["thinking"]
+                                .as_str()
+                                .is_some_and(|s| !s.trim().is_empty()))
+                });
+                if content.is_empty() {
+                    continue;
+                }
+            }
+            _ => continue,
+        }
+        let at = timestamp(&record)?;
+        let id = record["id"]
+            .as_str()
+            .ok_or_else(|| io::Error::other("Native activity has no id"))?;
+        // A retained materialized transcript can supply activity while its native source
+        // is temporarily unavailable. Re-enrichment must not change those identities.
+        if !id.starts_with("axo:native:") {
+            record["id"] = json!(format!("axo:native:{id}"));
+        }
+        groups.push(Group {
+            timestamp: at,
+            records: vec![record],
+        });
+    }
+    // Stable ordering preserves each source's order at equal timestamps, and receipts stay
+    // immediately before their user message even when an activity shares its timestamp.
+    groups.sort_by_key(|group| group.timestamp);
+    let mut lines = header.to_string() + "\n";
+    let mut parent = Value::Null;
+    for group in groups {
+        for mut record in group.records {
+            record["parentId"] = parent;
+            parent = record["id"].clone();
+            lines.push_str(&record.to_string());
+            lines.push('\n');
+        }
     }
     Ok(lines)
 }
@@ -138,6 +248,9 @@ pub fn write_if_changed(transcript: &Path, lines: &str) -> io::Result<bool> {
     Ok(true)
 }
 
+#[cfg(test)]
+#[path = "transcript_activity_tests.rs"]
+mod activity_tests;
 #[cfg(test)]
 #[path = "transcript_tests.rs"]
 mod tests;

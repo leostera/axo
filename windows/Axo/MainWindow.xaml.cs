@@ -19,6 +19,7 @@ public partial class MainWindow : Window
     readonly CancellationTokenSource lifetime = new();
     readonly Preferences preferences = Preferences.Load();
     readonly DispatcherTimer sidebarClock = new() { Interval = TimeSpan.FromSeconds(30) };
+    readonly DispatcherTimer transcriptClock = new() { Interval = TimeSpan.FromSeconds(2) };
     readonly Dictionary<string, MessageView> messageIndex = [];
     readonly Dictionary<string, ComboBox> questionInputs = [];
     readonly Dictionary<string, string> drafts = [];
@@ -50,6 +51,7 @@ public partial class MainWindow : Window
         SetupTray();
         Microsoft.Win32.SystemEvents.UserPreferenceChanged += SystemThemeChanged;
         sidebarClock.Tick += (_, _) => { if (!SessionList.IsMouseOver) FilterSessions(); };
+        transcriptClock.Tick += async (_, _) => { if (IsVisible && !closed) await PollAsync(); };
     }
 
     async void OnLoaded(object sender, RoutedEventArgs e)
@@ -69,6 +71,7 @@ public partial class MainWindow : Window
             ApplyRelayStatus(await daemon.CallAsync("axo.relay.status"));
             _ = CatalogEventsAsync();
             sidebarClock.Start();
+            transcriptClock.Start();
             await splash.ReadyAsync();
         }
         catch (Exception error) { ShowError(error.Message); DaemonStatus.Text = "Daemon unavailable"; }
@@ -181,6 +184,7 @@ public partial class MainWindow : Window
             if (selected != id || closed) return;
             UpdateStatus(snapshot.GetProperty("status").GetString() ?? "ready");
             ApplyPending(snapshot.GetProperty("pendingRequests"));
+            await LoadTranscriptAsync(id);
             await AttachTerminalAsync(id);
             Composer.Focus();
         }
@@ -240,6 +244,7 @@ public partial class MainWindow : Window
                 ApplyEvent(envelope.GetProperty("event"));
             }
             await LoadMessagesAsync(id);
+            await LoadTranscriptAsync(id);
             if (selected != id || closed) return;
             UpdateStatus(result.GetProperty("status").GetString() ?? "ready");
             ApplyPending(result.GetProperty("pendingRequests"));
