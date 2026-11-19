@@ -44,7 +44,10 @@ pub const FILLED: &str = "\u{2022}\u{2022}\u{2022}\u{2022} (filled by you)";
 /// Values remembered at most; the oldest go first.
 const MAX_VALUES: usize = 256;
 /// Shorter values are too common to hide wherever they appear.
+#[cfg(not(windows))]
 const SHORTEST: usize = 4;
+#[cfg(windows)]
+const SHORTEST: usize = 1;
 
 /// The values filled in, oldest first. One store per process: every computer call in axod reads
 /// through it.
@@ -144,9 +147,10 @@ mod tests {
     fn a_filled_value_is_hidden_wherever_it_shows_but_not_in_images() {
         remember("me@example.com");
         remember("abc");
+        remember("∑");
         let mut result = json!({ "content": [
             { "type": "text", "text": "[16] AXTextField = \"me@example.com\" (to me@example.com)" },
-            { "type": "text", "text": "Signed in as me@example.com. user:me@example.com! abc" },
+            { "type": "text", "text": "Signed in as me@example.com. user:me@example.com! abc ∑" },
             { "type": "image", "data": "me@example.com", "mimeType": "image/png" },
         ], "structuredContent": { "tree_markdown": "me@example.com" } });
         hide(&mut result);
@@ -155,10 +159,15 @@ mod tests {
             format!("[16] AXTextField = \"{FILLED}\" (to {FILLED})")
         );
         // Before RFD0070 only whole words were hidden: a trailing "." or a "user:" leaked it.
+        let (short, single) = if cfg!(windows) {
+            (FILLED, FILLED)
+        } else {
+            ("abc", "∑")
+        };
         assert_eq!(
             result["content"][1]["text"],
-            format!("Signed in as {FILLED}. user:{FILLED}! abc"),
-            "shorter values are too common to hide"
+            format!("Signed in as {FILLED}. user:{FILLED}! {short} {single}"),
+            "Windows hides even a single character; Unix retains its minimum-length policy"
         );
         assert_eq!(result["content"][2]["data"], "me@example.com");
         assert_eq!(result["structuredContent"]["tree_markdown"], FILLED);

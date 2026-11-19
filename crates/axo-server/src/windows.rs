@@ -1,9 +1,11 @@
-//! Local Windows vertical slice of axod. Shares Axo IDs, workspaces and SQLite sessions,
+//! Local Windows vertical slice of axod. Shares Axo IDs, folder-based Sessions and SQLite,
 //! with a Codex app-server agent and a per-user named-pipe transport. Apple-only extensions
 //! are deliberately absent from negotiation. No listener is exposed to the network.
 mod computer;
 mod controls;
 mod credentials;
+#[path = "events.rs"]
+mod events;
 mod mcp;
 mod panes;
 mod relay;
@@ -13,7 +15,7 @@ pub use mcp::serve_stdio as serve_mcp;
 
 use axo_agent::codex::{Codex, message_text};
 use axo_protocol::rpc::{self, method};
-use axo_protocol::{Event, EventScope, SessionId, SessionStatus};
+use axo_protocol::{Event, SessionId, SessionStatus};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::{HashMap, VecDeque};
@@ -24,16 +26,18 @@ use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::windows::named_pipe::NamedPipeServer;
 
+// Named-pipe clients use bounded JSON-RPC polling, not the Unix AXP socket upgrade.
+const SUBSCRIBE_EVENTS: &str = "axo.session.subscribe";
+const NEXT_EVENTS: &str = "axo.session.events.next";
+const UNSUBSCRIBE_EVENTS: &str = "axo.session.unsubscribe";
+
 const MAX_REQUEST: u64 = 1024 * 1024;
 const MAX_EVENTS: usize = 2048;
 const MAX_EVENT_BYTES: usize = 4 * 1024 * 1024;
 const METHODS: &[&str] = &[
     method::PROTOCOL_NEGOTIATE,
     method::DAEMON_HEALTH,
-    method::WORKSPACE_LIST,
-    method::WORKSPACE_CREATE,
-    method::WORKSPACE_RENAME,
-    method::WORKSPACE_SESSION_CREATE,
+    method::SESSION_CREATE,
     method::SESSION_LIST,
     method::SESSION_RENAME,
     method::SESSION_CLOSE,
@@ -54,9 +58,9 @@ const METHODS: &[&str] = &[
     method::RELAY_LINK,
     method::RELAY_STATUS,
     method::RELAY_CONNECT,
-    method::SESSION_SUBSCRIBE,
-    method::SESSION_EVENTS_NEXT,
-    method::SESSION_UNSUBSCRIBE,
+    SUBSCRIBE_EVENTS,
+    NEXT_EVENTS,
+    UNSUBSCRIBE_EVENTS,
     "axo.terminal.create",
     "axo.shell.create",
     "axo.session.layout.set",
@@ -106,17 +110,10 @@ struct Backend {
     stop: tokio::sync::Notify,
     directory: PathBuf,
     relay: Mutex<Option<Arc<relay::Relay>>>,
-    subscriptions: Mutex<HashMap<String, Subscription>>,
+    events: events::Events,
 
     computer: computer::Computer,
     pipe: String,
-}
-
-struct Subscription {
-    session: Option<SessionId>,
-    scope: EventScope,
-    queue: Arc<axo_ipc::EventQueue<Event>>,
-    touched: std::time::Instant,
 }
 
 pub fn serve(
@@ -157,7 +154,7 @@ pub fn serve(
             stop: tokio::sync::Notify::new(),
             directory,
             relay: Mutex::new(None),
-            subscriptions: Mutex::new(HashMap::new()),
+            events: events::Events::default(),
         });
         let endpoint = match relay_url {
             Some(url) => axo_relay::RelayEndpoint::parse(&url)?,
@@ -182,8 +179,7 @@ pub fn serve(
                 }
             });
         }
-        // Relay workers join tasks using the runtime handle, so drop them on the blocking
-        // pool while that runtime is still alive.
+        // Finish the relay's async workers while their runtime is still alive.
         for question in backend.computer.list() {
             backend.computer.resolve(
                 &backend,
@@ -191,9 +187,7 @@ pub fn serve(
                 axo_protocol::elicitation::ElicitationAction::Cancel,
             );
         }
-        tokio::task::spawn_blocking(move || relay.shutdown())
-            .await
-            .map_err(io::Error::other)?;
+        relay.shutdown().await;
         for session in backend.sessions.lock().unwrap().values() {
             let mut runtime = session.runtime.lock().unwrap();
             if let Some(agent) = runtime.agent.take() {
@@ -270,7 +264,7 @@ async fn connection(pipe: NamedPipeServer, backend: Arc<Backend>) -> io::Result<
                             return Ok(());
                         }
                     }
-                } else if request.method == method::SESSION_EVENTS_NEXT {
+                } else if request.method == NEXT_EVENTS {
                     Ok(state.next_events(request.params).await)
                 } else {
                     tokio::task::spawn_blocking(move || {
@@ -342,6 +336,21 @@ fn sid(params: Value) -> Result<SessionId, RpcError> {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct NextEvents {
+    subscription_id: String,
+    timeout_ms: u64,
+    #[serde(default)]
+    max_events: Option<usize>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct Unsubscribe {
+    subscription_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Poll {
     session_id: SessionId,
     #[serde(default)]
@@ -366,77 +375,45 @@ struct Approval {
 
 impl Backend {
     async fn next_events(&self, params: Value) -> Result<Value, RpcError> {
-        let p: rpc::NextEvents = parse(params)?;
+        let p: NextEvents = parse(params)?;
         if !(1..=30000).contains(&p.timeout_ms) || p.max_events.is_some_and(|n| n == 0 || n > 128) {
             return Err(invalid("Invalid event batch bounds").into());
         }
         let events = self
-            .queue(&p.subscription_id)?
-            .wait(
+            .events
+            .next(
+                &p.subscription_id,
                 std::time::Duration::from_millis(p.timeout_ms),
                 p.max_events.unwrap_or(1),
             )
             .await?;
+        let events = events
+            .into_iter()
+            .map(events::SharedEvent)
+            .collect::<Vec<_>>();
         Ok(json!({"events":events}))
     }
     fn subscribe(&self, session: Option<SessionId>, streams: bool) -> io::Result<String> {
-        let mut subscriptions = self.subscriptions.lock().unwrap();
-        subscriptions.retain(|_, s| {
-            let keep = s.touched.elapsed() < std::time::Duration::from_secs(90);
-            if !keep {
-                s.queue.close();
-            }
-            keep
-        });
-        if subscriptions.len() >= 128 {
-            return Err(io::Error::other("Too many event subscriptions"));
+        if let Some(id) = session {
+            self.session(id)?;
         }
-        let id = axo_protocol::new_uuid_v4()?;
-        subscriptions.insert(
-            id.clone(),
-            Subscription {
-                session,
-                scope: if streams {
-                    EventScope::Streams
-                } else {
-                    EventScope::Catalog
-                },
-                queue: Arc::new(
-                    axo_ipc::EventQueue::new(512, || Event::SubscriptionLagged)
-                        .with_byte_limit(4 * 1024 * 1024, |event| {
-                            serde_json::to_vec(event).map_or(0, |v| v.len())
-                        }),
-                ),
-                touched: std::time::Instant::now(),
-            },
-        );
-        Ok(id)
-    }
-    fn queue(&self, id: &str) -> io::Result<Arc<axo_ipc::EventQueue<Event>>> {
-        self.subscriptions
-            .lock()
-            .unwrap()
-            .get_mut(id)
-            .map(|s| {
-                s.touched = std::time::Instant::now();
-                s.queue.clone()
+        self.events
+            .subscribe(events::Subscriber::Client, session, streams, || {
+                let ids = axo_store::coding::list_sessions(&self.database.lock().unwrap(), false)
+                    .unwrap_or_default();
+                ids.into_iter()
+                    .filter_map(|id| serde_json::from_value(self.record(id).ok()?).ok())
+                    .collect()
             })
-            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "Subscription not found"))
     }
     fn unsubscribe(&self, id: &str) -> io::Result<()> {
-        if let Some(s) = self.subscriptions.lock().unwrap().remove(id) {
-            s.queue.close();
-        }
-        Ok(())
+        self.events.unsubscribe(id)
     }
     fn publish(&self, event: Event) {
-        for s in self.subscriptions.lock().unwrap().values() {
-            if s.scope.accepts(event.scope())
-                && (s.session.is_none() || s.session == event.session_id())
-            {
-                s.queue.push(event.clone());
-            }
+        if matches!(event, Event::TerminalOutput { .. }) && !self.events.wants_terminal_output() {
+            return;
         }
+        self.events.publish(event);
     }
     fn publish_snapshot(&self, id: SessionId) {
         if let Ok(value) = self.record(id) {
@@ -463,11 +440,11 @@ impl Backend {
         let mut pending = self.computer.pending(id);
         let attention = !pending.is_empty();
         pending.extend(runtime.pending.values().cloned());
-        let shells=runtime.terminals.values().map(|t| json!({"id":t.shell,"paneId":null,"role":"terminal","processId":t.pid,"initialPwd":row.initial_pwd,"ptyDevice":"ConPTY","attachSocketPath":"","available":t.is_alive(),"availabilityReason":if t.is_alive() {Value::Null} else {json!("Terminal exited")}})).into_iter().collect::<Vec<_>>();
+        let shells=runtime.terminals.values().map(|t| json!({"id":t.shell,"paneId":null,"role":"terminal","processId":t.pid,"initialPwd":row.folder,"ptyDevice":"ConPTY","attachSocketPath":"","available":t.is_alive(),"availabilityReason":if t.is_alive() {Value::Null} else {json!("Terminal exited")}})).into_iter().collect::<Vec<_>>();
         Ok(
             json!({"id":id,"agent":"codex","name":row.manual_name.clone().unwrap_or(row.name),
             "manualName":row.manual_name,"emoji":row.emoji,"piSessionFile":null,"piSessionId":null,"shells":shells,"layout":axo_store::read_session_layout(&self.database.lock().unwrap(),id)?,
-            "initialPwd":row.initial_pwd,"workspaceId":row.workspace_id,"workspaceName":row.workspace_name,
+            "folder":row.folder,
             "createdAt":row.created_at,"lastMessageAt":row.last_message_at,
             "status":if attention {SessionStatus::NeedsAttention} else {runtime.status.unwrap_or(SessionStatus::Ready)},"error":runtime.error,
             "connected":runtime.agent.as_ref().is_some_and(|a| a.is_alive()),
@@ -477,23 +454,28 @@ impl Backend {
         )
     }
 
-    fn create_session(&self, workspace: &str) -> io::Result<Value> {
-        let mut db = self.database.lock().unwrap();
-        let cwd = axo_store::open_workspace_directory(&db, workspace)?;
-        if !cwd.is_dir() {
-            return Err(invalid("Workspace directory does not exist"));
+    fn create_session(&self, request: rpc::CreateSession) -> io::Result<Value> {
+        if request.agent != axo_protocol::agent::AgentKind::Codex {
+            return Err(invalid("The Windows preview supports Codex Sessions only"));
         }
+        let folder = match request.location {
+            rpc::SessionLocation::InFolder(folder) => folder,
+            rpc::SessionLocation::Like(id) => {
+                self.session(id)?;
+                axo_store::open_session_row(&self.database.lock().unwrap(), id)?.folder
+            }
+            rpc::SessionLocation::AtHome => std::env::var_os("USERPROFILE")
+                .map(PathBuf::from)
+                .ok_or_else(|| invalid("The user's home directory is unavailable"))?,
+        };
+        let folder = canonical_directory(&folder)?;
+        let db = self.database.lock().unwrap();
         let id = SessionId::new_v4()?;
-        let workspace_name = axo_store::list_open_workspaces(&db)?
-            .into_iter()
-            .find(|w| w.workspace_id == workspace)
-            .map(|w| w.name)
-            .ok_or_else(|| invalid("Workspace not found"))?;
-        let name = format!(
-            "{workspace_name} · Codex {}",
-            axo_store::next_session_ordinal(&db, workspace)?
-        );
-        axo_store::coding::insert_session(&mut db, id, workspace, &cwd, &name)?;
+        let name = match request.name.as_ref() {
+            Some(name) => name.as_str().to_owned(),
+            None => format!("Codex {}", axo_store::next_session_ordinal(&db, &folder)?),
+        };
+        axo_store::coding::insert_session(&db, id, &folder, &name, request.name.as_ref())?;
         drop(db);
         self.record(id)
     }
@@ -509,17 +491,7 @@ impl Backend {
                     self.publish(Event::SessionRemoved { session_id });
                 }
             }
-            method::WORKSPACE_CREATE => {
-                if let Some(workspace_id) = result["workspace"]["workspaceId"].as_str() {
-                    self.publish(Event::WorkspaceChanged {
-                        workspace_id: workspace_id.into(),
-                    });
-                }
-                if let Ok(id) = serde_json::from_value(result["session"]["id"].clone()) {
-                    self.publish_snapshot(id);
-                }
-            }
-            method::WORKSPACE_SESSION_CREATE => {
+            method::SESSION_CREATE => {
                 if let Ok(id) = serde_json::from_value(result["id"].clone()) {
                     self.publish_snapshot(id);
                 }
@@ -645,8 +617,7 @@ impl Backend {
                     }
                     method::TERMINAL_INPUT => {
                         let p: rpc::TerminalInput = parse(params)?;
-                        let bytes = axo_protocol::base64::decode_terminal_input(&p.data)?;
-                        pty.write(p.sequence, &bytes)?;
+                        pty.write(p.sequence, p.data.as_bytes())?;
                         Ok(json!({"written":true}))
                     }
                     _ => {
@@ -656,7 +627,7 @@ impl Backend {
                     }
                 }
             }
-            method::SESSION_SUBSCRIBE => {
+            SUBSCRIBE_EVENTS => {
                 let p: rpc::Subscribe = parse(params)?;
                 if let Some(id) = p.session_id {
                     self.session(id)?;
@@ -665,8 +636,8 @@ impl Backend {
                     json!({"subscriptionId":self.subscribe(p.session_id,p.include_terminal_output)?}),
                 )
             }
-            method::SESSION_UNSUBSCRIBE => {
-                let p: rpc::Unsubscribe = parse(params)?;
+            UNSUBSCRIBE_EVENTS => {
+                let p: Unsubscribe = parse(params)?;
                 self.unsubscribe(&p.subscription_id)?;
                 Ok(json!({"unsubscribed":true}))
             }
@@ -680,20 +651,22 @@ impl Backend {
                 if name == method::RELAY_LINK {
                     let p: rpc::LinkHost = parse(params)?;
                     let _link = relay.link_lock.lock().unwrap();
-                    let label = axo_relay::link_host(
-                        &relay.endpoint,
-                        &p.code,
-                        relay.host.as_ref(),
-                        relay.host.as_ref(),
-                        relay.credentials.as_ref(),
-                    )?;
-                    relay.control.request_connect()?;
+                    use axo_relay::RelayHost;
+                    let label =
+                        tokio::runtime::Handle::current().block_on(axo_relay::link_host(
+                            &relay.endpoint,
+                            &p.code,
+                            relay.host.identity(),
+                            relay.host.as_ref(),
+                            relay.credentials.clone(),
+                        ))?;
+                    relay.control.request_connect();
                     Ok(json!({"linked":true,"hostLabel":label}))
                 } else {
                     if name == method::RELAY_CONNECT {
-                        relay.control.request_connect()?;
+                        relay.control.request_connect();
                     }
-                    Ok(serde_json::to_value(relay.control.snapshot()?)?)
+                    Ok(serde_json::to_value(relay.control.snapshot())?)
                 }
             }
             method::PROTOCOL_NEGOTIATE => {
@@ -708,39 +681,7 @@ impl Backend {
             method::DAEMON_HEALTH => Ok(
                 json!({"version":env!("CARGO_PKG_VERSION"),"buildNumber":option_env!("AXO_BUILD_NUMBER").unwrap_or("1").parse::<u64>().unwrap_or(1),"status":"running","ready":true,"platform":"windows","agent":"codex","codexExecutable":self.codex}),
             ),
-            method::WORKSPACE_LIST => Ok(
-                json!({"workspaces":axo_store::list_open_workspaces(&self.database.lock().unwrap())?}),
-            ),
-            method::WORKSPACE_CREATE => {
-                let p: rpc::CreateWorkspace = parse(params)?;
-                let cwd = canonical_directory(&p.directory_path)?;
-                let name = p.name.trim();
-                if name.is_empty() || name.len() > 200 {
-                    return Err(invalid("Workspace name must contain 1–200 bytes").into());
-                }
-                let id = axo_protocol::new_uuid_v4()?;
-                axo_store::insert_workspace(&self.database.lock().unwrap(), &id, name, &cwd, None)?;
-                let session = self.create_session(&id)?;
-                Ok(
-                    json!({"workspace":{"workspaceId":id,"name":name,"directoryPath":cwd},"session":session}),
-                )
-            }
-            method::WORKSPACE_RENAME => {
-                let p: rpc::RenameWorkspace = parse(params)?;
-                if p.name.trim().is_empty() || p.name.len() > 200 {
-                    return Err(invalid("Workspace name must contain 1–200 bytes").into());
-                }
-                axo_store::rename_open_workspace(
-                    &self.database.lock().unwrap(),
-                    &p.workspace_id,
-                    p.name.trim(),
-                )?;
-                Ok(json!({"saved":true}))
-            }
-            method::WORKSPACE_SESSION_CREATE => {
-                let p: rpc::WorkspaceRef = parse(params)?;
-                Ok(self.create_session(&p.workspace_id)?)
-            }
+            method::SESSION_CREATE => self.create_session(parse(params)?).map_err(Into::into),
             method::SESSION_LIST => {
                 let ids = axo_store::coding::list_sessions(&self.database.lock().unwrap(), false)?;
                 Ok(
@@ -749,15 +690,12 @@ impl Backend {
             }
             method::SESSION_RENAME => {
                 let p: rpc::RenameSession = parse(params)?;
-                if p.name.trim().is_empty() || p.name.len() > 200 {
-                    return Err(invalid("Session name must contain 1–200 bytes").into());
-                }
                 let session = self.session(p.session_id)?;
                 let _operation = session.operation.lock().unwrap();
                 axo_store::set_manual_session_name(
                     &self.database.lock().unwrap(),
                     p.session_id,
-                    p.name.trim(),
+                    p.name.as_str(),
                 )?;
                 Ok(json!({"saved":true}))
             }
@@ -1142,6 +1080,7 @@ impl Backend {
                             session_id: id,
                             kind: axo_protocol::elicitation::ElicitationKind::Confirm,
                             asked_by: axo_protocol::elicitation::Asker::Agent,
+                            title: None,
                             message,
                             input: None,
                             created_at: now,
@@ -1249,10 +1188,11 @@ fn canonical_directory(path: &Path) -> io::Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn late_exit_from_old_process_cannot_disconnect_replacement() {
-        let db = axo_store::Connection::open_in_memory().unwrap();
-        let backend = Backend {
+    fn backend() -> Backend {
+        let mut db = axo_store::Connection::open_in_memory().unwrap();
+        axo_store::initialize_database(&mut db).unwrap();
+        axo_store::coding::initialize(&db).unwrap();
+        Backend {
             computer: computer::Computer::default(),
             pipe: String::new(),
             database: Mutex::new(db),
@@ -1261,8 +1201,13 @@ mod tests {
             stop: tokio::sync::Notify::new(),
             directory: std::env::temp_dir(),
             relay: Mutex::new(None),
-            subscriptions: Mutex::new(HashMap::new()),
-        };
+            events: events::Events::default(),
+        }
+    }
+
+    #[test]
+    fn late_exit_from_old_process_cannot_disconnect_replacement() {
+        let backend = backend();
         let session = LiveSession::default();
         {
             let mut r = session.runtime.lock().unwrap();
@@ -1279,6 +1224,32 @@ mod tests {
         assert_eq!(r.status, Some(SessionStatus::Ready));
         assert_eq!(r.sequence, 0);
     }
+    #[tokio::test]
+    async fn a_new_subscriber_gets_existing_folder_sessions_with_their_actual_agent() {
+        let backend = backend();
+        let folder = std::env::temp_dir();
+        let created = backend
+            .create_session(
+                serde_json::from_value(json!({
+                    "folder": folder, "agent": "codex", "name": "Native snapshot fixture"
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+        let record: axo_protocol::SessionRecord = serde_json::from_value(created).unwrap();
+        assert_eq!(record.agent, axo_protocol::agent::AgentKind::Codex);
+        assert_eq!(record.folder, canonical_directory(&folder).unwrap());
+        let subscription = backend.subscribe(None, false).unwrap();
+        let events = backend
+            .events
+            .next(&subscription, std::time::Duration::from_secs(1), 128)
+            .await
+            .unwrap();
+        assert!(events.iter().any(|event| matches!(event.as_ref(),
+            Event::SessionSnapshot { session } if session.id == record.id && session.agent == record.agent)));
+        backend.unsubscribe(&subscription).unwrap();
+    }
+
     #[test]
     fn windows_negotiation_does_not_claim_apple_or_pi_features() {
         assert!(METHODS.contains(&method::SESSION_PROMPT));

@@ -37,6 +37,7 @@ pub mod pi;
 pub mod process;
 #[cfg(unix)]
 mod runtime;
+#[cfg(unix)]
 pub mod transcript;
 #[cfg(unix)]
 mod vocabulary;

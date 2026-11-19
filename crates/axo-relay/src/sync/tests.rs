@@ -205,9 +205,9 @@ fn answer(message: &Value, received: &Mutex<Received>) -> Option<Value> {
 
 fn transcript_path(name: &str) -> PathBuf {
     let directory = std::env::temp_dir().join(format!(
-        "axo-upload-{name}-{}-{:?}",
+        "axo-upload-{name}-{}-{}",
         std::process::id(),
-        Instant::now()
+        axo_protocol::new_uuid_v4().unwrap()
     ));
     std::fs::create_dir_all(&directory).unwrap();
     directory.join("transcript.jsonl")

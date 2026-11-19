@@ -56,24 +56,29 @@ pub fn tool_definitions() -> Vec<Value> {
     tools
 }
 
-pub fn call(tool: &str, mut args: Value) -> Value {
+pub fn call(gate: &'static crate::gate::Gate, tool: &str, mut args: Value) -> Value {
     if EXCLUDED.contains(&tool) {
         return super::error(
             "Composite scripts are not available on Windows; call individual computer tools.",
         );
     }
+    let read = super::ask_for_elements(tool, &mut args);
     if tool == "get_window_state" {
-        // The gate must see the same token -> label mapping that the agent saw.
-        // Cua's compact default omits structured elements; keep them for this
-        // embedded caller, with a bounded default walk rather than legacy 5000.
-        args["full_output"] = json!(true);
         if args.get("max_elements").is_none() {
             args["max_elements"] = json!(250);
         }
     }
-    let result = runtime()
+    let mut result = runtime()
         .tokio
         .block_on(runtime().registry.invoke(tool, args));
+    if let Some(structured) = result.structured_content.as_mut() {
+        super::settle_structured(gate, tool, read, structured);
+    }
+    for content in &mut result.content {
+        if let cua_driver_core::protocol::Content::Text { text, .. } = content {
+            crate::filled::hide_text(text);
+        }
+    }
     serde_json::to_value(result).unwrap_or_else(|error| super::error(&error.to_string()))
 }
 
@@ -86,6 +91,22 @@ pub fn permissions() -> (bool, bool) {
 /// is unavailable. Never switch desktops, request elevation, or dismiss consent.
 pub fn screen_locked() -> bool {
     use std::ffi::c_void;
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetCurrentProcessId() -> u32;
+        fn ProcessIdToSessionId(process: u32, session: *mut u32) -> i32;
+    }
+    #[link(name = "Wtsapi32")]
+    unsafe extern "system" {
+        fn WTSQuerySessionInformationW(
+            server: *mut c_void,
+            session: u32,
+            class: u32,
+            buffer: *mut *mut c_void,
+            bytes: *mut u32,
+        ) -> i32;
+        fn WTSFreeMemory(buffer: *mut c_void);
+    }
     #[link(name = "user32")]
     unsafe extern "system" {
         fn OpenInputDesktop(flags: u32, inherit: i32, access: u32) -> *mut c_void;
@@ -100,6 +121,26 @@ pub fn screen_locked() -> bool {
     }
     // DESKTOP_READOBJECTS; UOI_NAME. Every returned handle is closed.
     unsafe {
+        // A disconnected RDP session can still own a desktop named Default. Query our
+        // actual session too; neither another user's active session nor Session 0 counts.
+        let mut session = 0;
+        if ProcessIdToSessionId(GetCurrentProcessId(), &mut session) == 0 {
+            return true;
+        }
+        let mut buffer = std::ptr::null_mut();
+        let mut bytes = 0;
+        let queried =
+            WTSQuerySessionInformationW(std::ptr::null_mut(), session, 8, &mut buffer, &mut bytes);
+        let active = queried != 0
+            && !buffer.is_null()
+            && bytes >= 4
+            && std::ptr::read_unaligned(buffer.cast::<u32>()) == 0; // WTSActive
+        if !buffer.is_null() {
+            WTSFreeMemory(buffer);
+        }
+        if !active {
+            return true;
+        }
         let desktop = OpenInputDesktop(0, 0, 1);
         if desktop.is_null() {
             return true;

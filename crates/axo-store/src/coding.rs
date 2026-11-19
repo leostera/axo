@@ -1,5 +1,5 @@
-//! Agent-neutral catalog additions. The existing workspace/session tables remain authoritative;
-//! backend thread IDs and displayed messages live here, rather than in Pi-specific columns.
+//! Windows conversation presentation and durable commands. Session folders, agent kinds and
+//! conversation identities use the shared catalog; only messages and controls need adjunct tables.
 use axo_protocol::SessionId;
 use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::{Value, json};
@@ -8,12 +8,7 @@ use std::path::Path;
 
 pub fn initialize(database: &Connection) -> io::Result<()> {
     database.execute_batch(
-        "CREATE TABLE IF NOT EXISTS coding_agents (
-            session_id TEXT PRIMARY KEY REFERENCES sessions(id),
-            agent TEXT NOT NULL,
-            thread_id TEXT
-        );
-        CREATE TABLE IF NOT EXISTS coding_messages (
+        "CREATE TABLE IF NOT EXISTS coding_messages (
             sequence INTEGER PRIMARY KEY AUTOINCREMENT,
             session_id TEXT NOT NULL REFERENCES sessions(id),
             item_id TEXT NOT NULL,
@@ -125,37 +120,24 @@ pub fn outbox_state(
 }
 
 pub fn insert_session(
-    database: &mut Connection,
+    database: &Connection,
     id: SessionId,
-    workspace: &str,
     cwd: &Path,
     name: &str,
+    manual_name: Option<&axo_protocol::rpc::SessionName>,
 ) -> io::Result<()> {
-    let tx = database.transaction().map_err(io::Error::other)?;
-    tx.execute(
-        "INSERT INTO sessions(id, workspace_id, initial_pwd, name, state, created_at)
-        VALUES (?1, ?2, ?3, ?4, 'open', ?5)",
-        params![
-            id.to_string(),
-            workspace,
-            cwd.to_string_lossy(),
-            name,
-            crate::unix_timestamp()
-        ],
-    )
-    .map_err(io::Error::other)?;
-    tx.execute(
-        "INSERT INTO coding_agents(session_id, agent) VALUES (?1, 'codex')",
-        params![id.to_string()],
-    )
-    .map_err(io::Error::other)?;
-    tx.commit().map_err(io::Error::other)
+    database.execute(
+        "INSERT INTO sessions(id, initial_pwd, name, manual_name, agent, state, created_at)
+         VALUES (?1, ?2, ?3, ?4, 'codex', 'open', ?5)",
+        params![id.to_string(), cwd.to_string_lossy(), name,
+            manual_name.map(|name| name.as_str()), crate::unix_timestamp()],
+    ).map(|_| ()).map_err(io::Error::other)
 }
 
 pub fn thread_id(database: &Connection, id: SessionId) -> io::Result<Option<String>> {
     database
         .query_row(
-            "SELECT thread_id FROM coding_agents WHERE session_id=?1 AND agent='codex'",
+            "SELECT agent_conversation FROM sessions WHERE id=?1 AND agent='codex'",
             params![id.to_string()],
             |r| r.get(0),
         )
@@ -163,18 +145,12 @@ pub fn thread_id(database: &Connection, id: SessionId) -> io::Result<Option<Stri
 }
 
 pub fn set_thread_id(database: &Connection, id: SessionId, thread: &str) -> io::Result<()> {
-    let changed = database
-        .execute(
-            "UPDATE coding_agents SET thread_id=?2 WHERE session_id=?1",
-            params![id.to_string(), thread],
-        )
-        .map_err(io::Error::other)?;
-    crate::expect_one_row(changed, "coding agent session missing")
+    crate::bind_agent_conversation(database, id, thread)
 }
 
 pub fn list_sessions(database: &Connection, archived: bool) -> io::Result<Vec<SessionId>> {
-    let mut q = database.prepare("SELECT s.id FROM sessions s JOIN coding_agents c ON c.session_id=s.id
-        WHERE s.state=?1 AND c.agent='codex' ORDER BY COALESCE(s.last_message_at,s.created_at) DESC, s.rowid DESC").map_err(io::Error::other)?;
+    let mut q = database.prepare("SELECT id FROM sessions
+        WHERE state=?1 AND agent='codex' ORDER BY COALESCE(last_message_at,created_at) DESC, rowid DESC").map_err(io::Error::other)?;
     q.query_map(params![if archived { "archived" } else { "open" }], |r| {
         crate::stored_session_id(r.get(0)?)
     })
@@ -209,12 +185,12 @@ pub fn messages(database: &Connection, id: SessionId, after: i64) -> io::Result<
 
 pub fn reopen(database: &Connection, id: SessionId) -> io::Result<()> {
     let changed = database.execute("UPDATE sessions SET state='open',archived_at=NULL,termination_reason=NULL
-        WHERE id=?1 AND state='archived' AND id IN (SELECT session_id FROM coding_agents WHERE agent='codex')", params![id.to_string()]).map_err(io::Error::other)?;
+        WHERE id=?1 AND state='archived' AND agent='codex'", params![id.to_string()]).map_err(io::Error::other)?;
     crate::expect_one_row(changed, "archived Codex session missing")
 }
 
 pub fn session_exists(database: &Connection, id: SessionId) -> io::Result<bool> {
-    database.query_row("SELECT 1 FROM coding_agents c JOIN sessions s ON s.id=c.session_id WHERE c.session_id=?1 AND s.state='open'", params![id.to_string()], |_| Ok(true))
+    database.query_row("SELECT 1 FROM sessions WHERE id=?1 AND state='open' AND agent='codex'", params![id.to_string()], |_| Ok(true))
         .optional().map(|v| v.unwrap_or(false)).map_err(io::Error::other)
 }
 
@@ -255,12 +231,11 @@ pub fn submit_command(database: &Connection, id: SessionId, command: &str) -> io
 
 /// Includes archived sessions for the relay uploader; never mixes Pi-owned sessions.
 pub fn catalog(database: &Connection) -> io::Result<Vec<Value>> {
-    let mut q = database.prepare("SELECT s.id,COALESCE(s.manual_name,s.name),s.emoji,s.workspace_id,w.name,s.created_at,s.last_message_at,s.state,s.initial_pwd
-        FROM sessions s JOIN coding_agents c ON c.session_id=s.id LEFT JOIN workspaces w ON w.workspace_id=s.workspace_id
-        WHERE c.agent='codex' ORDER BY s.rowid").map_err(io::Error::other)?;
+    let mut q = database.prepare("SELECT id,COALESCE(manual_name,name),emoji,created_at,last_message_at,state,initial_pwd
+        FROM sessions WHERE agent='codex' ORDER BY rowid").map_err(io::Error::other)?;
     q.query_map([], |r| Ok(json!({"id":r.get::<_,String>(0)?,"name":r.get::<_,String>(1)?,"emoji":r.get::<_,Option<String>>(2)?,
-        "workspaceId":r.get::<_,Option<String>>(3)?,"workspaceName":r.get::<_,Option<String>>(4)?,"createdAt":r.get::<_,i64>(5)?,
-        "lastMessageAt":r.get::<_,Option<i64>>(6)?,"archived":r.get::<_,String>(7)? == "archived","initialPwd":r.get::<_,String>(8)?})))
+        "createdAt":r.get::<_,i64>(3)?,"lastMessageAt":r.get::<_,Option<i64>>(4)?,
+        "archived":r.get::<_,String>(5)? == "archived","folder":r.get::<_,String>(6)?})))
         .map_err(io::Error::other)?.collect::<Result<Vec<_>,_>>().map_err(io::Error::other)
 }
 
@@ -273,10 +248,12 @@ mod tests {
         crate::initialize_database(&mut db).unwrap();
         initialize(&db).unwrap();
         let cwd = std::env::current_dir().unwrap();
-        crate::insert_workspace(&db, "w", "Work", &cwd, None).unwrap();
         let id = SessionId::new_v4().unwrap();
-        insert_session(&mut db, id, "w", &cwd, "Codex 1").unwrap();
+        insert_session(&db, id, &cwd, "Codex 1", None).unwrap();
+        assert_eq!(crate::open_session_agent(&db, id).unwrap(), (axo_agent::AgentKind::Codex, None));
         set_thread_id(&db, id, "thread-1").unwrap();
+        assert!(set_thread_id(&db, id, "another-thread").is_err(), "A Session cannot change conversation identity");
+        assert_eq!(catalog(&db).unwrap()[0]["folder"], cwd.to_string_lossy().as_ref());
         save_message(&db, id, "m1", "user", "hello").unwrap();
         save_message(&db, id, "m1", "user", "hello again").unwrap();
         assert_eq!(messages(&db, id, 0).unwrap().len(), 1);

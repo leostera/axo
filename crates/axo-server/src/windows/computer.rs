@@ -203,9 +203,17 @@ impl Computer {
         }
         let deadline = Instant::now() + Duration::from_millis(request.timeout_ms);
         let gate = axo_computer::gate::for_socket(&backend.directory);
-        if let axo_computer::gate::Verdict::Ask(message) =
-            gate.check(&request.tool, &request.args, request.confirm)
-        {
+        let verdict = tokio::runtime::Handle::current().block_on(gate.check(
+            &request.tool,
+            &request.args,
+            request.confirm,
+        ));
+        let question = match verdict {
+            axo_computer::gate::Verdict::Allow => None,
+            axo_computer::gate::Verdict::Ask(message) => Some(message),
+            axo_computer::gate::Verdict::Refuse(reason) => return failed(&reason),
+        };
+        if let Some(message) = question {
             let message = message.replace("this Mac", "this PC");
             if message.chars().count() > axo_protocol::elicitation::MAX_MESSAGE_CHARS {
                 return failed(
@@ -222,6 +230,7 @@ impl Computer {
                 session_id: request.session_id,
                 kind: ElicitationKind::Confirm,
                 asked_by: Asker::ComputerUse,
+                title: None,
                 message,
                 input: None,
                 created_at,
@@ -272,12 +281,11 @@ impl Computer {
                 "Not done: the call was cancelled, expired, or computer use was disabled.",
             );
         }
-        let mut result = axo_computer::call(&request.tool, request.args);
+        let mut result = axo_computer::call(gate, &request.tool, request.args);
         if self.sensitive.load(Ordering::Acquire) {
             hide_images(&mut result);
         }
-        self.forms.redact(&mut result);
-        gate.remember(&request.tool, &result);
+        axo_computer::filled::hide(&mut result);
         result
     }
 }
@@ -313,29 +321,34 @@ impl axo_questions::QuestionsHost for Backend {
     fn input_key(&self) -> Option<&axo_seal::InputKey> {
         self.computer.key(&self.directory)
     }
+    fn act_as(&self, _session: SessionId) -> Result<(), jsonrpc_core::Error> {
+        // General agent-authored elicitation RPCs are not exposed by the Windows preview.
+        // Computer-use questions are daemon-owned and validated at their own boundary.
+        Err(jsonrpc_core::Error {
+            code: jsonrpc_core::ErrorCode::ServerError(-32003),
+            message: "Agent-authored elicitation RPCs are unavailable on Windows".into(),
+            data: None,
+        })
+    }
 }
 
 impl axo_computer_use::ComputerHost for Backend {
-    fn ask_with(
-        &self,
+    fn ask_with<'a>(
+        &'a self,
         session: SessionId,
-        message: &str,
+        message: &'a str,
         asker: Asker,
         input: Option<axo_protocol::elicitation::InputRequest>,
         timeout: Duration,
-    ) -> Result<
-        (
-            axo_protocol::elicitation::ElicitationOutcome,
-            Option<axo_questions::Values>,
-        ),
-        jsonrpc_core::Error,
-    > {
-        self.computer
-            .inputs
-            .ask_with(self, session, message, asker, input, timeout)
+    ) -> axo_computer_use::HostFuture<'a, Result<axo_questions::Answer, jsonrpc_core::Error>> {
+        Box::pin(
+            self.computer
+                .inputs
+                .ask_with(self, session, message, asker, input, timeout),
+        )
     }
-    fn input_key(&self) -> Option<&axo_seal::InputKey> {
-        self.computer.key(&self.directory)
+    fn input_key(&self) -> axo_computer_use::HostFuture<'_, Option<&axo_seal::InputKey>> {
+        Box::pin(async move { self.computer.key(&self.directory) })
     }
     fn agent_socket(&self) -> Option<PathBuf> {
         Some(self.directory.clone())
@@ -372,7 +385,10 @@ impl Computer {
         reply: axo_protocol::elicitation::Reply,
     ) -> Result<(), (i64, String)> {
         if self.inputs.pending().iter().any(|q| q.id == id) {
-            return self.inputs.resolve(backend, id, answer, reply);
+            return self
+                .inputs
+                .resolve(backend, id, answer, reply)
+                .map_err(|error| (error.code, error.message));
         }
         if !matches!(reply, axo_protocol::elicitation::Reply::Bare) {
             return Err((-32602, "Confirmation takes no field values".into()));
@@ -427,15 +443,16 @@ impl Computer {
                 cancelled,
                 deadline,
             };
-            let result = axo_ipc::cancel::on_this_thread(cancellation.clone(), || {
+            let result = tokio::runtime::Handle::current().block_on(axo_ipc::cancel::scope(
+                cancellation.clone(),
                 self.forms.request_input(
                     &host,
                     request.session_id,
                     None,
                     request.args,
                     deadline.saturating_duration_since(Instant::now()),
-                )
-            });
+                ),
+            ));
             finished.store(true, Ordering::Release);
             result
         })
@@ -520,27 +537,25 @@ impl axo_computer_use::ComputerHost for InputHost<'_> {
                 .computer_use_enabled
             && !axo_computer::screen_locked()
     }
-    fn ask_with(
-        &self,
+    fn ask_with<'a>(
+        &'a self,
         session: SessionId,
-        message: &str,
+        message: &'a str,
         asker: Asker,
         input: Option<axo_protocol::elicitation::InputRequest>,
         timeout: Duration,
-    ) -> Result<
-        (
-            axo_protocol::elicitation::ElicitationOutcome,
-            Option<axo_questions::Values>,
-        ),
-        jsonrpc_core::Error,
-    > {
-        self.backend
-            .computer
-            .inputs
-            .ask_with(self.backend, session, message, asker, input, timeout)
+    ) -> axo_computer_use::HostFuture<'a, Result<axo_questions::Answer, jsonrpc_core::Error>> {
+        Box::pin(self.backend.computer.inputs.ask_with(
+            self.backend,
+            session,
+            message,
+            asker,
+            input,
+            timeout,
+        ))
     }
-    fn input_key(&self) -> Option<&axo_seal::InputKey> {
-        self.backend.computer.key(&self.backend.directory)
+    fn input_key(&self) -> axo_computer_use::HostFuture<'_, Option<&axo_seal::InputKey>> {
+        Box::pin(async move { self.backend.computer.key(&self.backend.directory) })
     }
     fn agent_socket(&self) -> Option<PathBuf> {
         Some(self.backend.directory.clone())

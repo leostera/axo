@@ -114,7 +114,18 @@ struct Reading {
 /// A window with a form: read once, then filled only if it is unchanged. [`Form`] is the real
 /// one; tests stand in for it. Its calls block on the app's accessibility: run them off the
 /// runtime.
-trait Window: Send {
+// Unix accessibility calls move to the blocking pool. Windows UIA interfaces stay
+// on the dedicated native worker that created them; they are deliberately not Send.
+#[cfg(unix)]
+trait WindowThread: Send {}
+#[cfg(unix)]
+impl<T: Send> WindowThread for T {}
+#[cfg(windows)]
+trait WindowThread {}
+#[cfg(windows)]
+impl<T> WindowThread for T {}
+
+trait Window: WindowThread {
     fn reading(&self) -> Reading;
     fn check_unchanged(&self, fields: &[usize], submit: Option<usize>) -> Result<(), FormError>;
     fn fill(&self, field: usize, value: &str) -> Result<(), FormError>;
@@ -154,6 +165,10 @@ pub type HostFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 /// What computer use needs of the rest of axod.
 pub trait ComputerHost: Send + Sync {
+    /// Rechecked between native form operations when a platform has a revocable opt-in.
+    fn input_allowed(&self) -> bool {
+        true
+    }
     /// Asks the person in `session_id` and waits, for a form when `input` is given.
     fn ask_with<'a>(
         &'a self,
@@ -323,6 +338,9 @@ impl ComputerUse {
         if args.get("target").is_some() {
             return sudo_input::request(host, session_id, args, timeout).await;
         }
+        if !host.input_allowed() {
+            return refused("Not done: input permission was revoked or the caller is gone.");
+        }
         let args: InputArgs = match serde_json::from_value(args) {
             Ok(args) => args,
             Err(error) => {
@@ -392,7 +410,29 @@ impl ComputerUse {
         };
         let fields = plan.picked.len();
         let submitted = plan.submit.is_some();
-        let receipt = off_runtime(move || fill(&*window.lock().unwrap(), &plan, &values)).await;
+        let cancellation = axo_ipc::cancel::current();
+        #[cfg(unix)]
+        let receipt = off_runtime(move || {
+            fill(
+                &*window.lock().unwrap(),
+                &plan,
+                &values,
+                &cancellation,
+                &|| true,
+            )
+        })
+        .await;
+        #[cfg(windows)]
+        let receipt = off_runtime(move || {
+            fill(
+                &*window.lock().unwrap(),
+                &plan,
+                &values,
+                &cancellation,
+                &|| host.input_allowed(),
+            )
+        })
+        .await;
         log::info!(
             "event=input.filled fields={fields} submitted={submitted} outcome={}",
             if receipt["isError"] == json!(true) {
@@ -407,7 +447,17 @@ impl ComputerUse {
 
 /// Fills the person's values into the window if it is unchanged, presses the button asked for,
 /// and answers with a receipt that never shows them.
-fn fill(window: &dyn Window, plan: &FillPlan, values: &Values) -> Value {
+fn fill(
+    window: &dyn Window,
+    plan: &FillPlan,
+    values: &Values,
+    cancellation: &axo_ipc::cancel::Cancellation,
+    allowed: &dyn Fn() -> bool,
+) -> Value {
+    let revoked = || cancellation.is_cancelled() || !allowed();
+    if revoked() {
+        return refused("Not filled: input permission was revoked or the caller is gone.");
+    }
     let FillPlan {
         form,
         picked,
@@ -437,12 +487,18 @@ fn fill(window: &dyn Window, plan: &FillPlan, values: &Values) -> Value {
         axo_computer::filled::remember(value);
     }
     for (position, field) in picked.iter().enumerate() {
+        if revoked() {
+            return refused("Input stopped: permission was revoked or the caller is gone.");
+        }
         let Some(value) = values.get(&format!("f{position}")) else {
             return refused("Not filled: a value is missing.");
         };
         if let Err(error) = window.fill(field.index, value) {
             return refused(format!("Not filled: {error}."));
         }
+    }
+    if revoked() {
+        return refused("Not submitted: permission was revoked or the caller is gone.");
     }
     let pressed = match submit {
         Some(index) => match window.press(*index) {
@@ -479,11 +535,19 @@ fn fill(window: &dyn Window, plan: &FillPlan, values: &Values) -> Value {
 
 /// Runs the accessibility or Cua work of a call on the blocking pool. A panic there is this
 /// call's.
+#[cfg(unix)]
 async fn off_runtime<R: Send + 'static>(work: impl FnOnce() -> R + Send + 'static) -> R {
     match tokio::task::spawn_blocking(work).await {
         Ok(result) => result,
         Err(error) => std::panic::resume_unwind(error.into_panic()),
     }
+}
+
+/// Windows entry points already own a blocking worker. UIA's thread-affine handles
+/// must never move to another worker while a form waits for the person's answer.
+#[cfg(windows)]
+async fn off_runtime<R>(work: impl FnOnce() -> R) -> R {
+    work()
 }
 
 fn title_case(word: &str) -> String {
@@ -494,6 +558,7 @@ fn title_case(word: &str) -> String {
         .unwrap_or_default()
 }
 
+#[cfg(unix)]
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ComputerInput {
@@ -509,11 +574,13 @@ const AXOD_ONLY: Only = Only {
 };
 
 /// `axo.computer.input`, for axod's own `axod mcp`.
+#[cfg(unix)]
 pub struct ComputerExtension {
     computer: Arc<ComputerUse>,
     host: Arc<dyn ComputerHost>,
 }
 
+#[cfg(unix)]
 impl ComputerExtension {
     pub fn new(computer: Arc<ComputerUse>, host: Arc<dyn ComputerHost>) -> Self {
         Self { computer, host }
@@ -1023,6 +1090,7 @@ mod tests {
         assert!(host.asked().is_empty() && keyless.asked().is_empty());
     }
 
+    #[cfg(unix)]
     #[test]
     fn the_extension_offers_input_to_axod_alone() {
         let extension = ComputerExtension::new(
@@ -1075,6 +1143,7 @@ mod tests {
         changed: bool,
         fill_fails: bool,
         press_fails: bool,
+        cancel_after_fill: Option<axo_ipc::cancel::Cancellation>,
         filled: Arc<Mutex<Vec<(usize, String)>>>,
         pressed: Arc<Mutex<Vec<usize>>>,
     }
@@ -1118,6 +1187,9 @@ mod tests {
                 return Err(FormError("the field took no value".into()));
             }
             self.filled.lock().unwrap().push((field, value.to_owned()));
+            if let Some(cancellation) = &self.cancel_after_fill {
+                cancellation.cancel();
+            }
             Ok(())
         }
         fn press(&self, button: usize) -> Result<(), FormError> {
@@ -1154,6 +1226,87 @@ mod tests {
         let key = host.key.as_ref().unwrap().public_key();
         let window: Arc<Mutex<dyn Window>> = Arc::new(Mutex::new(window.clone()));
         block(computer.ask_and_fill(host, &asking, &args, key, window))
+    }
+
+    #[test]
+    fn cancelled_input_never_writes_or_submits() {
+        let window = FakeWindow::sign_in();
+        let args = serde_json::from_value(sign_in_args()).unwrap();
+        let plan = FillPlan::pick(window.reading(), &args).unwrap();
+        let cancellation = axo_ipc::cancel::Cancellation::default();
+        cancellation.cancel();
+        let receipt = fill(
+            &window,
+            &plan,
+            &values(&[
+                ("f0", "cancel-before@example.test"),
+                ("f1", "not-written-secret"),
+            ]),
+            &cancellation,
+            &|| true,
+        );
+        assert_eq!(receipt["isError"], true);
+        assert!(window.filled.lock().unwrap().is_empty());
+        assert!(window.pressed.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn cancellation_between_fields_stops_before_the_next_field_or_submit() {
+        let cancellation = axo_ipc::cancel::Cancellation::default();
+        let window = FakeWindow {
+            cancel_after_fill: Some(cancellation.clone()),
+            ..FakeWindow::sign_in()
+        };
+        let args = serde_json::from_value(sign_in_args()).unwrap();
+        let plan = FillPlan::pick(window.reading(), &args).unwrap();
+        let receipt = fill(
+            &window,
+            &plan,
+            &values(&[
+                ("f0", "cancel-midway@example.test"),
+                ("f1", "second-field-not-written"),
+            ]),
+            &cancellation,
+            &|| true,
+        );
+        assert_eq!(receipt["isError"], true);
+        assert_eq!(window.filled.lock().unwrap().len(), 1);
+        assert!(window.pressed.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn permission_revoked_after_filling_prevents_submit() {
+        let window = FakeWindow::sign_in();
+        let args = serde_json::from_value(sign_in_args()).unwrap();
+        let plan = FillPlan::pick(window.reading(), &args).unwrap();
+        let receipt = fill(
+            &window,
+            &plan,
+            &values(&[
+                ("f0", "revoke-submit@example.test"),
+                ("f1", "synthetic-revoked-password"),
+            ]),
+            &axo_ipc::cancel::Cancellation::default(),
+            &|| window.filled.lock().unwrap().len() < 2,
+        );
+        assert_eq!(receipt["isError"], true);
+        assert_eq!(window.filled.lock().unwrap().len(), 2);
+        assert!(window.pressed.lock().unwrap().is_empty());
+    }
+
+    #[cfg(windows)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn windows_native_work_stays_on_its_owning_thread_even_for_non_send_handles() {
+        let owner = std::thread::current().id();
+        let handle = std::rc::Rc::new(std::cell::Cell::new(0));
+        let observed = handle.clone();
+        let thread = off_runtime(move || {
+            handle.set(1);
+            std::thread::current().id()
+        })
+        .await;
+        assert_eq!(thread, owner);
+        assert_eq!(observed.get(), 1);
     }
 
     const SIGN_IN: &str = "Sign in";

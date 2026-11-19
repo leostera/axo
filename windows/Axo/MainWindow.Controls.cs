@@ -110,7 +110,7 @@ public partial class MainWindow
         // Snapshot visible IDs, as CommandPaletteCatalog/Performer do on Mac.
         var entries = new List<(string Label, Action Run)>();
         foreach (var s in allSessions.ToArray()) { var id = s.Id; entries.Add(($"{s.Name} — {s.Directory}", () => { var live = Sessions.FirstOrDefault(s => s.Id == id); if (live is not null) SessionList.SelectedItem = live; })); }
-        entries.Add(("New Workspace…", () => OpenFolder(this, new()))); entries.Add(("New Session", () => ChooseNewSession(this, new())));
+        entries.Add(("New Session…", () => OpenFolder(this, new()))); entries.Add(("New Session", () => ChooseNewSession(this, new())));
         var selectedId = selected;
         if (selectedId is not null)
         {

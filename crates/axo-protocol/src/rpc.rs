@@ -1071,6 +1071,10 @@ mod tests {
     use serde_json::json;
 
     const SID: &str = "2f5c3a1e-8d4b-4c6a-9e1f-0b7d3c2a5e41";
+    #[cfg(windows)]
+    const FOLDER: &str = r"C:\tmp";
+    #[cfg(not(windows))]
+    const FOLDER: &str = "/tmp";
 
     #[test]
     fn parameters_reject_unknown_fields_and_invalid_ids() {
@@ -1098,20 +1102,20 @@ mod tests {
         let parse = |value| serde_json::from_value::<CreateSession>(value);
         assert_eq!(parse(json!({})).unwrap(), CreateSession::default());
         assert_eq!(
-            parse(json!({ "folder": "/tmp" })).unwrap(),
-            CreateSession::from(SessionLocation::InFolder("/tmp".into()))
+            parse(json!({ "folder": FOLDER })).unwrap(),
+            CreateSession::from(SessionLocation::InFolder(FOLDER.into()))
         );
         assert_eq!(
             parse(json!({ "like": SID })).unwrap(),
             CreateSession::from(SessionLocation::Like(SID.parse().unwrap()))
         );
-        let both = parse(json!({ "folder": "/tmp", "like": SID })).unwrap_err();
+        let both = parse(json!({ "folder": FOLDER, "like": SID })).unwrap_err();
         assert!(both.to_string().contains("not both"), "{both}");
         let relative = parse(json!({ "folder": "tmp" })).unwrap_err();
         assert!(relative.to_string().contains("absolute"), "{relative}");
         for create in [
             CreateSession::default(),
-            CreateSession::from(SessionLocation::InFolder("/tmp".into())),
+            CreateSession::from(SessionLocation::InFolder(FOLDER.into())),
             CreateSession::from(SessionLocation::Like(SID.parse().unwrap())),
         ] {
             let wire = serde_json::to_value(&create).unwrap();
@@ -1123,7 +1127,7 @@ mod tests {
     fn creation_names_are_parsed_independently_of_location() {
         for location in [
             serde_json::json!({}),
-            serde_json::json!({"folder":"/tmp"}),
+            serde_json::json!({"folder":FOLDER}),
             serde_json::json!({"like":SID}),
         ] {
             let mut wire = location;
@@ -1149,7 +1153,7 @@ mod tests {
         assert!(serde_json::from_value::<CreateSession>(serde_json::json!({"name":7})).is_err());
         assert!(
             serde_json::from_value::<CreateSession>(
-                serde_json::json!({"name":"ok","folder":"/tmp","like":SID})
+                serde_json::json!({"name":"ok","folder":FOLDER,"like":SID})
             )
             .is_err()
         );
