@@ -16,7 +16,7 @@ import { appsResults, type PiModel } from "@axo/protocol";
 import { oauthStart, parseRoute, parseSettingsRoute, routePath, settingsPath, signInTarget, type SettingsRoute } from "../src/chat/route.ts";
 import { parseAuthenticatedSession } from "../src/auth-session.ts";
 import { ChatCache } from "../src/chat/cache.ts";
-import { adjacentChat, chatSections, shownChatSections, defaultGrouping, groupOf, holdingSections, parseGrouping, SessionPins, SessionSeen } from "../src/chat/sidebar.ts";
+import { adjacentChat, chatSections, shownChatSections, defaultGrouping, groupOf, holdingSections, parseGrouping, updateActivityFocus, SessionPins, SessionSeen } from "../src/chat/sidebar.ts";
 import { ChatWorkbench, lastActivity, recentChatList, shortAge, type AccountLink, type ChatBackend, type Session } from "../src/chat/workbench.ts";
 
 test("terminal-only and untitled prompts never manufacture remote question cards", () => {
@@ -308,6 +308,22 @@ test("chats group as on the Mac: pinned, then working, asking or recently active
   assert.equal(groupOf(older, { ...state, seen: unseen }), "earlier");
   assert.equal(groupOf(older, { ...state, seen: unseen.marked(older, now) }), "earlier");
   assert.deepEqual(chatSections(entries, { ...state, seen: unseen }), chatSections(entries, { ...state, seen: unseen.allMarked(entries, now) }), "Mark all read never reclassifies chats");
+});
+
+test("viewing latches an Active group only until focus moves or the page is hidden", () => {
+  let focus = updateActivityFocus({ viewed: null, keepingActive: null }, "host/a", true);
+  focus = updateActivityFocus(focus, "host/a", false);
+  assert.equal(focus.keepingActive, "host/a", "aging does not move the viewed Active chat");
+  focus = updateActivityFocus(focus, "host/b", false);
+  assert.equal(focus.keepingActive, null, "opening Earlier is not activity");
+  focus = updateActivityFocus(focus, "host/b", true);
+  assert.equal(focus.keepingActive, "host/b", "real new work can become Active while viewed");
+  focus = updateActivityFocus(focus, "another-host/b", false);
+  assert.equal(focus.keepingActive, null, "focus does not cross hosts");
+  focus = updateActivityFocus(focus, "host/a", true);
+  focus = updateActivityFocus(focus, null, false);
+  focus = updateActivityFocus(focus, "host/a", false);
+  assert.equal(focus.keepingActive, null, "returning to an old chat does not restore an expired latch");
 });
 
 test("keyboard neighbors use rendered sections, not recency, and skip folded or limited rows", () => {

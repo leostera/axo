@@ -70,6 +70,7 @@ struct WorkbenchView: View {
   /// Held, not observed: taking hold as the menu opens is what that redraw just showed, so it
   /// redraws nothing more (twice per swipe otherwise); pinning redraws anyway.
   @State private var held = HeldGroups()
+  @State private var activityFocus = ChatActivityFocus()
 
   private final class HeldGroups {
     var groups: [ChatGroupSection]?
@@ -145,8 +146,7 @@ struct WorkbenchView: View {
 
   // The layers are built here, once per change to what they show; `LayerStack` alone moves
   // them, on every frame of a swipe.
-  var body: some View {
-    let _ = RenderCount.note("Workbench")
+  private var workbenchContent: some View {
     Group {
       if horizontalSizeClass == .regular {
         NavigationSplitView(columnVisibility: $splitVisibility) {
@@ -195,6 +195,11 @@ struct WorkbenchView: View {
       }
     }
     .modifier(RequestNotificationsModifier(phone: workbench, openConversation: openNotification))
+  }
+
+  var body: some View {
+    let _ = RenderCount.note("Workbench")
+    workbenchContent
     .onChange(of: layer) { _, layer in
       // The keyboard belongs to the conversation's box; it goes when the conversation does.
       if layer != .conversation {
@@ -206,6 +211,9 @@ struct WorkbenchView: View {
     // The open chat's messages are seen as they arrive.
     .onChange(of: currentSession.map { ChatMenu.activity($0) }, initial: true) {
       if let currentSession, conversationIsVisible { chatPrefs.markSeen(currentSession) }
+    }
+    .onChange(of: focusObservation, initial: true) { _, focus in
+      activityFocus.update(viewed: focus.key, isActive: focus.group == .active)
     }
     .onChange(of: currentSession?.sessionId) {
       if let currentSession, conversationIsVisible { chatPrefs.markSeen(currentSession) }
@@ -379,6 +387,22 @@ struct WorkbenchView: View {
     horizontalSizeClass == .regular || UIDevice.current.userInterfaceIdiom == .pad
   }
 
+  private struct FocusObservation: Equatable {
+    let key: ChatMenuEntry.Key?
+    let group: ChatGroup?
+  }
+
+  private var focusObservation: FocusObservation {
+    guard scenePhase == .active, conversationIsVisible, settings == nil,
+      !showingSearch, !showingRequests, !showingPairing,
+      let selection = workbench.selection,
+      let entry = ChatMenu.recent(hosts: workbench.hosts.hosts, sessionsOf: workbench.sessions(of:)).first(where: {
+        $0.host.hostId == selection.host && $0.session.sessionId == selection.session
+      }) else { return FocusObservation(key: nil, group: nil) }
+    return FocusObservation(key: entry.key, group: ChatGrouping.group(of: entry,
+      pins: chatPrefs.pins, seen: chatPrefs.seen, now: Int64(Date.now.timeIntervalSince1970), settings: chatPrefs.settings))
+  }
+
   private var conversationIsVisible: Bool {
     detail == .conversation && (horizontalSizeClass == .regular || layer == .conversation)
   }
@@ -532,7 +556,8 @@ struct WorkbenchView: View {
     ChatGrouping.sections(
       ChatMenu.recent(hosts: workbench.hosts.hosts, sessionsOf: workbench.sessions(of:)),
       pins: chatPrefs.pins, seen: chatPrefs.seen, now: Int64(now.timeIntervalSince1970),
-      settings: chatPrefs.settings)
+      settings: chatPrefs.settings,
+      keepingActive: activityFocus.viewed == focusObservation.key ? activityFocus.keepingActive : nil)
   }
 
   /// A line of the grouped list. One flat list rather than a ForEach per group: a lazy stack
@@ -595,8 +620,6 @@ struct WorkbenchView: View {
     if unseen > 0 {
       Button {
         chatPrefs.markAllSeen(all.map(\.session))
-        // Seen chats leave Active now, not on the list's next slow regrouping.
-        held.groups = liveGroups(now: .now)
       } label: {
         Image(systemName: "checkmark")
           .font(.system(size: 17, weight: .semibold))

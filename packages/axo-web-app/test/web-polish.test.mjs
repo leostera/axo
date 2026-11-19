@@ -226,6 +226,31 @@ test("bracket navigation holds the visible order while opening unread sessions m
   } finally { await app?.close(); }
 });
 
+test("an Active chat stays Active while viewed but opening Earlier does not promote it", browserOptions, async () => {
+  const now = Math.floor(Date.now() / 1000);
+  const sessions = ["Viewed", "Other"].map((name, index) => {
+    const row = listed(sid(index + 1), name, 1);
+    row.metadata.lastMessageAt = now - 5;
+    return row;
+  });
+  const cloud = await startCloud(new Map(sessions.map(row => [row.sessionId, [record(1, { role: "user", content: row.metadata.name })]])), sessions);
+  let app;
+  try {
+    app = await startApp(cloud);
+    const page = await app.browser.newPage({ viewport: { width: 1100, height: 800 } });
+    await page.clock.install({ time: new Date(now * 1000) });
+    await page.goto(`${app.appUrl}/__tests__/chat/${hostId}/${sid(1)}`, { waitUntil: "networkidle" });
+    assert.equal(await page.locator('.chat-section[aria-label="Active"] .chat-row-name').count(), 2);
+    await page.clock.fastForward(4 * 60_000);
+    await page.waitForFunction(() => document.querySelectorAll('.chat-section[aria-label="Earlier"] .chat-row-name').length === 1);
+    assert.deepEqual(await page.locator('.chat-section[aria-label="Active"] .chat-row-name').allTextContents(), ["Viewed"]);
+    await page.locator(".chat-row-name").filter({ hasText: /^Other$/ }).click();
+    await page.getByRole("textbox", { name: "Message", exact: true }).click();
+    await page.waitForFunction(() => document.querySelectorAll('.chat-section[aria-label="Earlier"] .chat-row-name').length === 2);
+    assert.equal(await page.locator('.chat-section[aria-label="Active"]').count(), 0);
+  } finally { await app?.close(); }
+});
+
 test("mark all read clears badges without moving unread Earlier chats on desktop and phone", browserOptions, async () => {
   const now = Math.floor(Date.now() / 1000);
   const sessions = ["A", "B", "C"].map((name, index) => {

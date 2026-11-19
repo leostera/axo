@@ -105,6 +105,30 @@ final class ChatGroupsTests: XCTestCase {
     XCTAssertEqual(ChatGrouping.group(of: old, pins: ChatPins(), seen: seen, now: now), .earlier)
   }
 
+  func testFocusRetainsActiveWithoutPromotingEarlierOrCrossingHosts() {
+    let recent = entry(1, name: "recent", ago: 30)
+    let old = entry(2, name: "old", ago: 3600)
+    let seen = ChatSeen(baseline: now)
+    var focus = ChatActivityFocus()
+    focus.update(viewed: recent.key, isActive: true)
+    focus.update(viewed: recent.key, isActive: false)
+    XCTAssertEqual(ChatGrouping.group(of: recent, pins: ChatPins(), seen: seen, now: now + 7200,
+      keepingActive: focus.keepingActive), .active)
+    focus.update(viewed: old.key, isActive: false)
+    XCTAssertNil(focus.keepingActive)
+    XCTAssertEqual(ChatGrouping.group(of: old, pins: ChatPins(), seen: seen, now: now,
+      keepingActive: focus.keepingActive), .earlier)
+    focus.update(viewed: old.key, isActive: true)
+    XCTAssertEqual(focus.keepingActive, old.key, "Genuine new activity can latch a viewed Earlier chat")
+    let otherHost = ChatMenuEntry.Key(host: UUID(), session: old.session.sessionId)
+    focus.update(viewed: otherHost, isActive: false)
+    XCTAssertNil(focus.keepingActive, "The same Session ID on another host is a different chat")
+    focus.update(viewed: recent.key, isActive: true)
+    focus.update(viewed: nil, isActive: false)
+    focus.update(viewed: recent.key, isActive: false)
+    XCTAssertNil(focus.keepingActive, "Backgrounding ends the viewing interval")
+  }
+
   func testPinsAreCappedOldestFirstAndKeptForChatsNotListed() {
     var pins = ChatPins((1...UInt32(ChatPins.capacity)).map { SessionID.fixture($0) })
     pins.toggle(.fixture(9_999))

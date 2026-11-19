@@ -84,6 +84,7 @@ final class TerminalSessionsModel {
   private(set) var sessionPins: SessionPins
   /// When this Mac last saw each Session, for the sidebar's Active group.
   private(set) var sessionSeen: SessionSeen
+  private var activityFocus = SessionActivityFocus()
   /// The time the sidebar's groups are worked out at; it moves on a slow tick
   /// (`advanceSidebarClock`) so Sessions leave the Active group in batches, not one by one.
   private(set) var sidebarClock: Date = .now
@@ -92,7 +93,10 @@ final class TerminalSessionsModel {
   /// Whether the person can see the selected Session now, which marks it seen; tests replace it.
   /// Dormant Pi panes being started because their Session was shown.
   @ObservationIgnored private var wakingPis: Set<ShellID> = []
-  @ObservationIgnored var isLookingAtSelection: @MainActor () -> Bool = { NSApplication.shared.isActive }
+  @ObservationIgnored var isLookingAtSelection: @MainActor () -> Bool = {
+    NSApplication.shared.isActive
+      && NSApplication.shared.keyWindow?.identifier?.rawValue.hasPrefix(TerminalWindowOpener.windowID) == true
+  }
 
   /// What agents and Axo's tools ask the person on this Mac (RFD0029).
   @ObservationIgnored let elicitations: ElicitationsModel
@@ -250,7 +254,8 @@ final class TerminalSessionsModel {
     let listed = sessions.filter { sidebarMacs.includes(hostID: peerHostBySession[$0.id]) }
     return SessionGrouping.sections(
       listed, pins: sessionPins, seen: sessionSeen,
-      now: Int64(sidebarClock.timeIntervalSince1970), settings: sidebarGrouping)
+      now: Int64(sidebarClock.timeIntervalSince1970), settings: sidebarGrouping,
+      keepingActive: isLookingAtSelection() ? activityFocus.keepingActive : nil)
   }
 
   func isPinned(_ sessionID: SessionID) -> Bool { sessionPins.contains(sessionID) }
@@ -571,18 +576,38 @@ final class TerminalSessionsModel {
 
   /// Moves the time the sidebar's groups are worked out at; the sidebar calls it on a slow tick.
   func advanceSidebarClock(to date: Date = .now) {
+    updateActivityFocus()
     assign(\.sidebarClock, date)
   }
 
   /// Marks the selected Session seen if the person can see it: when it is selected, when it
   /// changes while selected, and when Axo comes to the front.
   /// The person came back to Axo: the selected Session is seen, and its Pi woken if it slept.
-  func appBecameActive() {
+  func appBecameActive(now: Date = .now) {
+    // A hidden/closed window may have missed grouping ticks; never latch stale recency.
+    assign(\.sidebarClock, now)
     markSelectionSeen()
     wakeSelectedPi()
   }
 
+  func selectionDidLoseFocus() {
+    assign(\.activityFocus, SessionActivityFocus())
+  }
+
+  private func updateActivityFocus() {
+    guard isLookingAtSelection(), let id = selectedSessionID, let session = session(for: id) else {
+      selectionDidLoseFocus()
+      return
+    }
+    let group = SessionGrouping.group(of: session, pins: sessionPins, seen: sessionSeen,
+      now: Int64(sidebarClock.timeIntervalSince1970), settings: sidebarGrouping)
+    var next = activityFocus
+    next.update(viewed: id, isActive: group == .active)
+    assign(\.activityFocus, next)
+  }
+
   func markSelectionSeen() {
+    updateActivityFocus()
     guard let id = selectedSessionID, let session = session(for: id), isLookingAtSelection()
     else { return }
     guard sessionSeen.markSeen(session, now: Int64(Date.now.timeIntervalSince1970)) else { return }

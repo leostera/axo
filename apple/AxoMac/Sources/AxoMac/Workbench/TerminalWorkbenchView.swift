@@ -54,6 +54,26 @@ struct TerminalWorkbenchView: View {
     // WindowDragStrip stands in for the hidden title bar.
     .ignoresSafeArea(.container, edges: .top)
     .frame(minWidth: 760, maxWidth: .infinity, minHeight: 480, maxHeight: .infinity)
+    // Window lifecycle belongs here, not in the sidebar that Zen mode removes.
+    .task(id: sessions.sidebarGrouping.regroupIntervalSeconds) {
+      while !Task.isCancelled {
+        try? await Task.sleep(for: .seconds(sessions.sidebarGrouping.regroupIntervalSeconds))
+        if Task.isCancelled { break }
+        sessions.advanceSidebarClock()
+      }
+    }
+    .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+      sessions.appBecameActive()
+    }
+    .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { _ in
+      sessions.appBecameActive()
+    }
+    .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in
+      sessions.selectionDidLoseFocus()
+    }
+    .onReceive(NotificationCenter.default.publisher(for: NSWindow.didResignKeyNotification)) { _ in
+      sessions.selectionDidLoseFocus()
+    }
     .sheet(isPresented: $isPresentingNewSessionInFolder) {
       NewSessionInFolderSheet(sessions: sessions)
     }

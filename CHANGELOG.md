@@ -10,6 +10,7 @@ What changed in each published version of Axo. Every publish raises the minor ve
 
 ### Fixed
 
+- An Active conversation stays in Active while being viewed on Mac, iPhone/iPad and web. Opening an Earlier conversation does not promote it; changing conversations or leaving the view releases retention. Grouping and focus tracking continue in Mac Zen mode.
 - Unread conversations can remain in Earlier on Mac, iPhone/iPad and web. Reading one or marking all read no longer moves old conversations out of Active. Removed the obsolete keep-unread-active setting without resetting read markers or other preferences.
 - OpenCode and Codex Sessions start again while a Pi Session is open. Their servers were stopped as soon as they started, and OpenCode reported that its server "did not say where it listens".
 - Claude Code's replies appear in Axo's conversation again. Claude Code 2.1.327 writes its reply to disk only after it reports the turn finished, so Axo kept only the prompt.

@@ -125,18 +125,6 @@ struct WorkbenchSidebar: View {
     }
     .animation(.easeInOut(duration: 0.2), value: sections.map { $0.sessions.map(\.id) })
     .onHover { sessions.holdRecentOrder($0) }
-    .task(id: sessions.sidebarGrouping.regroupIntervalSeconds) {
-      // Sessions leave the Active group on this tick, a few at a time, not one by one.
-      let interval = sessions.sidebarGrouping.regroupIntervalSeconds
-      while !Task.isCancelled {
-        try? await Task.sleep(for: .seconds(interval))
-        if Task.isCancelled { break }
-        sessions.advanceSidebarClock()
-      }
-    }
-    .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
-      sessions.appBecameActive()
-    }
   }
 
   private func sessionButton(for session: TerminalSession, showsAge: Bool = false) -> some View {

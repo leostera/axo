@@ -113,6 +113,42 @@ final class SessionNavigationTests: XCTestCase {
     XCTAssertEqual(later.map { $0.sessions.map(\.id) }, [[7], [6], [2, 1, 5, 3, 4]])
   }
 
+  @MainActor
+  func testViewingAnActiveSessionKeepsItsGroupButOpeningEarlierDoesNotPromoteIt() async throws {
+    let suite = "axo-focus-groups-\(UUID().uuidString)"
+    let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+    defer { defaults.removePersistentDomain(forName: suite) }
+    let now = Date.now
+    let timestamp = Int64(now.timeIntervalSince1970)
+    let client = FakeAxodClient()
+    client.sessions = [
+      TerminalSession(id: 1, folder: "/", shells: [], name: "recent", lastMessageAt: timestamp),
+      TerminalSession(id: 2, folder: "/", shells: [], name: "earlier", lastMessageAt: timestamp - 7200),
+    ]
+    let model = TerminalSessionsModel(client: client, selectedSessionDefaults: defaults)
+    var looking = true
+    model.isLookingAtSelection = { looking }
+    await model.refresh()
+    model.showSession(1)
+    model.advanceSidebarClock(to: now.addingTimeInterval(3600))
+    XCTAssertEqual(model.sidebarSections.first(where: { $0.group == .active })?.sessions.map(\.id), [1])
+    model.showSession(2)
+    XCTAssertFalse(model.sidebarSections.contains { $0.group == .active }, "Looking at Earlier is not activity")
+    // Real work while viewing an Earlier chat legitimately makes it Active.
+    client.sessions[1] = TerminalSession(id: 2, folder: "/", shells: [], name: "earlier", lastMessageAt: timestamp - 7200, status: .working)
+    await model.refresh()
+    client.sessions[1] = TerminalSession(id: 2, folder: "/", shells: [], name: "earlier", lastMessageAt: timestamp - 7200)
+    await model.refresh()
+    XCTAssertEqual(model.sidebarSections.first(where: { $0.group == .active })?.sessions.map(\.id), [2])
+    looking = false
+    model.selectionDidLoseFocus()
+    model.advanceSidebarClock(to: now.addingTimeInterval(7200))
+    XCTAssertFalse(model.sidebarSections.contains { $0.group == .active })
+    looking = true
+    model.appBecameActive(now: now.addingTimeInterval(7200))
+    XCTAssertFalse(model.sidebarSections.contains { $0.group == .active }, "Returning cannot revive an expired Active latch")
+  }
+
   func testGroupingSettingsChangeTheWindowAndOrdersButNeverUseUnreadAsActivity() {
     let now: Int64 = 10_000
     let seen = SessionSeen(baseline: 5_000)
@@ -260,7 +296,9 @@ final class SessionNavigationTests: XCTestCase {
     XCTAssertFalse(model.isUnseen(try XCTUnwrap(model.session(for: 2))))
     XCTAssertEqual(model.sidebarSections.map { $0.sessions.map(\.id) }, [[2, 1]])
 
-    // Remembered by the next launch, as are the grouping settings.
+    // Remembered by the next launch, as are the grouping settings. Stop viewing so time can regroup it.
+    looking = false
+    model.selectionDidLoseFocus()
     var grouping = SidebarGroupingSettings()
     grouping.earlierOrder = .name
     model.setSidebarGrouping(grouping)

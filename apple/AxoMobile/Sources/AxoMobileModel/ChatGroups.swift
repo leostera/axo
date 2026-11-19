@@ -231,6 +231,19 @@ public struct ChatGroupingSettings: Codable, Equatable, Sendable {
 
 // MARK: - Grouping
 
+public struct ChatActivityFocus: Equatable {
+  public private(set) var viewed: ChatMenuEntry.Key?
+  public private(set) var keepingActive: ChatMenuEntry.Key?
+
+  public init() {}
+
+  public mutating func update(viewed next: ChatMenuEntry.Key?, isActive: Bool) {
+    if viewed != next { keepingActive = nil }
+    viewed = next
+    if isActive { keepingActive = next }
+  }
+}
+
 public enum ChatGrouping {
   /// Folding and limits hide other chats, never the selected destination. Preserve list order.
   public static func visible(
@@ -252,10 +265,11 @@ public enum ChatGrouping {
   /// do not change a chat's group.
   public static func group(
     of entry: ChatMenuEntry, pins: ChatPins, seen: ChatSeen, now: Int64,
-    settings: ChatGroupingSettings = .init(), asking: Set<SessionID> = []
+    settings: ChatGroupingSettings = .init(), asking: Set<SessionID> = [], keepingActive: ChatMenuEntry.Key? = nil
   ) -> ChatGroup {
     let session = entry.session
     if pins.contains(session.sessionId) { return .pinned }
+    if keepingActive == entry.key { return .active }
     if session.status == .working || session.status == .needsAttention || asking.contains(session.sessionId) {
       return .active
     }
@@ -266,10 +280,10 @@ public enum ChatGrouping {
   /// The chats in their groups, top to bottom; a group without chats is left out.
   public static func sections(
     _ entries: [ChatMenuEntry], pins: ChatPins, seen: ChatSeen, now: Int64,
-    settings: ChatGroupingSettings = .init(), asking: Set<SessionID> = []
+    settings: ChatGroupingSettings = .init(), asking: Set<SessionID> = [], keepingActive: ChatMenuEntry.Key? = nil
   ) -> [ChatGroupSection] {
     let byGroup = Dictionary(grouping: entries) {
-      group(of: $0, pins: pins, seen: seen, now: now, settings: settings, asking: asking)
+      group(of: $0, pins: pins, seen: seen, now: now, settings: settings, asking: asking, keepingActive: keepingActive)
     }
     return ChatGroup.allCases.compactMap { group in
       guard let members = byGroup[group], !members.isEmpty else { return nil }

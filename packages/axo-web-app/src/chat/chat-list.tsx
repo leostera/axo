@@ -1,9 +1,9 @@
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type PointerEvent as ReactPointerEvent } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type PointerEvent as ReactPointerEvent } from "react";
 import { Icon } from "./icons.tsx";
 import {
-  activeWindowChoices, adjacentChat, chatSections, shownChatSections, earlierLimitChoices, groupOrders, groupTitles, holdingSections, pinnedOrders,
+  activeWindowChoices, adjacentChat, chatSections, groupOf, updateActivityFocus, shownChatSections, earlierLimitChoices, groupOrders, groupTitles, holdingSections, pinnedOrders,
   regroupIntervalChoices, rowOrderTitles, saveGrouping, savePins, saveSeen, storedGrouping, storedPins, storedSeen, unseenMarkerTitles,
-  type ChatSection, type GroupingSettings, type RowOrder, type SessionPins, type SessionSeen,
+  type ChatSection, type ChatActivityFocus, type GroupingSettings, type RowOrder, type SessionPins, type SessionSeen,
 } from "./sidebar.ts";
 import { chatKey, chatTitle, lastActivity, shortAge, type ChatMenuEntry, type Host } from "./workbench.ts";
 
@@ -77,7 +77,7 @@ export function useChatListStore(): ChatListStore {
 
 /**
  * Every chat in its group, as the Mac's sidebar lists them: Pinned, then Active (working, asking,
- * just active, or not yet seen), then Earlier. Groups are worked out on a slow tick, so chats leave
+ * or recently active), then Earlier. Groups are worked out on a slow tick, so chats leave
  * Active a few at a time rather than one by one; rows hold still while the pointer is over the list.
  */
 export function ChatList({ entries, showHost, asking, openChat, pageVisible, navigationEnabled, isSelected, onSelect }: {
@@ -106,9 +106,16 @@ export function ChatList({ entries, showHost, asking, openChat, pageVisible, nav
     if (openChat && pageVisible) store.markSeen(openChat, Date.now());
   }, [openChat?.session.sessionId, openActivity, pageVisible]);
 
-  const live = useMemo(() => chatSections(entries, { pins, seen, now: clock, settings, asking }), [entries, pins, seen, clock, settings, asking]);
+  const [activityFocus, setActivityFocus] = useState<ChatActivityFocus>({ viewed: null, keepingActive: null });
+  const viewed = openChat && pageVisible && navigationEnabled ? chatKey(openChat) : null;
+  const baseGroup = openChat ? groupOf(openChat, { pins, seen, now: Date.now(), settings, asking }) : null;
+  useLayoutEffect(() => {
+    setActivityFocus(previous => updateActivityFocus(previous, viewed, baseGroup === "active"));
+  }, [viewed, baseGroup]);
+  const keepingActive = activityFocus.viewed === viewed ? activityFocus.keepingActive : null;
+  const live = useMemo(() => chatSections(entries, { pins, seen, now: clock, settings, asking, keepingActive }), [entries, pins, seen, clock, settings, asking, keepingActive]);
   const [held, setHeld] = useState<ChatSection[] | null>(null);
-  // Reading an unread row changes its group. Keep the *displayed* order fixed while navigating,
+  // Activity and focus can change groups. Keep the *displayed* order fixed while navigating,
   // not just a private keyboard cursor, until another user action ends keyboard navigation.
   const [keyboardHeld, setKeyboardHeld] = useState<ChatSection[] | null>(null);
   const ordered = holdingSections(keyboardHeld ?? held, live);

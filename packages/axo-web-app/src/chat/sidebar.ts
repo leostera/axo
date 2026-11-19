@@ -191,7 +191,19 @@ export interface ChatSection {
   readonly entries: readonly ChatMenuEntry[];
 }
 
+export interface ChatActivityFocus {
+  readonly viewed: string | null;
+  readonly keepingActive: string | null;
+}
+
+/** Only genuine activity can latch Active; merely selecting an Earlier chat cannot. */
+export function updateActivityFocus(previous: ChatActivityFocus, viewed: string | null, isActive: boolean): ChatActivityFocus {
+  const keepingActive = viewed && (isActive || previous.viewed === viewed && previous.keepingActive !== null) ? viewed : null;
+  return previous.viewed === viewed && previous.keepingActive === keepingActive ? previous : { viewed, keepingActive };
+}
+
 export interface GroupingState {
+  readonly keepingActive?: string | null;
   readonly pins: SessionPins;
   readonly seen: SessionSeen;
   /** When the groups are worked out, in milliseconds: moved on a slow tick, so chats leave Active a few at a time. */
@@ -209,6 +221,7 @@ export interface GroupingState {
 export function groupOf(entry: ChatMenuEntry, state: GroupingState): ChatGroup {
   const { session } = entry;
   if (state.pins.has(session.sessionId)) return "pinned";
+  if (state.keepingActive === chatKey(entry)) return "active";
   if (session.status === "working" || session.status === "needsAttention" || state.asking?.has(session.sessionId)) return "active";
   if (state.now - lastActivity(session) < state.settings.activeWindowMinutes * 60_000) return "active";
   return "earlier";

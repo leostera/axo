@@ -367,14 +367,26 @@ struct SidebarGroupingSettings: Codable, Equatable {
   var activeWindow: Int64 { Int64(activeWindowMinutes) * 60 }
 }
 
-/// Sorts the sidebar into groups by what needs you rather than by the minute, so a row moves
-/// only when its Session joins or leaves a group, never because another one got busier.
+/// Retains Active only for one uninterrupted interval of viewing the same Session.
+struct SessionActivityFocus: Equatable {
+  private(set) var viewed: SessionID?
+  private(set) var keepingActive: SessionID?
+
+  mutating func update(viewed next: SessionID?, isActive: Bool) {
+    if viewed != next { keepingActive = nil }
+    viewed = next
+    if isActive { keepingActive = next }
+  }
+}
+
+/// Groups depend on genuine activity and current viewing, never unread status.
 enum SessionGrouping {
   static func group(
     of session: TerminalSession, pins: SessionPins, seen: SessionSeen, now: Int64,
-    settings: SidebarGroupingSettings = .init()
+    settings: SidebarGroupingSettings = .init(), keepingActive: SessionID? = nil
   ) -> SidebarGroup {
     if pins.contains(session.id) { return .pinned }
+    if keepingActive == session.id { return .active }
     if session.status == .working || session.status == .needsAttention { return .active }
     if now - SessionActivityOrder.lastActivity(of: session) < settings.activeWindow { return .active }
     return .earlier
@@ -383,10 +395,10 @@ enum SessionGrouping {
   /// `sessions` in their groups; groups without Sessions are left out.
   static func sections(
     _ sessions: [TerminalSession], pins: SessionPins, seen: SessionSeen, now: Int64,
-    settings: SidebarGroupingSettings = .init()
+    settings: SidebarGroupingSettings = .init(), keepingActive: SessionID? = nil
   ) -> [SidebarSection] {
     let byGroup = Dictionary(grouping: sessions) {
-      group(of: $0, pins: pins, seen: seen, now: now, settings: settings)
+      group(of: $0, pins: pins, seen: seen, now: now, settings: settings, keepingActive: keepingActive)
     }
     return SidebarGroup.allCases.compactMap { group in
       guard let members = byGroup[group], !members.isEmpty else { return nil }
