@@ -343,7 +343,10 @@ struct WorkbenchView: View {
       Text(environment.account.signInFailure ?? "Unlock this device and try again.")
     }
     .onDisappear { keepInterruptedVoice() }
-    .onChange(of: workbench.selection) { keepInterruptedVoice() }
+    .onChange(of: workbench.selection) { _, destination in
+      // An explicit host choice moves the same unsent draft, including its microphone.
+      if voice?.isTargeting(destination) != true { keepInterruptedVoice() }
+    }
     .onChange(of: scenePhase) { _, phase in
       // A socket left open in the background dies unnoticed; let it go, and come back fresh.
       switch phase {

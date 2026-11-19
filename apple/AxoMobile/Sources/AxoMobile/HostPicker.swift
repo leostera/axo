@@ -7,6 +7,7 @@ import SwiftUI
 /// already going it only says where it is.
 struct HostPicker: View {
   let phone: PhoneWorkbench
+  var voice: VoicePrompt?
 
   var body: some View {
     if phone.hosts.hosts.count > 1, let host = openHost {
@@ -15,7 +16,7 @@ struct HostPicker: View {
           Menu {
             ForEach(phone.hosts.hosts, id: \.hostId) { candidate in
               Button {
-                phone.chooseHost(candidate.hostId)
+                phone.chooseHost(candidate.hostId, voice: voice)
               } label: {
                 Label {
                   Text("\(candidate.label)\(candidate.status == .online ? "" : ", offline")")

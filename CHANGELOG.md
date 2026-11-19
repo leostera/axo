@@ -10,6 +10,7 @@ What changed in each published version of Axo. Every publish raises the minor ve
 
 - Removed terminal-only and untitled placeholder question cards from phone, tablet and web conversations. Real answerable questions and approval requests remain; hidden placeholders are never automatically answered or skipped.
 - Pi’s logo has a proper intrinsic size in native agent menus instead of appearing as a tiny four-pixel mark.
+- New-session drafts and ongoing dictation survive host and agent changes. A Send already being finalized becomes a reviewable draft if its destination changes, rather than sending to the newly selected host or agent.
 
 ## 0.76 (Mac app build 348, axod 92)
 

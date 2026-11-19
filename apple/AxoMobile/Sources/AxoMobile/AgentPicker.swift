@@ -5,13 +5,14 @@ import SwiftUI
 /// Host discovery, not the static list of adapters, determines the choices.
 struct AgentPicker: View {
   @Bindable var phone: PhoneWorkbench
+  var voice: VoicePrompt?
 
   var body: some View {
     if let selection = phone.selection, selection.session == nil {
       HStack {
         if let agents = phone.availableCodingAgents, !agents.isEmpty {
           Menu {
-            Picker("Agent", selection: $phone.newChatAgent) {
+            Picker("Agent", selection: Binding(get: { phone.newChatAgent }, set: { phone.chooseAgent($0, voice: voice) })) {
               ForEach(agents) { agent in
                 Label(agent.displayName, image: agent.logoName).tag(agent)
               }
@@ -28,7 +29,7 @@ struct AgentPicker: View {
           .accessibilityLabel("Agent: \(phone.newChatAgent.displayName)")
           .accessibilityIdentifier("agent-picker")
         } else if let failure = phone.agentCatalogFailure {
-          Button(failure) { Task { await phone.refreshAvailableCodingAgents() } }.font(.caption)
+          Button(failure) { Task { await phone.refreshAvailableCodingAgents(voice: voice) } }.font(.caption)
         } else {
           Text(phone.availableCodingAgents == nil ? "Checking agents…" : "No coding agents available")
             .font(.caption).foregroundStyle(.secondary)
@@ -36,9 +37,9 @@ struct AgentPicker: View {
         Spacer(minLength: 0)
       }
       .padding(.horizontal, 16)
-      .task(id: phone.current?.reference) { await phone.refreshAvailableCodingAgents() }
+      .task(id: phone.current?.reference) { await phone.refreshAvailableCodingAgents(voice: voice) }
       .onChange(of: phone.link) { _, value in
-        if value == .connected { Task { await phone.refreshAvailableCodingAgents() } }
+        if value == .connected { Task { await phone.refreshAvailableCodingAgents(voice: voice) } }
       }
     }
   }

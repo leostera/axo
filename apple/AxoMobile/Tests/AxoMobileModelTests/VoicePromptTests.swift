@@ -176,6 +176,84 @@ final class VoicePromptTests: XCTestCase {
     XCTAssertFalse(voice.consume(transcript))
   }
 
+  func testChangingANewDraftHostKeepsRecordingAndMovesAllWordsWithTheTypedDraft() async throws {
+    let first = Mac("Studio", online: true)
+    let second = Mac("Laptop", online: true)
+    let world = PhoneWorld([first, second])
+    try await world.start()
+    let phone = world.workbench!
+    phone.select(host: first.id, session: nil)
+    let source = try XCTUnwrap(phone.selection)
+    phone.setDraft("Typed prefix", for: source)
+    let engine = FakeDictation()
+    let voice = VoicePrompt(engine: engine)
+    voice.start(in: source)
+    try await until { voice.isListening }
+    engine.say(HeardText(settled: "Keep these", tentative: " words"))
+    phone.chooseHost(second.id, voice: voice)
+    let target = try XCTUnwrap(phone.selection)
+    XCTAssertNotEqual(source, target)
+    XCTAssertEqual(target.host, second.id)
+    XCTAssertTrue(voice.isListening)
+    XCTAssertTrue(voice.isTargeting(target))
+    XCTAssertEqual(engine.cancels, 0)
+    XCTAssertEqual(engine.starts, 1)
+    XCTAssertEqual(phone.draft(for: target), "Typed prefix")
+    phone.chooseAgent(.codex, voice: voice)
+    XCTAssertTrue(voice.isListening)
+    XCTAssertEqual(phone.draft(for: target), "Typed prefix")
+    engine.finalText = "Keep these words and everything after switching"
+    voice.finish(.draft)
+    try await until { voice.transcript != nil }
+    let transcript = try XCTUnwrap(voice.transcript)
+    XCTAssertEqual(transcript.destination, target)
+    phone.setDraft(transcript.appending(to: phone.draft(for: target)), for: target)
+    XCTAssertEqual(phone.draft(for: target), "Typed prefix Keep these words and everything after switching")
+    XCTAssertEqual(phone.draft(for: source), "")
+  }
+
+  func testChangingTargetWhileFinalizingNeverSendsToTheNewTargetAutomatically() async throws {
+    for changeHost in [true, false] {
+      let engine = FakeDictation()
+      engine.holdFinish = true
+      let voice = VoicePrompt(engine: engine)
+      let original = PhoneWorkbench.Selection(host: UUID(), session: nil)
+      let target = PhoneWorkbench.Selection(host: UUID(), session: nil)
+      voice.start(in: original)
+      try await until { voice.isListening }
+      voice.finish(.send)
+      try await until { engine.isHoldingFinish }
+      if changeHost { voice.retargetNewChat(from: original, to: target) }
+      else { voice.destinationOptionsChanged() }
+      engine.releaseFinish()
+      try await until { voice.transcript != nil }
+      XCTAssertEqual(voice.transcript?.delivery, .draft)
+      XCTAssertEqual(voice.transcript?.destination, changeHost ? target : original)
+    }
+  }
+
+  func testAnExplicitSendAfterChangingHostStillSendsAndExistingChatsCannotBeRetargeted() async throws {
+    let engine = FakeDictation()
+    let voice = VoicePrompt(engine: engine)
+    let source = PhoneWorkbench.Selection(host: UUID(), session: nil)
+    let target = PhoneWorkbench.Selection(host: UUID(), session: nil)
+    voice.start(in: source)
+    try await until { voice.isListening }
+    voice.retargetNewChat(from: source, to: target)
+    voice.finish(.send)
+    try await until { voice.transcript != nil }
+    XCTAssertEqual(voice.transcript?.delivery, .send)
+    XCTAssertEqual(voice.transcript?.destination, target)
+    _ = voice.consume(try XCTUnwrap(voice.transcript))
+    let existing = PhoneWorkbench.Selection(host: UUID(), session: 1)
+    voice.start(in: existing)
+    try await until { voice.isListening }
+    voice.retargetNewChat(from: existing, to: target)
+    XCTAssertTrue(voice.isTargeting(existing))
+    voice.interrupt()
+    XCTAssertNotEqual(voice.transcript?.destination, target)
+  }
+
   func testTappingAgainWhileBusyDoesNothing() async throws {
     let engine = FakeDictation()
     let voice = VoicePrompt(engine: engine)

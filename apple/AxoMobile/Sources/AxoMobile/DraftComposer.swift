@@ -17,10 +17,11 @@ struct DraftComposer: View {
   let send: (PromptDelivery) -> Void
 
   var body: some View {
+    let destination = phone.selection
     ChatComposer(
       draft: Binding(
-        get: { phone.selection.map(phone.draft(for:)) ?? "" },
-        set: { text in if let selection = phone.selection { phone.setDraft(text, for: selection) } }),
+        get: { destination.map(phone.draft(for:)) ?? "" },
+        set: { text in if let destination { phone.setDraft(text, for: destination) } }),
       placeholder: placeholder,
       canSend: canSend && !phone.isSending,
       ready: phone.canSendDraft,
@@ -29,7 +30,7 @@ struct DraftComposer: View {
       detach: { phone.detach($0) },
       retryAttachment: { phone.retryUpload($0) },
       voice: voice,
-      voiceDestination: phone.selection,
+      voiceDestination: destination,
       showApps: showApps,
       pi: pi,
       send: send)

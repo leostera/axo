@@ -48,7 +48,7 @@ public struct VoiceTranscript: Equatable, Sendable, Identifiable {
   public let id: UUID
   public let text: String
   public let delivery: VoiceDelivery
-  /// Captured when recording starts, never inferred from whichever chat is now on screen.
+  /// Captured when recording starts; only an explicit new-draft host choice may move it.
   public let destination: PhoneWorkbench.Selection?
 
   public init(id: UUID = UUID(), text: String, delivery: VoiceDelivery, destination: PhoneWorkbench.Selection? = nil) {
@@ -116,6 +116,7 @@ public final class VoicePrompt {
   @ObservationIgnored private var cleanup: Task<Void, Never>?
   @ObservationIgnored private var lastHeard = HeardText()
   @ObservationIgnored private var destination: PhoneWorkbench.Selection?
+  @ObservationIgnored private var destinationRevision = 0
 
   public init(engine: any DictationEngine) {
     self.engine = engine
@@ -186,10 +187,35 @@ public final class VoicePrompt {
     }
   }
 
+  /// A new chat changes its execution host, not the recording or the message being composed.
+  /// Ordinary navigation must never call this: existing chats retain their original destination.
+  public func retargetNewChat(from previous: PhoneWorkbench.Selection, to next: PhoneWorkbench.Selection) {
+    guard previous.session == nil, next.session == nil, destination == previous else { return }
+    destination = next
+    destinationOptionsChanged()
+    if let transcript {
+      self.transcript = VoiceTranscript(id: transcript.id, text: transcript.text, delivery: .draft, destination: next)
+    }
+  }
+
+  public func isTargeting(_ selection: PhoneWorkbench.Selection?) -> Bool {
+    selection != nil && destination == selection && (isBusy || transcript != nil)
+  }
+
+  /// A Send already being finalized must be reviewed after the host or agent changes.
+  /// Recording itself continues; a subsequent explicit Send uses the newly selected options.
+  public func destinationOptionsChanged() {
+    destinationRevision += 1
+    if let transcript, transcript.delivery == .send {
+      self.transcript = VoiceTranscript(id: transcript.id, text: transcript.text, delivery: .draft, destination: transcript.destination)
+    }
+  }
+
   /// Stops listening; the words go to the box (`.draft`) or are sent (`.send`).
   public func finish(_ delivery: VoiceDelivery) {
     guard case .listening = state else { return }
     let current = generation
+    let destinationAtSend = destinationRevision
     state = .finishing
     work = Task { [self] in
       defer { if current == generation { work = nil } }
@@ -200,7 +226,7 @@ public final class VoicePrompt {
           if !recoverHeardDraft() { fail(.noSpeech, current) }
           return
         }
-        transcript = VoiceTranscript(text: text, delivery: delivery, destination: destination)
+        transcript = VoiceTranscript(text: text, delivery: destinationAtSend == destinationRevision ? delivery : .draft, destination: destination)
         state = .idle
       } catch {
         guard current == generation else { return }

@@ -78,7 +78,7 @@ public final class PhoneWorkbench {
     return agentCatalog
   }
 
-  public func refreshAvailableCodingAgents() async {
+  public func refreshAvailableCodingAgents(voice: VoicePrompt? = nil) async {
     guard isDrafting, link == .connected, let target = current?.reference, current?.status == .online else { return }
     let request = UUID(); agentCatalogRequest = request
     let credential = account.credentialRevision
@@ -88,12 +88,21 @@ public final class PhoneWorkbench {
       guard !Task.isCancelled, agentCatalogRequest == request, current?.reference == target,
         account.credentialRevision == credential else { return }
       agentCatalog = CodingAgent.allCases.filter { agents.contains($0) }
-      if !agents.contains(newChatAgent), let first = agentCatalog?.first { newChatAgent = first }
+      if !agents.contains(newChatAgent), let first = agentCatalog?.first {
+        voice?.destinationOptionsChanged()
+        newChatAgent = first
+      }
     } catch {
       guard agentCatalogRequest == request, current?.reference == target, account.credentialRevision == credential else { return }
       agentCatalogFailure = "Could not check agents. Tap to retry."
     }
   }
+  public func chooseAgent(_ agent: CodingAgent, voice: VoicePrompt? = nil) {
+    guard isDrafting, !isSending, newChatAgent != agent else { return }
+    voice?.destinationOptionsChanged()
+    newChatAgent = agent
+  }
+
   private var preparedChats: [DraftTarget: RemoteSession] = [:]
   @ObservationIgnored private var navigationRevision = 0
 
@@ -463,10 +472,12 @@ public final class PhoneWorkbench {
   /// The Mac a new chat starts on, chosen by the message box: what is typed comes along, and the
   /// chat starts in that Mac's home folder. Only a new chat
   /// can move, and only to another Mac of the account that is online.
-  public func chooseHost(_ hostID: UUID) {
+  public func chooseHost(_ hostID: UUID, voice: VoicePrompt? = nil) {
     guard let draft = selection, draft.session == nil, draft.host != hostID,
       hosts.hosts.contains(where: { $0.hostId == hostID && $0.status == .online })
     else { return }
+    let destination = Selection(host: hostID, session: nil)
+    voice?.retargetNewChat(from: draft, to: destination)
     let text = self.draft(for: draft)
     let files = attachments(for: draft)
     setDraft("", for: draft)

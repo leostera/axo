@@ -94,6 +94,7 @@ enum PreviewFixture {
       // A legacy non-Mac can carry the old macos tag but has no Apple hardware report.
       let osLogos = ProcessInfo.processInfo.environment["AXO_MOBILE_PREVIEW_OS_LOGOS"] == "1"
       let windows = osLogos ? #",{"hostId":"38355f00-95fd-4c93-8586-a71a8a52bf73","hostGeneration":"e3b6da28-55c0-4bb0-ac04-dd458fd41a2b","label":"Windows PC","hostKind":"windows","online":true,"lastSeenAt":"2026-10-16T00:00:00Z"}"# : ""
+      let secondOnline = ProcessInfo.processInfo.environment["AXO_MOBILE_PREVIEW_SECOND_HOST_ONLINE"] == "1"
       let mixed = ProcessInfo.processInfo.environment["AXO_MOBILE_PREVIEW_MIXED_HOSTS"] == "1"
       let other = osLogos ? #""label":"Linux server","hostKind":"linux""# : mixed
         ? #""label":"Build server","hostKind":"macos""#
@@ -101,7 +102,7 @@ enum PreviewFixture {
       return """
         {"hosts":[
         {"hostId":"\(studio.uuidString.lowercased())","hostGeneration":"c3b6da28-55c0-4bb0-ac04-dd458fd41a2b","label":"Studio","hostKind":"macos","model":{"identifier":"Mac13,2","name":"Mac Studio"},"online":true,"lastSeenAt":"2026-10-16T00:00:00Z"},
-        {"hostId":"\(imac.uuidString.lowercased())","hostGeneration":"d3b6da28-55c0-4bb0-ac04-dd458fd41a2b",\(other),"online":false,"lastSeenAt":"2026-10-15T00:00:00Z"}\(windows)],
+        {"hostId":"\(imac.uuidString.lowercased())","hostGeneration":"d3b6da28-55c0-4bb0-ac04-dd458fd41a2b",\(other),"online":\(secondOnline),"lastSeenAt":"2026-10-15T00:00:00Z"}\(windows)],
         "sessions":[\(sessions().map(\.json).joined(separator: ","))]}
         """
     }
