@@ -18,7 +18,7 @@ use serde_json::json;
 
 use crate::WriterLock;
 use crate::axo_mcp::AxoMcp;
-use crate::channel::ServerProcess;
+use crate::channel::{ServerProcess, WhileRunning};
 use crate::opencode::client::ServerAddress;
 use crate::opencode::link::{create_session, wait_until_listening};
 use crate::process::ProcessIdentity;
@@ -93,6 +93,7 @@ pub struct OpenCodeProcess {
 pub fn start_server(
     launch: &OpenCodeLaunch,
     lifeline: &Lifeline,
+    while_running: impl FnOnce(u32) -> WhileRunning,
 ) -> io::Result<(WriterLock, ServerProcess, ServerAddress)> {
     let writer_lock = crate::lock::take_server_lock(
         &launch.paths.lock_base,
@@ -114,7 +115,7 @@ pub fn start_server(
     environment(&mut guard, launch);
     let mut child = guard.spawn()?;
     let output = child.stderr.take();
-    let server = ServerProcess::new(child);
+    let server = ServerProcess::new(child, while_running);
     let output = output.ok_or_else(|| io::Error::other("OpenCode's output is not readable"))?;
     let address = listening_address(output, password)?;
     Ok((writer_lock, server, address))

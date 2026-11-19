@@ -1,4 +1,5 @@
 use super::*;
+use crate::channel::nothing_while_running;
 use std::time::{Duration, Instant};
 
 const THREAD: &str = "01a1eea8-952a-7271-8b55-c2708a01c6ff";
@@ -67,7 +68,7 @@ async fn a_new_session_starts_a_server_a_written_thread_and_the_tui_on_it() {
     let lifeline = Lifeline::new().unwrap();
     let launch = request(&directory, None);
     let paths = launch.paths.clone();
-    let (lock, server) = start_server(&launch, &lifeline).unwrap();
+    let (lock, server) = start_server(&launch, &lifeline, nothing_while_running).unwrap();
     let process = attach(launch, lock, server).await.unwrap();
     assert_eq!(process.thread_id, THREAD);
     let log = wait_for_log(&directory, "tui ");
@@ -96,7 +97,7 @@ async fn an_existing_thread_is_resumed_without_starting_another() {
     let directory = crate::test_directory();
     let lifeline = Lifeline::new().unwrap();
     let launch = request(&directory, Some("existing-thread"));
-    let (lock, server) = start_server(&launch, &lifeline).unwrap();
+    let (lock, server) = start_server(&launch, &lifeline, nothing_while_running).unwrap();
     let process = attach(launch, lock, server).await.unwrap();
     assert_eq!(process.thread_id, "existing-thread");
     let log = wait_for_log(&directory, "tui ");
@@ -111,13 +112,13 @@ async fn a_second_codex_for_the_session_is_refused_while_the_first_runs() {
     let directory = crate::test_directory();
     let lifeline = Lifeline::new().unwrap();
     let launch = request(&directory, None);
-    let (lock, server) = start_server(&launch, &lifeline).unwrap();
+    let (lock, server) = start_server(&launch, &lifeline, nothing_while_running).unwrap();
     let process = attach(launch.clone(), lock, server).await.unwrap();
-    let refused = start_server(&launch, &lifeline).err().unwrap();
+    let refused = start_server(&launch, &lifeline, nothing_while_running).err().unwrap();
     assert_eq!(refused.kind(), io::ErrorKind::WouldBlock);
     stop(process);
     // Once it is gone the socket it left is cleared and the next one starts.
-    let (lock, server) = start_server(&launch, &lifeline).unwrap();
+    let (lock, server) = start_server(&launch, &lifeline, nothing_while_running).unwrap();
     drop((server, lock));
     clean(&directory);
 }
@@ -127,14 +128,14 @@ async fn a_server_an_earlier_axod_left_is_killed_and_its_session_launches() {
     let directory = crate::test_directory();
     let lifeline = Lifeline::new().unwrap();
     let mut launch = request(&directory, Some(THREAD));
-    let (lock, server) = start_server(&launch, &lifeline).unwrap();
+    let (lock, server) = start_server(&launch, &lifeline, nothing_while_running).unwrap();
     wait_for_log(&directory, "listening ");
     // The earlier axod is gone; its server is not, and still holds the lock.
     let leftover = ProcessIdentity::of(server.id()).unwrap();
     std::mem::forget(server);
     drop(lock);
     launch.previous = Some(leftover);
-    let (lock, server) = start_server(&launch, &lifeline).unwrap();
+    let (lock, server) = start_server(&launch, &lifeline, nothing_while_running).unwrap();
     // The lock was free again, so the leftover and its server are gone; reap the guard, which
     // this test, standing in for the earlier axod, started.
     // SAFETY: waits for a child of this process.
@@ -144,7 +145,7 @@ async fn a_server_an_earlier_axod_left_is_killed_and_its_session_launches() {
     // A holder axod does not know is never signalled.
     let holder = WriterLock::acquire(&launch.paths.lock_base).unwrap();
     launch.previous = None;
-    assert_eq!(start_server(&launch, &lifeline).err().unwrap().kind(), io::ErrorKind::WouldBlock);
+    assert_eq!(start_server(&launch, &lifeline, nothing_while_running).err().unwrap().kind(), io::ErrorKind::WouldBlock);
     drop(holder);
     clean(&directory);
 }
@@ -155,7 +156,7 @@ async fn ending_axods_lifeline_ends_the_server() {
     let lifeline = Lifeline::new().unwrap();
     let launch = request(&directory, Some(THREAD));
     let paths = launch.paths.clone();
-    let (lock, server) = start_server(&launch, &lifeline).unwrap();
+    let (lock, server) = start_server(&launch, &lifeline, nothing_while_running).unwrap();
     wait_for_log(&directory, "listening ");
     drop(lock);
     assert!(paths.is_running().unwrap(), "the guard holds it");

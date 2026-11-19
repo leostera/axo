@@ -27,7 +27,7 @@ fn serve(directory: &std::path::Path) -> (ServerProcess, ServerAddress) {
         }
     };
     std::thread::spawn(move || lines.for_each(drop));
-    (ServerProcess::new(child), address)
+    (ServerProcess::new(child, crate::channel::nothing_while_running), address)
 }
 
 use std::os::unix::process::CommandExt;

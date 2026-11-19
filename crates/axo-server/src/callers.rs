@@ -105,7 +105,7 @@ impl AgentServers {
         }
     }
 
-    fn processes(&self) -> Vec<(u32, SessionId)> {
+    pub(crate) fn processes(&self) -> Vec<(u32, SessionId)> {
         self.lock().iter().map(|(pid, id)| (*pid, *id)).collect()
     }
 

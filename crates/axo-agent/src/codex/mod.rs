@@ -13,5 +13,5 @@ pub mod thread;
 
 pub use launch::{CodexLaunch, CodexPaths, CodexProcess, attach, start_server};
 pub use link::{
-    LinkCommands, LinkConfig, LinkRequests, ServerProcess, command_channel, create_thread, run,
+    LinkCommands, LinkConfig, LinkRequests, ServerProcess, WhileRunning, command_channel, create_thread, run,
 };

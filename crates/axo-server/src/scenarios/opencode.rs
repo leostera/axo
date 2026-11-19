@@ -131,3 +131,46 @@ async fn after_a_restart_an_opencode_session_rejoins_its_session_instead_of_crea
     );
     assert_eq!(count(&log, "serve "), 2, "{log}");
 }
+
+/// OpenCode starts its tools, `axod mcp` among them, before it says where it listens, and they
+/// act as the Session at once (RFD0073): its server stands as the Session's pane from its spawn.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_opencode_server_acts_as_its_session_before_it_listens() {
+    let fixture = Fixture::new().await;
+    let hold = fixture.directory.join("fake-opencode-hold");
+    fs::write(&hold, "").unwrap();
+    let creating = {
+        let core = std::sync::Arc::clone(&fixture.core);
+        let directory = fixture.directory.clone();
+        tokio::spawn(async move {
+            sessions::create(
+                &core,
+                CreateSession {
+                    location: SessionLocation::InFolder(directory),
+                    name: None,
+                    agent: AgentKind::OpenCode,
+                },
+            )
+            .await
+            .unwrap()
+        })
+    };
+    fixture
+        .until("the server to start", || {
+            opencode_log(&fixture).contains("serve cwd=")
+        })
+        .await;
+    fixture
+        .until("the starting server to stand as a Session's pane", || {
+            !fixture.core.agent_servers.processes().is_empty()
+        })
+        .await;
+    fs::remove_file(&hold).unwrap();
+    let record = creating.await.unwrap();
+    fixture.wait_for_pi(record.id).await;
+    let servers = fixture.core.agent_servers.processes();
+    assert!(
+        servers.iter().any(|(_, session)| *session == record.id),
+        "{servers:?}"
+    );
+}

@@ -129,35 +129,106 @@ impl LinkCommands {
     }
 }
 
+/// What a server's launcher keeps for as long as the server runs, such as its standing as its
+/// Session's pane (RFD0073). Made from the server's pid the moment it is spawned: a server
+/// starts its tools (`axod mcp`) before it is ready, and they act as the Session at once.
+pub type WhileRunning = Box<dyn Send + Sync>;
+
 /// The agent server a link owns: stopped when the link ends.
-pub struct ServerProcess(std::process::Child);
+pub struct ServerProcess {
+    child: std::process::Child,
+    /// Let go before the server is reaped, so that its pid never vouches for a later process.
+    while_running: Option<WhileRunning>,
+}
 
 impl ServerProcess {
-    pub fn new(child: std::process::Child) -> Self {
-        Self(child)
+    pub fn new(child: std::process::Child, while_running: impl FnOnce(u32) -> WhileRunning) -> Self {
+        let while_running = Some(while_running(child.id()));
+        Self { child, while_running }
     }
 
     pub fn id(&self) -> u32 {
-        self.0.id()
+        self.child.id()
     }
 }
 
 impl std::fmt::Debug for ServerProcess {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.debug_tuple("ServerProcess").field(&self.0.id()).finish()
+        formatter.debug_tuple("ServerProcess").field(&self.child.id()).finish()
     }
 }
 
 impl Drop for ServerProcess {
     fn drop(&mut self) {
+        drop(self.while_running.take());
         // The guard shell kills the server on SIGTERM; it leads its own process group.
-        let pid = self.0.id() as libc::pid_t;
+        let pid = self.child.id() as libc::pid_t;
         // SAFETY: signals the guard this value spawned, and its group.
         unsafe {
             libc::kill(pid, libc::SIGTERM);
             libc::kill(-pid, libc::SIGTERM);
         }
-        let _ = self.0.wait();
+        let _ = self.child.wait();
     }
 }
 
+
+/// For tests whose server stands for no Session.
+#[cfg(test)]
+pub(crate) fn nothing_while_running(_pid: u32) -> WhileRunning {
+    Box::new(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+
+    /// Records, when let go, whether its server's pid still named the unreaped server.
+    struct Standing {
+        pid: u32,
+        seen: Arc<Mutex<Option<bool>>>,
+    }
+
+    impl Drop for Standing {
+        fn drop(&mut self) {
+            let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+            // SAFETY: waits without reaping (WNOWAIT) and without blocking, on our own child.
+            let unreaped = unsafe {
+                libc::waitid(
+                    libc::P_PID,
+                    self.pid,
+                    &mut info,
+                    libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+                )
+            } == 0;
+            *self.seen.lock().unwrap() = Some(unreaped);
+        }
+    }
+
+    #[test]
+    fn a_server_is_registered_from_its_spawn_and_let_go_before_it_is_reaped() {
+        let seen = Arc::new(Mutex::new(None));
+        let child = std::process::Command::new("/bin/sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let spawned = child.id();
+        let mut registered = None;
+        let server = ServerProcess::new(child, |pid| {
+            registered = Some(pid);
+            Box::new(Standing {
+                pid,
+                seen: Arc::clone(&seen),
+            })
+        });
+        assert_eq!(registered, Some(spawned));
+        assert_eq!(*seen.lock().unwrap(), None, "held while the server runs");
+        drop(server);
+        assert_eq!(
+            *seen.lock().unwrap(),
+            Some(true),
+            "let go while the pid still named the server"
+        );
+    }
+}

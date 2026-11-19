@@ -14,7 +14,7 @@ mod link;
 pub mod session;
 pub mod sse;
 
-pub use crate::channel::{LinkCommands, LinkRequests, ServerProcess, command_channel};
+pub use crate::channel::{LinkCommands, LinkRequests, ServerProcess, WhileRunning, command_channel};
 pub use client::ServerAddress;
 pub use launch::{OpenCodeLaunch, OpenCodePaths, OpenCodeProcess, attach, start_server};
 pub use link::{LinkConfig, create_session, run, wait_until_listening};

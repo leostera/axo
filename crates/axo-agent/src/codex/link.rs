@@ -44,7 +44,7 @@ pub struct LinkConfig {
 }
 
 use crate::channel::{Action, Request};
-pub use crate::channel::{LinkCommands, LinkRequests, ServerProcess, command_channel};
+pub use crate::channel::{LinkCommands, LinkRequests, ServerProcess, WhileRunning, command_channel};
 
 type Socket = tokio_tungstenite::WebSocketStream<UnixStream>;
 

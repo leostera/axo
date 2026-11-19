@@ -17,7 +17,7 @@ use axo_pty::process::{self, PtyProcess, WindowSize};
 use crate::WriterLock;
 use crate::axo_mcp::AxoMcp;
 use crate::process::ProcessIdentity;
-use crate::codex::link::{ServerProcess, create_thread, wait_until_listening};
+use crate::codex::link::{ServerProcess, WhileRunning, create_thread, wait_until_listening};
 
 /// The longest socket path macOS takes (`sun_path` is 104 bytes, with its terminator).
 const MAX_SOCKET_PATH: usize = 103;
@@ -103,6 +103,7 @@ pub struct CodexProcess {
 pub fn start_server(
     launch: &CodexLaunch,
     lifeline: &Lifeline,
+    while_running: impl FnOnce(u32) -> WhileRunning,
 ) -> io::Result<(WriterLock, ServerProcess)> {
     let writer_lock = take_lock(launch)?;
     remove_abandoned_socket(launch.paths.socket())?;
@@ -117,7 +118,7 @@ pub fn start_server(
         .stderr(Stdio::null());
     environment(&mut guard, launch);
     let child = guard.spawn()?;
-    Ok((writer_lock, ServerProcess::new(child)))
+    Ok((writer_lock, ServerProcess::new(child, while_running)))
 }
 
 /// Takes the Session's lock, killing the server an earlier axod started if it still holds it.

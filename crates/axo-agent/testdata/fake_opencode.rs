@@ -4,7 +4,8 @@
 //! close. A prompt is answered with `echo: <text>`; the prompt `hang` runs until interrupted.
 //!
 //! Sessions persist across restarts in `fake-opencode-sessions.json` in its working directory,
-//! as OpenCode keeps them in its database.
+//! as OpenCode keeps them in its database. While `fake-opencode-hold` exists there, `serve` waits
+//! before it listens.
 //!
 //! It logs what it is asked to `$AXO_FAKE_OPENCODE_LOG`, or `fake-opencode.log` in its working
 //! directory, one line per write.
@@ -64,6 +65,10 @@ fn serve() {
         log(&format!("config {config}"));
     }
     log(&format!("serve cwd={}", std::env::current_dir().unwrap().display()));
+    // OpenCode starts its MCP servers before it listens; a test holds it here with this file.
+    while std::path::Path::new("fake-opencode-hold").exists() {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     println!("some startup noise");

@@ -1,4 +1,5 @@
 use super::*;
+use crate::channel::nothing_while_running;
 use std::time::Instant;
 
 pub(crate) fn fake_opencode() -> PathBuf {
@@ -52,7 +53,7 @@ async fn a_new_session_starts_a_server_a_session_and_the_tui_on_it() {
     let lifeline = Lifeline::new().unwrap();
     let launch = request(&directory, None);
     let paths = launch.paths.clone();
-    let (lock, server, address) = start_server(&launch, &lifeline).unwrap();
+    let (lock, server, address) = start_server(&launch, &lifeline, nothing_while_running).unwrap();
     assert!(address.url.starts_with("http://127.0.0.1:"), "{address:?}");
     assert_eq!(address.password.len(), 64);
     assert!(paths.is_running().unwrap(), "the guard holds the lock");
@@ -80,7 +81,7 @@ async fn a_known_session_is_rejoined_without_creating_another() {
     let directory = crate::test_directory();
     let lifeline = Lifeline::new().unwrap();
     let launch = request(&directory, Some("ses_known"));
-    let (lock, server, address) = start_server(&launch, &lifeline).unwrap();
+    let (lock, server, address) = start_server(&launch, &lifeline, nothing_while_running).unwrap();
     let process = attach(launch, lock, server, address).await.unwrap();
     assert_eq!(process.session_id, "ses_known");
     let log = wait_for_log(&directory, "tui password=");
@@ -95,15 +96,15 @@ async fn a_second_launch_for_a_live_session_is_refused_unless_it_is_the_previous
     let directory = crate::test_directory();
     let lifeline = Lifeline::new().unwrap();
     let launch = request(&directory, None);
-    let (lock, server, _) = start_server(&launch, &lifeline).unwrap();
+    let (lock, server, _) = start_server(&launch, &lifeline, nothing_while_running).unwrap();
     let identity = ProcessIdentity::of(server.id());
     drop(lock);
     // The first server still holds the lock through its guard.
-    let refused = start_server(&launch, &lifeline).err().expect("refused");
+    let refused = start_server(&launch, &lifeline, nothing_while_running).err().expect("refused");
     assert_eq!(refused.kind(), io::ErrorKind::WouldBlock);
     let mut again = launch.clone();
     again.previous = identity;
-    let (_lock, second, _) = start_server(&again, &lifeline).expect("the previous server is killed");
+    let (_lock, second, _) = start_server(&again, &lifeline, nothing_while_running).expect("the previous server is killed");
     drop(second);
     drop(server);
     std::fs::remove_dir_all(&directory).unwrap();

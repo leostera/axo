@@ -388,6 +388,7 @@ async fn launch_codex(
     request: ServedRequest,
     in_flight: LaunchInFlight,
 ) -> io::Result<Launched> {
+    let session_id = request.session_id;
     let places = SearchPlaces::from_environment(AgentKind::Codex, &request.home);
     let installed =
         discovery::discover(AgentKind::Codex, &places, discovery::VERSION_TIMEOUT).await?;
@@ -411,9 +412,12 @@ async fn launch_codex(
     };
     let (lock, server) = {
         let (core, launch) = (Arc::clone(&core), launch.clone());
-        tokio::task::spawn_blocking(move || axo_agent::codex::start_server(&launch, &core.lifeline))
-            .await
-            .map_err(io::Error::other)??
+        let while_running = server_standing(&core, session_id);
+        tokio::task::spawn_blocking(move || {
+            axo_agent::codex::start_server(&launch, &core.lifeline, while_running)
+        })
+        .await
+        .map_err(io::Error::other)??
     };
     axo_agent::codex::attach(launch, lock, server)
         .await
@@ -423,6 +427,17 @@ async fn launch_codex(
         })
 }
 
+/// What a Session's agent server holds while it runs: its standing as the Session's pane
+/// (RFD0073), from its spawn, since it starts its tools (`axod mcp`) before it is ready and
+/// they act as the Session at once.
+fn server_standing(
+    core: &Arc<Core>,
+    session_id: axo_protocol::SessionId,
+) -> impl FnOnce(u32) -> axo_agent::opencode::WhileRunning + use<> {
+    let servers = Arc::clone(&core.agent_servers);
+    move |pid| Box::new(servers.register(pid, session_id))
+}
+
 /// Launches a Session's OpenCode: finds `opencode`, starts its server on the blocking pool,
 /// then creates or confirms the session and starts the TUI.
 async fn launch_opencode(
@@ -430,6 +445,7 @@ async fn launch_opencode(
     request: ServedRequest,
     in_flight: LaunchInFlight,
 ) -> io::Result<Launched> {
+    let session_id = request.session_id;
     let places = SearchPlaces::from_environment(AgentKind::OpenCode, &request.home);
     let installed =
         discovery::discover(AgentKind::OpenCode, &places, discovery::VERSION_TIMEOUT).await?;
@@ -452,8 +468,9 @@ async fn launch_opencode(
     };
     let (lock, server, address) = {
         let (core, launch) = (Arc::clone(&core), launch.clone());
+        let while_running = server_standing(&core, session_id);
         tokio::task::spawn_blocking(move || {
-            axo_agent::opencode::start_server(&launch, &core.lifeline)
+            axo_agent::opencode::start_server(&launch, &core.lifeline, while_running)
         })
         .await
         .map_err(io::Error::other)??
@@ -521,6 +538,7 @@ struct Followed {
 struct ServedRequest {
     folder: PathBuf,
     home: PathBuf,
+    session_id: axo_protocol::SessionId,
     session_uuid: String,
     pane_id: String,
     size: WindowSize,
@@ -677,6 +695,7 @@ impl Session {
                 Ok(ServedRequest {
                     folder: self.row.folder.clone(),
                     home,
+                    session_id: self.id,
                     session_uuid: self.id.to_string(),
                     pane_id,
                     size: self.pane_size(shell_id),
@@ -940,21 +959,15 @@ impl Session {
                     log_context,
                 };
                 let mailbox = self.mailbox();
-                // The server's tools act as this Session (RFD0073) while the server runs.
-                let registered = self.core.agent_servers.register(server.id(), self.id);
                 let following =
                     axo_agent::codex::run(config, requests, Some(server), move |event| {
                         mailbox.upgrade().is_some_and(|mailbox| {
                             mailbox.send(Message::Link { runtime_id, event }).is_ok()
                         })
                     });
-                // The link owns the server: it stops when the link is let go, and only then
-                // is the registration.
-                let link_task = tokio::spawn(async move {
-                    let _registered = registered;
-                    following.await
-                })
-                .abort_handle();
+                // The link owns the server, and with it the server's standing as this
+                // Session's pane (RFD0073): both end when the link is let go.
+                let link_task = tokio::spawn(following).abort_handle();
                 Ok(Followed {
                     running,
                     identity,
@@ -993,21 +1006,15 @@ impl Session {
                     log_context,
                 };
                 let mailbox = self.mailbox();
-                // The server's tools act as this Session (RFD0073) while the server runs.
-                let registered = self.core.agent_servers.register(server.id(), self.id);
                 let following =
                     axo_agent::opencode::run(config, requests, Some(server), move |event| {
                         mailbox.upgrade().is_some_and(|mailbox| {
                             mailbox.send(Message::Link { runtime_id, event }).is_ok()
                         })
                     });
-                // The link owns the server: it stops when the link is let go, and only then
-                // is the registration.
-                let link_task = tokio::spawn(async move {
-                    let _registered = registered;
-                    following.await
-                })
-                .abort_handle();
+                // The link owns the server, and with it the server's standing as this
+                // Session's pane (RFD0073): both end when the link is let go.
+                let link_task = tokio::spawn(following).abort_handle();
                 Ok(Followed {
                     running,
                     identity,
