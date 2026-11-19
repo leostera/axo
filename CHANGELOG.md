@@ -10,6 +10,7 @@ What changed in each published version of Axo. Every publish raises the minor ve
 - Claude Code's replies appear in Axo's conversation again. Claude Code 2.1.327 writes its reply to disk only after it reports the turn finished, so Axo kept only the prompt.
 - Codex and OpenCode can use Axo's tools from the moment they start. Their servers connect to Axo before they are ready, and those first calls were refused.
 - Claude Code Sessions in a folder Claude does not trust yet wait for you to answer Claude's trust question in its terminal and show as needing you. Prompts sent meanwhile are held and sent once you trust the folder, instead of being typed into the question, whose default answer exits Claude.
+- Mac ⌘W closes the focused Settings, Getting Ready or other auxiliary window instead of requesting a close of the globally selected terminal pane. Terminal panes keep their existing busy-close confirmation; modal questions cannot close panes behind them.
 
 ## 0.79 (Mac app build 351, axod 95)
 

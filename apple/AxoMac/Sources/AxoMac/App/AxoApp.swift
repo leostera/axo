@@ -268,16 +268,15 @@ struct AxoApp<Launch: AxoLaunchMode>: App {
 
         Divider()
 
-        Button("Close Focused Shell", role: .destructive) {
-          guard let shellID = sessions.focusedShellID ?? ghostty.keyWindowFocusedShellID else {
-            AxoTrace.commands.notice("event=shell.close_key_ignored reason=no_focused_shell")
-            return
+        Button("Close") {
+          WindowCloseCommand.perform(keyWindow: NSApp.keyWindow) {
+            guard let shellID = ghostty.keyWindowFocusedShellID ?? sessions.focusedShellID else { return false }
+            AxoTrace.commands.notice("event=shell.close_key shell_id=\(shellID.rawValue)")
+            Task { await sessions.requestCloseShell(shellID) }
+            return true
           }
-          AxoTrace.commands.notice("event=shell.close_key shell_id=\(shellID.rawValue)")
-          Task { await sessions.requestCloseShell(shellID) }
         }
         .keyboardShortcut("w", modifiers: .command)
-        .disabled(!sessions.commandAvailability.hasFocusedShell)
 
         Button("Close Session", role: .destructive) {
           if let sessionID = sessions.selectedSessionID {
