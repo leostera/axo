@@ -577,6 +577,7 @@ pub struct Mcp {
     responses: std::sync::mpsc::Receiver<Value>,
     exited: std::sync::mpsc::Receiver<McpExit>,
     next_id: u64,
+    daemon_log: PathBuf,
 }
 
 /// How `axod mcp` exited.
@@ -622,6 +623,7 @@ impl Mcp {
             responses,
             exited,
             next_id: 0,
+            daemon_log: axod.server_directory().join("stderr.log"),
         };
         let initialized = mcp.request(
             "initialize",
@@ -665,7 +667,11 @@ impl Mcp {
             match self.responses.recv_timeout(left) {
                 Ok(message) if message["id"] == id => return message,
                 Ok(_) => continue,
-                Err(_) => panic!("axod mcp did not answer request {id}"),
+                Err(_) => panic!(
+                    "axod mcp did not answer request {id}; exit={:?}; daemon log:\n{}",
+                    self.exited.try_recv(),
+                    std::fs::read_to_string(&self.daemon_log).unwrap_or_default()
+                ),
             }
         }
     }

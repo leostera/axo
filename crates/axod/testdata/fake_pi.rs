@@ -614,6 +614,27 @@ fn send_descriptor(stream: &UnixStream, byte: u8, descriptor: i32) -> bool {
     }
 }
 
+/// Pump interactive traffic immediately. std::io::copy can choose a Linux splice
+/// fast path for pipe-to-socket copies that waits for more data instead of making
+/// a partial MCP response visible while the pipe's writer stays alive.
+fn pump_live(
+    mut input: impl std::io::Read,
+    mut output: impl std::io::Write,
+) -> std::io::Result<()> {
+    let mut buffer = [0; 8192];
+    loop {
+        let count = match input.read(&mut buffer) {
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            result => result?,
+        };
+        if count == 0 {
+            return Ok(());
+        }
+        output.write_all(&buffer[..count])?;
+        output.flush()?;
+    }
+}
+
 /// `axod mcp` as this Pi's child, on `client`: its stdin from it, its stdout to it, then how it
 /// exited.
 fn run_mcp(executable: &str, client: UnixStream) {
@@ -636,9 +657,9 @@ fn run_mcp(executable: &str, client: UnixStream) {
         return;
     };
     thread::spawn(move || {
-        let _ = std::io::copy(&mut from_client, &mut input);
+        let _ = pump_live(&mut from_client, &mut input);
     });
-    let _ = std::io::copy(&mut output, &mut to_client);
+    let _ = pump_live(&mut output, &mut to_client);
     let status = child.wait().ok().and_then(|status| status.code());
     let _ = writeln!(to_client, "{}", json!({ "fakePiMcpExit": status }));
     let _ = to_client.shutdown(std::net::Shutdown::Write);
