@@ -1,3 +1,4 @@
+import UIKit
 import XCTest
 
 /// The chat's Pi, from the phone (RFD0033): the model in the box and picking another, the `/`
@@ -176,11 +177,25 @@ final class AxoMobileSessionControlsTests: XCTestCase {
   // MARK: - The box's look (compared against apple/AxoMobile/Snapshots/Phone)
 
   @MainActor
+  func testComposerControlLayoutInBothAppearances() {
+    for appearance in ["light", "dark"] {
+      let app = launch(chat: 2, appearance: appearance)
+      let composer = type("Check the Send button", in: app)
+      XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
+      let selectors = ["host-picker", "agent-picker", "model-picker", "thinking-picker"].map { element(app, $0) }
+      for selector in selectors { XCTAssertTrue(selector.isHittable) }
+      XCTAssertEqual(composer.value as? String, "Check the Send button")
+      let suffix = UIDevice.current.userInterfaceIdiom == .pad ? "-ipad" : ""
+      capture(app, named: "composer-text-\(appearance)\(suffix)")
+    }
+  }
+
+  @MainActor
   func testVisualSnapshotComposerWithTextLight() {
     let app = launch(chat: 2, appearance: "light")
     _ = type("Check the Send button", in: app)
     XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
-    Snapshots.check(app, named: "composer-text-light", in: self)
+    Snapshots.check(app, named: UIDevice.current.userInterfaceIdiom == .pad ? "composer-text-light-ipad" : "composer-text-light", in: self)
   }
 
   @MainActor
@@ -188,7 +203,7 @@ final class AxoMobileSessionControlsTests: XCTestCase {
     let app = launch(chat: 2, appearance: "dark")
     _ = type("Check the Send button", in: app)
     XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
-    Snapshots.check(app, named: "composer-text-dark", in: self)
+    Snapshots.check(app, named: UIDevice.current.userInterfaceIdiom == .pad ? "composer-text-dark-ipad" : "composer-text-dark", in: self)
   }
 
   // MARK: - Restart
@@ -196,16 +211,24 @@ final class AxoMobileSessionControlsTests: XCTestCase {
   @MainActor
   func testRestartAsksFirstAndSaysRestartingUntilPiIsReady() {
     let app = launch(chat: 2)
-    // A flick left pulls in the chat's info; one the stack takes for a tap is flicked again.
     let restart = element(app, "restart-pi")
-    for _ in 0..<3 where !restart.waitForExistence(timeout: 3) {
-      let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.65, dy: 0.45))
-      start.press(
-        forDuration: 0.01, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.4, dy: 0.45)),
-        withVelocity: XCUIGestureVelocity(2400), thenHoldForDuration: 0)
+    if UIDevice.current.userInterfaceIdiom == .pad {
+      app.buttons["Chat info"].tapWhereItIs()
+    } else {
+      // Phone layers need an intentional full swipe; a short flick can settle back.
+      let readiness = app.descendants(matching: .any).matching(identifier: "layer-readiness").firstMatch
+      for _ in 0..<3 where readiness.value as? String != "3:ready" {
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.85, dy: 0.45)).press(
+          forDuration: 0.02, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.12, dy: 0.45)),
+          withVelocity: XCUIGestureVelocity(1200), thenHoldForDuration: 0)
+      }
+      XCTAssertTrue(waitUntil(8) { readiness.value as? String == "3:ready" }, "the info layer is actually visible")
     }
     XCTAssertTrue(restart.waitForExistence(timeout: 5))
-    for _ in 0..<4 where !restart.isHittable { app.swipeUp() }
+    let panel = app.scrollViews.containing(.button, identifier: "restart-pi").firstMatch
+    for _ in 0..<4 where !restart.isHittable {
+      if panel.exists { panel.swipeUp() } else { app.swipeUp() }
+    }
     XCTAssertEqual(restart.label, "Restart Pi")
     restart.tap()
     XCTAssertTrue(app.staticTexts["A reply it is writing stops. The conversation is kept."].waitForExistence(timeout: 5), "it asks first")

@@ -22,6 +22,18 @@ final class AxoMobileComposerIslandTests: XCTestCase {
   }
 
   @MainActor
+  private func leaveAndReturn(_ app: XCUIApplication) {
+    if app.buttons["Chats menu"].exists {
+      app.buttons["Chats menu"].tapWhereItIs()
+      app.buttons["Back to conversation"].tapWhereItIs()
+    } else {
+      // iPad keeps the conversation mounted while its sidebar is toggled.
+      app.buttons["Toggle sidebar"].tapWhereItIs()
+      app.buttons["Toggle sidebar"].tapWhereItIs()
+    }
+  }
+
+  @MainActor
   private func capture(_ app: XCUIApplication, _ name: String) {
     let screenshot = app.screenshot()
     Snapshots.save(screenshot.pngRepresentation, named: name)
@@ -50,8 +62,7 @@ final class AxoMobileComposerIslandTests: XCTestCase {
       add.frame.minY >= editor.frame.maxY && abs(editor.frame.width - width) < 2
     }
     capture(app, "composer-selectors-focused")
-    app.buttons["Chats menu"].tapWhereItIs()
-    app.buttons["Back to conversation"].tapWhereItIs()
+    leaveAndReturn(app)
     wait("The selectors remain available without expanding or collapsing the editor") {
       add.frame.minY >= editor.frame.maxY && abs(editor.frame.width - width) < 2
     }
@@ -66,8 +77,7 @@ final class AxoMobileComposerIslandTests: XCTestCase {
     let text = "Keep this draft\nwith two lines"
     editor.typeText(text)
     XCTAssertEqual(editor.value as? String, text)
-    app.buttons["Chats menu"].tapWhereItIs()
-    app.buttons["Back to conversation"].tapWhereItIs()
+    leaveAndReturn(app)
     wait("A saved draft stays expanded, with no automatic send") {
       app.buttons["attach"].frame.minY >= editor.frame.maxY
     }

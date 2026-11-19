@@ -4,6 +4,15 @@ What changed in each published version of Axo. Every publish raises the minor ve
 
 ## Unreleased
 
+## 0.82 (Mac app build 354, axod 98)
+
+### Changed
+
+- iPhone, iPad and web composers show Host, Agent, Model and Thinking as separate controls on one bottom toolbar. Host and Agent explicitly start a new Session rather than moving the current one; original drafts remain with their Session. Model and Thinking change independently without sending.
+- Session metadata names the actual coding agent when known; older metadata remains unknown rather than being mislabeled Pi.
+- The Mac Settings window is titled “Settings”. The permission guide uses Axo’s icon while still dragging the real installed axod executable, not a proxy app.
+- Added a read-only permission-owner inspection tool. Permission checks continue reporting macOS’s real decision; this update does not reset grants or claim the Developer Tools denial is resolved.
+
 ## 0.81 (Mac app build 353, axod 97)
 
 ### Added

@@ -89,6 +89,15 @@ node_test(
     tsx = True,
 )
 
+node_test(
+    name = "session_sync_test",
+    concurrency = 1,
+    data = _DEPS + [":node_modules/tsx", ":test_files", "//packages/axo-api:fixtures"],
+    tests = ["tests/session-sync.test.ts"],
+    tests_in_data = True,
+    tsx = True,
+)
+
 # Focused run-budget/dispatcher tests without waiting for the entire provider suite.
 node_test(
     name = "run_limits_test",

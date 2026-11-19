@@ -273,19 +273,20 @@ test("a Session the host stops listing is archived, never deleted, and metadata 
   assert.equal(opened.records.length, 3, "an archived Session stays readable");
 });
 
-test("what a Session's Pi runs reaches clients in its metadata (RFD0033)", async (t) => {
+test("actual agent identity and model settings reach clients in Session metadata", async (t) => {
   const { h, session, daemon, transcript } = await fixture(t);
   const { client } = await connectClient(h, session);
   t.after(() => client.close());
   const pi = { model: { provider: "anthropic", id: "claude-opus-4-1", name: "Opus 4.1" }, thinkingLevel: "high" };
-  const metadata = { ...transcript.manifestRow(2).metadata, pi };
+  const metadata = { ...transcript.manifestRow(2).metadata, agent: "codex", pi };
   const applied = await call<{ applied: boolean }>(daemon, "axo.host.session.meta", { sessionId: transcript.sessionId, metadataVersion: 2, metadata });
   assert.equal(applied.applied, true);
-  let listed: Array<{ metadata: { pi?: unknown } }> = [];
+  let listed: Array<{ metadata: { agent?: string; pi?: unknown } }> = [];
   while (!listed.some((one) => one.metadata.pi !== undefined)) {
     listed = (await until(client, "axo.client.sessions")).sessions as typeof listed;
   }
   assert.deepEqual(listed[0]!.metadata.pi, pi);
+  assert.equal(listed[0]!.metadata.agent, "codex", "the adapter is explicit, never inferred from the provider");
 
   const bad = await daemon.call("axo.host.session.meta", { sessionId: transcript.sessionId, metadataVersion: 3, metadata: { ...metadata, pi: { ...pi, thinkingLevel: "extreme" } } });
   assert.ok("error" in bad, "a thinking level Pi doesn't have is refused");

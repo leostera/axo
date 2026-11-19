@@ -13,10 +13,13 @@ from common import Release, exclusive_json, git, private_directory, require, sou
 
 
 TESTS = [
-    "//apple/AxoMac:AxoMacTests", "//apple/AxoClient:AxoClientTests",
+    "//apple/AxoMac:AxoMacTests", "//apple/AxoClient:AxoClientTests", "//apple/AxoProtocol:AxoProtocolTests",
     "//apple/AxoMobile:AxoMobileModelTests", "//apple/AxoWatchModel:AxoWatchModelTests",
     "//apple/AxoCompanion:AxoCompanionTests", "//packages/pi-axo:test",
     "//packages/pi-axo:typecheck_tests", "//packages/axo-web-app:test",
+    "//packages/axo-api:test", "//packages/axo-api:schema_check", "//crates/axo-relay:axo_relay_tests",
+    "//packages/axo-api-worker:session_sync_test",
+    "//packages/axo-web-app:composer_browser_test",
     "//packages/axo-web-app:slash_browser_test", "//packages/axo-web-app:elicitations_browser_test",
     "//packages/axo-web-app:sidebar_browser_test", "//specs:recovery_test",
     "//bazel/publish:publish_test", "//bazel/publish:release_test",
@@ -60,7 +63,8 @@ def main(argv=None):
     try:
         bazel("test", *TESTS, "--test_output=errors")
         bazel("test", "//crates/axo-server:axo_server_tests", "--test_arg=--test-threads=1", "--test_output=errors")
-        bazel("build", "//packages/axo-web-app:typecheck", "//tools/apple:typecheck", "//apple/AxoMac:Axo_zip")
+        bazel("build", "//packages/axo-web-app:typecheck", "//packages/axo-api-worker:typecheck",
+              "//tools/apple:typecheck", "//apple/AxoMac:Axo_zip")
         bazel("test", "//apple/AxoMac:package_test", "--test_output=errors")
         bazel("test", "//apple/AxoMobile:distribution_archive_test", "--watchos_cpus=device_arm64", "--test_output=errors")
         # Use one valid XCTest class filter, not a regex/pipe (which silently selects zero tests).

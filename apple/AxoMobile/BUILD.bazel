@@ -125,7 +125,7 @@ swift_library(
     srcs = glob(["UITests/**/*.swift"]),
     copts = ["-swift-version", "5"],
     # The reviewed screenshots the visual tests compare against (UITests/Snapshots.swift).
-    data = glob(["Snapshots/Phone/*.png"]),
+    data = glob(["Snapshots/**/*.png"]),
     module_name = "AxoMobileUITests",
 )
 
