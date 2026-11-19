@@ -134,8 +134,11 @@ the Windows driver, so a second elevated compiler installation is not required.
 
 Every Axo-owned Codex app-server receives a per-process MCP configuration pointing at
 `axod mcp --pipe <this daemon> --session <this session>`. It connects to the running daemon and
-exposes `computer_tools` (schemas) and `computer` (one call), including inline screenshots. Agents
-can inspect app windows, read UI elements, take screenshots, set field values, click, scroll and
+exposes `self`, `session_rename`, `computer_tools` (schemas) and `computer` (one call), including
+inline screenshots. `session_rename({sessionId:"self",name:"axo: windows"})` changes only the
+calling Session's name; it needs neither shell escalation nor computer-use permission and never
+broadens the pipe ACL. Agents must use this tool rather than opening daemon pipes from a sandboxed
+shell. Names use the shared Session-name parser. Computer tools can inspect app windows, read UI elements, take screenshots, set field values, click, scroll and
 send keys to a specific window. Use fresh `get_window_state` results and returned element tokens
 before acting. Windows validates that the window belongs to the specified process.
 
