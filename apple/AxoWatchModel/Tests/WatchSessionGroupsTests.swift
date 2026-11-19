@@ -25,7 +25,7 @@ final class WatchSessionGroupsTests: XCTestCase {
     XCTAssertEqual(sections.flatMap(\.chats).count, 4)
   }
 
-  func testAttentionAndUnseenSessionsStayActiveAndRowIdentityIncludesHost() {
+  func testAttentionStaysActiveButUnreadDoesNotPromoteEarlierSessions() {
     let a = UUID(), b = UUID(), sharedID = SessionID(UUID())
     let attention = RemoteSession(hostId: a, sessionId: sharedID, name: "Needs you", status: .needsAttention, hasAgent: true, lastMessageAt: 1)
     let unseen = RemoteSession(hostId: b, sessionId: sharedID, name: "Unseen", hasAgent: true, lastMessageAt: 500)
@@ -34,8 +34,11 @@ final class WatchSessionGroupsTests: XCTestCase {
       RemoteHost(hostId: b, hostGeneration: UUID(), label: "B", status: .online, sessions: [unseen]),
     ]
     let groups = WatchSessionGroups.sections(hosts: hosts, sessionsOf: { $0.sessions }, seen: ChatSeen(baseline: 100), now: Date(timeIntervalSince1970: 10_000))
-    XCTAssertEqual(groups.map(\.group), [.active])
-    XCTAssertEqual(Set(groups[0].chats.map(\.key)).count, 2, "same session id on different hosts must not collapse a row")
+    XCTAssertEqual(groups.map(\.group), [.active, .earlier])
+    XCTAssertEqual(groups[0].chats.map(\.session.displayName), ["Needs you"])
+    XCTAssertEqual(groups[1].chats.map(\.session.displayName), ["Unseen"])
+    XCTAssertEqual(Set(groups.flatMap(\.chats).map(\.key)).count, 2,
+      "The same session ID on different hosts must not collapse a row, regardless of its group")
   }
 
   func testNoMachinesProducesNoMisleadingMachineSections() {

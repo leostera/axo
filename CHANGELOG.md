@@ -4,6 +4,10 @@ What changed in each published version of Axo. Every publish raises the minor ve
 
 ## Unreleased
 
+### Changed
+
+- Organized Watch conversation rows, session selection and voice controls into focused views. Refreshed Watch grouping regressions and documented simulator builds and existing-identity release safeguards.
+
 ## 0.80 (Mac app build 352, axod 96)
 
 ### Added

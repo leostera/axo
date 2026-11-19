@@ -206,11 +206,11 @@ struct WatchChatView: View {
         if handingOff || model.workbench.isSending {
           ProgressView().frame(width: 44, height: 44).accessibilityLabel("Sending message")
         } else if model.draft != nil {
-          VoiceCircle(symbol: "xmark", label: "Discard unsent message") { model.discardDraft() }
-          VoiceCircle(symbol: "arrow.up", label: "Retry sending", prominent: true) { Task { await model.send() } }
+          WatchVoiceCircle(symbol: "xmark", label: "Discard unsent message") { model.discardDraft() }
+          WatchVoiceCircle(symbol: "arrow.up", label: "Retry sending", prominent: true) { Task { await model.send() } }
             .disabled(!model.canSend)
         } else {
-          VoiceCircle(symbol: "mic", label: "Talk") { startVoice() }
+          WatchVoiceCircle(symbol: "mic", label: "Talk") { startVoice() }
             .disabled(model.account.state != .signedIn)
         }
         Spacer(minLength: 0)
@@ -220,7 +220,7 @@ struct WatchChatView: View {
 
   private func recordingBar(_ voice: VoicePrompt) -> some View {
     HStack(spacing: 6) {
-      VoiceCircle(symbol: "xmark", label: "Cancel recording", compact: true) { cancelVoice() }
+      WatchVoiceCircle(symbol: "xmark", label: "Cancel recording", compact: true) { cancelVoice() }
       Group {
         if voice.isListening {
           AudioWaveform(bars: 12, height: 10) { voice.audioLevel }
@@ -231,7 +231,7 @@ struct WatchChatView: View {
         }
       }
       .frame(maxWidth: .infinity)
-      VoiceCircle(symbol: "arrow.up", label: "Stop and send", prominent: true, compact: true) { voice.finish(.send) }
+      WatchVoiceCircle(symbol: "arrow.up", label: "Stop and send", prominent: true, compact: true) { voice.finish(.send) }
         .disabled(!voice.isListening)
     }
     .frame(height: 44)
@@ -278,120 +278,5 @@ struct WatchChatView: View {
   private func reportConnection() {
     if model.workbench.link == .connected { lastConnectedAt = Date() }
     WatchConnectionReport.write(link: model.workbench.link, lastConnectedAt: lastConnectedAt)
-  }
-}
-
-private struct WatchVoiceGlass: ViewModifier {
-  func body(content: Content) -> some View {
-    if #available(watchOS 26, *) {
-      content.glassEffect(.clear, in: Capsule())
-    } else {
-      content.background(.ultraThinMaterial, in: Capsule())
-    }
-  }
-}
-
-private struct VoiceCircle: View {
-  let symbol: String
-  let label: String
-  var prominent = false
-  var compact = false
-  let action: () -> Void
-  @Environment(\.colorScheme) private var colorScheme
-
-  var body: some View {
-    Button(action: action) {
-      Image(systemName: symbol)
-        .font(.system(size: symbol == "arrow.up" ? 17 : 18, weight: prominent ? .semibold : .regular))
-        .foregroundStyle(prominent ? (colorScheme == .dark ? Color.black : Color.white) : Color.primary)
-        .frame(width: compact ? 28 : 44, height: compact ? 28 : 44)
-        .background(prominent ? Color.primary : Color.secondary.opacity(0.15), in: Circle())
-        .frame(width: 44, height: 44)
-        .contentShape(Rectangle())
-    }
-    .buttonStyle(.plain)
-    .accessibilityLabel(label)
-  }
-}
-
-private struct WatchSessionPicker: View {
-  let model: WatchChatModel
-  @Environment(\.dismiss) private var dismiss
-  @State private var preferences: ChatListPreferences
-  @State private var held: [ChatGroupSection]?
-
-  init(model: WatchChatModel) {
-    self.model = model
-    let defaults = UserDefaults(suiteName: "axo.watch.sidebar.\(model.accountID.uuidString.lowercased())") ?? .standard
-    _preferences = State(initialValue: ChatListPreferences(defaults: defaults))
-  }
-
-  private var groups: [ChatGroupSection] {
-    let live = WatchSessionGroups.sections(hosts: model.workbench.hosts.hosts, sessionsOf: model.workbench.sessions(of:),
-      seen: preferences.seen, settings: preferences.settings)
-    return ChatGrouping.holding(held, live: live)
-  }
-
-  var body: some View {
-    NavigationStack {
-      List {
-        ForEach(groups) { section in
-          Section(section.group.title) {
-            ForEach(section.chats, id: \.key) { entry in
-              Button {
-                if model.select(host: entry.host, session: entry.session) {
-                  preferences.markSeen(entry.session)
-                  dismiss()
-                }
-              } label: {
-                VStack(alignment: .leading, spacing: 3) {
-                  Text(entry.session.displayName).lineLimit(2)
-                  Text(entry.host.label + (entry.host.status == .online ? "" : " · Offline"))
-                    .font(.caption2).foregroundStyle(.secondary)
-                }
-              }
-            }
-          }
-        }
-        if groups.isEmpty {
-          switch model.workbench.hosts.phase {
-          case .idle, .loading: ProgressView("Loading sessions…")
-          case .failed(let message): Text(message).font(.caption).foregroundStyle(.orange)
-          case .loaded: Text("No agent sessions yet. Start one on your Mac.").font(.caption).foregroundStyle(.secondary)
-          }
-        }
-      }
-      .navigationTitle("Sessions")
-      .onAppear { held = groups }
-      .onChange(of: model.workbench.hosts.hosts) { held = groups }
-    }
-  }
-}
-
-private struct WatchChatRow: View {
-  let item: ConversationFeed.Item
-  @ScaledMetric(relativeTo: .footnote) private var messageSize = 14.0
-
-  var body: some View {
-    switch WatchConversationContent(item.row) {
-    case .assistant(let text):
-      if case .message(let shown) = item.row, !shown.message.blocks.isEmpty {
-        WatchMarkdown(blocks: shown.message.blocks)
-      } else {
-        Text(text).font(.system(size: messageSize)).frame(maxWidth: .infinity, alignment: .leading)
-      }
-    case .user(let text, let status):
-      VStack(alignment: .trailing, spacing: 4) {
-        Text(text).font(.system(size: messageSize))
-          .padding(.horizontal, 10).padding(.vertical, 8)
-          .background(Color.blue.opacity(status == nil ? 0.24 : 0.14), in: RoundedRectangle(cornerRadius: 14))
-          .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.blue.opacity(0.34), lineWidth: 0.5))
-        if let status { Text(status).font(.caption2).foregroundStyle(.secondary) }
-      }
-      .padding(.leading, 22)
-      .frame(maxWidth: .infinity, alignment: .trailing)
-      .accessibilityElement(children: .combine)
-    case nil: EmptyView()
-    }
   }
 }

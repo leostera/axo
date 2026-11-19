@@ -1,6 +1,6 @@
 # Axo Watch companion
 
-The Watch is a companion client, not a host: it does not run Sessions or enroll as a Mac. The iPhone app embeds the Watch app. Sign in on the iPhone and open Axo on the Watch; WatchConnectivity synchronizes that same native sign-in automatically. There is no Watch login, pairing code, or separate account enrollment.
+The Watch is a companion client, not a host: it does not run Sessions or enroll as a Mac. The full iPhone companion artifact embeds the Watch app; the current mobile-only identity-transfer artifact deliberately does not update the Watch. Sign in on the iPhone and open Axo on the Watch; WatchConnectivity synchronizes that same native sign-in automatically. There is no Watch login, pairing code, or separate account enrollment.
 
 The companion verifies the account with the existing `/api/auth/me` endpoint on foreground and every 30 seconds while active. A signed-in Watch uses an acknowledged HTTPS mailbox for its account/session stream, with the same native client and conversation models as the iPhone. watchOS blocks ordinary apps from opening WebSockets (Apple TN3135); Mac/iPhone clients retain their existing WebSocket transport. It never runs an agent locally.
 
@@ -80,7 +80,7 @@ hard-coded personal color.
 - The Watch stores the sign-in in its own unlocked-only, this-device-only Keychain item. No credentials are logged or stored in defaults.
 - Signing out on the iPhone revokes the shared server credential and sends a signed-out context to the Watch. A Watch without connectivity detects server revocation when it next reconnects; instantaneous offline revocation is not possible.
 - Network failure shows **Not connected**, rather than pretending the account has signed out. A server authorization refusal clears the Watch's cached credential.
-- Both apps must use the configured companion bundle relationship. The original standalone playground (`dev.leostera.axo.watch`) is a different app and does not participate in this flow.
+- Both apps must use the configured companion bundle relationship. An older standalone installation may already use `dev.leostera.axo.watch`; matching that identifier does not prove compatible companion metadata or preservation of its signed Keychain scope. Inspect the existing installation before replacing it.
 
 ## Build and test
 
@@ -88,6 +88,8 @@ From the repository root:
 
 ```sh
 bazel test //apple/AxoCompanion:AxoCompanionTests //apple/AxoWatchModel:AxoWatchModelTests //apple/AxoMobile:AxoMobileModelTests
+# Apple rules call the arm64 Watch simulator architecture `arm64`, not `sim_arm64`.
+bazel build //apple/AxoWatch:AxoWatchApp --watchos_cpus=arm64
 bazel build //apple/AxoMobile:AxoMobileApp  # simulator iPhone bundle with embedded Watch app
 bazel run //apple:xcodeproj
 open apple/Axo.xcodeproj
@@ -105,6 +107,8 @@ Xcode must already trust both devices, Developer Mode must be enabled, and the d
 xcrun devicectl list devices
 apple/AxoWatch/run_device.sh <iPhone-identifier> <Watch-identifier>
 ```
+
+**Do not run this installer against an unresolved existing Watch identity.** It checks bundle signatures and versions, not preservation of the installed app's credentials. First follow [the distribution preservation gates](../DISTRIBUTION.md#preservation-probes-before-migration). A bundle-ID change is a separate identity migration, not a display-name cleanup; never uninstall or reset the existing app to make installation pass.
 
 The script builds the real signed Bazel iPhone bundle with its embedded arm64 Watch app, verifies signatures, installs and launches both apps, and checks that the newly launched Watch PID is running. It preserves bundles and JSON verification results in the temporary directory it prints. The first sign-in, if needed, is performed by the person on the iPhone; the Watch never asks for a password.
 
