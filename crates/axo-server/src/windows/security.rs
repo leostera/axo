@@ -9,6 +9,56 @@ use windows_sys::Win32::Security::Authorization::*;
 use windows_sys::Win32::Security::*;
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
+/// Kernel identity used when walking a caller's ancestry. Creation time prevents
+/// a recycled PID from inheriting another process's Session authority.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct ProcessIdentity {
+    pub pid: u32,
+    created: u64,
+}
+
+impl ProcessIdentity {
+    pub fn of(pid: u32) -> Option<Self> {
+        use windows_sys::Win32::System::Threading::{
+            GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+        };
+        unsafe {
+            let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+            if process.is_null() {
+                return None;
+            }
+            let mut created = std::mem::zeroed();
+            let mut exited = std::mem::zeroed();
+            let mut kernel = std::mem::zeroed();
+            let mut user = std::mem::zeroed();
+            let ok = GetProcessTimes(process, &mut created, &mut exited, &mut kernel, &mut user);
+            CloseHandle(process);
+            (ok != 0).then_some(Self {
+                pid,
+                created: (u64::from(created.dwHighDateTime) << 32) | u64::from(created.dwLowDateTime),
+            })
+        }
+    }
+
+    pub fn is_running(self) -> bool {
+        Self::of(self.pid) == Some(self)
+    }
+}
+
+#[cfg(test)]
+mod identity_tests {
+    use super::ProcessIdentity;
+
+    #[test]
+    fn process_authority_includes_kernel_creation_time() {
+        let current = ProcessIdentity::of(std::process::id()).unwrap();
+        assert!(current.is_running());
+        let stale = ProcessIdentity { created: current.created + 1, ..current };
+        assert!(!stale.is_running());
+        assert!(ProcessIdentity::of(u32::MAX).is_none());
+    }
+}
+
 /// A local tool process cannot answer its own questions or grant itself access.
 /// Match the connected process to this bundle's desktop executable, rather than
 /// trusting a role supplied in JSON. The pipe ACL already verifies the user SID.
@@ -26,6 +76,9 @@ pub fn is_desktop_client(pipe: &NamedPipeServer) -> bool {
         if GetNamedPipeClientProcessId(pipe.as_raw_handle(), &mut pid) == 0 {
             return false;
         }
+        let Some(identity) = ProcessIdentity::of(pid) else {
+            return false;
+        };
         let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
         if process.is_null() {
             return false;
@@ -45,7 +98,7 @@ pub fn is_desktop_client(pipe: &NamedPipeServer) -> bool {
             std::fs::canonicalize(actual),
             expected.and_then(|p| std::fs::canonicalize(p).ok()),
         ) {
-            (Ok(actual), Some(expected)) => actual
+            (Ok(actual), Some(expected)) => identity.is_running() && actual
                 .to_string_lossy()
                 .eq_ignore_ascii_case(&expected.to_string_lossy()),
             _ => false,
