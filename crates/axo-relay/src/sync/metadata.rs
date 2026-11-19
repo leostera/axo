@@ -15,6 +15,9 @@ pub struct SessionMetadata {
     /// The last component of the Session's folder (RFD0038).
     pub folder_name: Option<String>,
     pub has_agent: bool,
+    /// The host's actual adapter; absent on older metadata, never inferred from a model name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<axo_protocol::agent::AgentKind>,
     pub created_at: Option<i64>,
     pub last_message_at: Option<i64>,
     pub archived: bool,
@@ -119,6 +122,10 @@ impl SessionMetadata {
         if self.pi.is_none() {
             self.pi = before.pi.clone();
         }
+        // Session agent kinds are immutable; an older metadata reader cannot erase a known kind.
+        if self.agent.is_none() {
+            self.agent = before.agent;
+        }
     }
 }
 
@@ -168,12 +175,22 @@ mod tests {
             emoji: None,
             folder_name: None,
             has_agent: true,
+            agent: None,
             created_at: None,
             last_message_at: None,
             archived: false,
             workspace_state,
             pi: None,
         }
+    }
+
+    #[test]
+    fn agent_identity_is_explicit_and_unknown_is_not_pi() {
+        let unknown = listed(None);
+        let value = serde_json::to_value(&unknown).unwrap();
+        assert!(value.get("agent").is_none());
+        let known = SessionMetadata { agent: Some(axo_protocol::agent::AgentKind::Codex), ..unknown };
+        assert_eq!(serde_json::to_value(known).unwrap()["agent"], "codex");
     }
 
     #[test]
@@ -242,6 +259,7 @@ mod tests {
             emoji: Some("a b".into()),
             folder_name: Some("🦀".repeat(200)),
             has_agent: true,
+            agent: None,
             created_at: Some(-1),
             last_message_at: Some(5),
             archived: false,

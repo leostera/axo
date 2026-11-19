@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import type { PiModel, ThinkingLevel } from "@axo/protocol";
 import { Icon } from "./icons.tsx";
-import { levelName, levelsOf, matchingModels, modelsByProvider, runtimeLabel } from "./pi-controls.ts";
+import { levelName, levelsOf, matchingModels, modelsByProvider } from "./pi-controls.ts";
 import type { ChatWorkbench, Session } from "./workbench.ts";
 
 type Choice = { kind: "model"; model: PiModel } | { kind: "thinking"; level: ThinkingLevel };
@@ -22,7 +22,7 @@ export function ModelPicker({ workbench, session, disabled }: { workbench: ChatW
   const sessionId = useRef(session.sessionId);
   sessionId.current = session.sessionId;
   const listId = useId();
-  const label = runtimeLabel(session.pi);
+  const label = session.pi?.model?.name;
   const state = workbench.chat(session.sessionId).models;
   const models = state?.kind === "loaded" ? state.items : [];
   const groups = useMemo(() => modelsByProvider(matchingModels(models, query)), [models, query]);
@@ -121,13 +121,25 @@ export function ModelPicker({ workbench, session, disabled }: { workbench: ChatW
 
   return (
     <div className="model-picker" ref={root}>
-      <button ref={trigger} type="button" className="model-picker-button" disabled={disabled}
-        aria-haspopup="dialog" aria-expanded={open} aria-label={`Model: ${label}`} title="Choose model and thinking level"
-        onClick={() => {
-          if (!open) { setPage("settings"); setQuery(""); setError(null); void workbench.loadModels(session.sessionId); }
-          setOpen(!open);
+      <button type="button" className="model-picker-button" disabled={disabled}
+        aria-haspopup="dialog" aria-expanded={open && page === "models"} aria-label={`Model: ${label}`} title="Choose model"
+        onClick={event => {
+          trigger.current = event.currentTarget;
+          setPage("models"); setQuery(""); setError(null); void workbench.loadModels(session.sessionId);
+          setOpen(!open || page !== "models");
         }}>
         <span className="model-picker-label">{label}</span><Icon name="chevronDown" size={11} />
+      </button>
+      <button type="button" className="model-picker-button thinking-picker-button" disabled={disabled}
+        aria-haspopup="dialog" aria-expanded={open && page === "settings"}
+        aria-label={`Thinking: ${thinking ? levelName(thinking) : "Default"}`} title="Choose thinking level"
+        onClick={event => {
+          trigger.current = event.currentTarget;
+          setPage("settings"); setError(null);
+          void workbench.loadModels(session.sessionId);
+          setOpen(!open || page !== "settings");
+        }}>
+        <span className="model-picker-label"><span className="thinking-full">{thinking ? levelName(thinking) : "Thinking"}</span><span className="thinking-short">{thinking === "medium" ? "Med" : thinking === "minimal" ? "Min" : thinking === "xhigh" ? "XHigh" : thinking ? levelName(thinking) : "Think"}</span></span><Icon name="chevronDown" size={11} />
       </button>
       {open ? (
         <div ref={panel} className="host-menu model-menu" role="dialog" aria-label="Model settings" aria-busy={Boolean(pending)}>

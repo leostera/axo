@@ -89,6 +89,8 @@ export const sessionMetadataSchema = z.object({
   /** The last component of the Session's folder (RFD0038). */
   folderName: z.string().min(1).max(255).nullable(),
   hasAgent: z.boolean(),
+  /** Actual adapter reported by the owning host; unknown on older metadata. */
+  agent: z.enum(["pi", "codex", "opencode", "claude-code"]).optional(),
   /** Unix seconds. */
   createdAt: unixSeconds.nullable(),
   /** Unix seconds of the latest completed user or assistant message. */

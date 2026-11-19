@@ -625,15 +625,15 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     assert.deepEqual(await recent.locator(".chat-row-host").allTextContents(), ["Browser fixture Mac", "Browser fixture Mac", "Browser fixture Mac"]);
     const composer = page.locator(".conversation-footer .composer");
     await page.getByLabel("Message").fill("Check the disk");
-    await composer.getByRole("button", { name: "Start on Browser fixture Mac" }).click();
+    await composer.getByRole("button", { name: "Host: Browser fixture Mac" }).click();
     const startOn = page.getByRole("menu", { name: "Start on" });
     await shot("new-chat-host-menu");
     await startOn.getByRole("menuitemradio", { name: /Mac Studio/ }).click();
-    await expect(composer.getByRole("button", { name: "Start on Mac Studio" }));
+    await expect(composer.getByRole("button", { name: "Host: Mac Studio" }));
     assert.equal(await page.getByLabel("Message").inputValue(), "Check the disk", "what is typed comes along");
-    await composer.getByRole("button", { name: "Start on Mac Studio" }).click();
+    await composer.getByRole("button", { name: "Host: Mac Studio" }).click();
     await startOn.getByRole("menuitemradio", { name: /Browser fixture Mac/ }).click();
-    await expect(composer.getByRole("button", { name: "Start on Browser fixture Mac" }));
+    await expect(composer.getByRole("button", { name: "Host: Browser fixture Mac" }));
     await page.getByLabel("Message").fill("");
 
     // A chat's history: words, Markdown and the tools Pi used.
@@ -814,7 +814,7 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     assert.equal(await page.getByTestId("pending-prompt").count(), 1);
 
     // The model and thinking level, beside Send: picking either asks Pi, and the box names what Pi then says it runs.
-    const model = page.getByRole("button", { name: "Model: Opus 4.1 · High" });
+    const model = page.getByRole("button", { name: "Thinking: High" });
     await model.click();
     const modelMenu = page.getByRole("dialog", { name: "Model settings" });
     await expect(modelMenu.getByRole("radiogroup", { name: "Thinking level" }));
@@ -824,9 +824,9 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     assert.equal(await modelMenu.getByRole("option", { name: /Opus 4.1/ }).getAttribute("aria-selected"), "true");
     assert.deepEqual(await modelMenu.locator(".menu-section").allTextContents(), ["anthropic", "openai"]);
     await modelMenu.getByRole("option", { name: /GPT-5/ }).click();
-    await expect(page.getByRole("button", { name: "Model: GPT-5 · High" }));
+    await expect(page.getByRole("button", { name: "Model: GPT-5" }));
     await modelMenu.getByText("Low", { exact: true }).click();
-    await expect(page.getByRole("button", { name: "Model: GPT-5 · Low" }));
+    await expect(page.getByRole("button", { name: "Thinking: Low" }));
     assert.deepEqual(modelSets.map(({ model, thinkingLevel }) => [model?.id, thinkingLevel]), [["gpt-5", undefined], [undefined, "low"]]);
 
     // Restart, from the chat's info: it asks first, says Restarting until Pi is back, and what waited is then delivered.

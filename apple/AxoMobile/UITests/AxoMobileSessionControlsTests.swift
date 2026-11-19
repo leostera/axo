@@ -53,6 +53,26 @@ final class AxoMobileSessionControlsTests: XCTestCase {
     return composer
   }
 
+  @MainActor
+  func testComposerSelectorsShareOneRowAndDoNotSendTheDraft() {
+    let app = launch(chat: 2)
+    let composer = type("Keep this unsent", in: app)
+    let selectors = ["host-picker", "agent-picker", "model-picker", "thinking-picker"].map { element(app, $0) }
+    for item in selectors {
+      XCTAssertTrue(item.waitForExistence(timeout: 5))
+      XCTAssertTrue(item.isHittable)
+    }
+    for index in 1..<selectors.count {
+      XCTAssertGreaterThanOrEqual(selectors[index].frame.minX, selectors[index - 1].frame.maxX - 1)
+      XCTAssertEqual(selectors[index].frame.midY, selectors[0].frame.midY, accuracy: 2)
+    }
+    selectors[3].tap()
+    XCTAssertTrue(element(app, "thinking-medium").waitForExistence(timeout: 5))
+    element(app, "thinking-medium").tap()
+    XCTAssertEqual(composer.value as? String, "Keep this unsent")
+    capture(app, named: "composer-four-selectors")
+  }
+
   // MARK: - The model
 
   @MainActor
@@ -61,23 +81,26 @@ final class AxoMobileSessionControlsTests: XCTestCase {
     app.textViews["composer"].tapWhereItIs()
     let model = element(app, "model-picker")
     XCTAssertTrue(model.waitForExistence(timeout: 5))
-    XCTAssertEqual(model.label, "Model: Opus 4.1 · High")
+    XCTAssertEqual(model.label, "Model: Opus 4.1")
+    let thinking = element(app, "thinking-picker")
+    XCTAssertEqual(thinking.label, "Thinking: High")
     model.tap()
     let gpt = element(app, "model-gpt-5")
     XCTAssertTrue(gpt.waitForExistence(timeout: 5), "the models are read as the menu opens")
     XCTAssertTrue(app.staticTexts["Anthropic"].exists && app.staticTexts["OpenAI"].exists, "grouped by provider")
     XCTAssertTrue(element(app, "model-claude-opus-4-1").isSelected, "the one Pi runs is checked")
-    XCTAssertTrue(element(app, "thinking-xhigh").exists, "then the levels the current model supports")
+    XCTAssertFalse(element(app, "thinking-xhigh").exists, "thinking has its own independent picker")
     capture(app, named: "model-menu-light")
     gpt.tap()
-    XCTAssertTrue(waitUntil(5) { model.label == "Model: GPT-5 · High" }, model.label)
+    XCTAssertTrue(waitUntil(5) { model.label == "Model: GPT-5" }, model.label)
 
-    model.tap()
+    thinking.tap()
     let medium = element(app, "thinking-medium")
     XCTAssertTrue(medium.waitForExistence(timeout: 5))
     XCTAssertFalse(element(app, "thinking-xhigh").exists, "GPT-5 has no Extra High")
     medium.tap()
-    XCTAssertTrue(waitUntil(5) { model.label == "Model: GPT-5 · Medium" }, model.label)
+    XCTAssertTrue(waitUntil(5) { thinking.label == "Thinking: Medium" }, thinking.label)
+    XCTAssertEqual(model.label, "Model: GPT-5")
   }
 
   // MARK: - Slash commands

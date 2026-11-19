@@ -32,28 +32,28 @@ final class AxoMobileComposerIslandTests: XCTestCase {
   }
 
   @MainActor
-  func testEmptyIslandExpandsOnFocusAndCollapsesAfterLeavingAnEmptyEditor() {
+  func testSelectorsKeepOneStableToolbarBeforeAndAfterFocus() {
     let app = launch()
     let editor = app.textViews["composer"]
     let add = app.buttons["attach"]
     let send = app.buttons["send-message"]
     XCTAssertTrue(editor.waitForExistence(timeout: 5))
-    let compactWidth = editor.frame.width
-    XCTAssertLessThan(abs(add.frame.midY - editor.frame.midY), 8)
-    XCTAssertLessThan(abs(send.frame.midY - editor.frame.midY), 8)
-    XCTAssertFalse(app.buttons["model-picker"].exists)
-    capture(app, "composer-island-resting")
+    let width = editor.frame.width
+    XCTAssertGreaterThanOrEqual(add.frame.minY, editor.frame.maxY)
+    XCTAssertEqual(add.frame.midY, send.frame.midY, accuracy: 4)
+    XCTAssertTrue(app.buttons["model-picker"].exists)
+    XCTAssertTrue(app.buttons["thinking-picker"].exists)
+    capture(app, "composer-selectors-resting")
 
     editor.tapWhereItIs()
-    wait("Focus expands into two rows without replacing the editor") {
-      add.frame.minY >= editor.frame.maxY && editor.frame.width > compactWidth
+    wait("Focus preserves the editor width and the toolbar row") {
+      add.frame.minY >= editor.frame.maxY && abs(editor.frame.width - width) < 2
     }
-    XCTAssertTrue(app.buttons["model-picker"].exists)
-    capture(app, "composer-island-focused")
+    capture(app, "composer-selectors-focused")
     app.buttons["Chats menu"].tapWhereItIs()
     app.buttons["Back to conversation"].tapWhereItIs()
-    wait("An empty, unfocused editor returns to the small island") {
-      abs(add.frame.midY - editor.frame.midY) < 8 && abs(editor.frame.width - compactWidth) < 2
+    wait("The selectors remain available without expanding or collapsing the editor") {
+      add.frame.minY >= editor.frame.maxY && abs(editor.frame.width - width) < 2
     }
     XCTAssertEqual(editor.value as? String ?? "", "")
   }

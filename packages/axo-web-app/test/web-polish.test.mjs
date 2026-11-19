@@ -44,7 +44,7 @@ test("web polish: user Markdown, contrasting Send and independent searchable mod
       assert.equal(colors.foreground, theme === "dark" ? "rgb(0, 0, 0)" : "rgb(255, 255, 255)");
       await page.screenshot({ path: output(`web-polish-${theme}.png`) });
     }
-    await page.getByRole("button", { name: "Model: Model 0 · Medium", exact: true }).click();
+    await page.getByRole("button", { name: "Thinking: Medium", exact: true }).click();
     const dialog = page.getByRole("dialog", { name: "Model settings" });
     await dialog.waitFor();
     await dialog.getByRole("radio", { name: "Medium", exact: true }).waitFor({ timeout: 5000 });
@@ -59,7 +59,7 @@ test("web polish: user Markdown, contrasting Send and independent searchable mod
     await search.fill("PROVIDER-B 242");
     assert.equal(await dialog.getByRole("option").count(), 1);
     await search.press("Enter");
-    await page.getByRole("button", { name: "Model: Model 242 · Medium", exact: true }).waitFor();
+    await page.getByRole("button", { name: "Model: Model 242", exact: true }).waitFor();
     assert.equal(await field.inputValue(), "**Pending bold** and `pending code`");
     assert.equal(cloud.prompts.length, 0, "Enter in model search never sends the composer draft");
     assert.equal(cloud.modelSets.length, 1);
@@ -68,7 +68,7 @@ test("web polish: user Markdown, contrasting Send and independent searchable mod
     const medium = dialog.getByRole("radio", { name: "Medium", exact: true });
     await medium.focus();
     await medium.press("ArrowRight");
-    await page.getByRole("button", { name: "Model: Model 242 · High", exact: true }).waitFor();
+    await page.getByRole("button", { name: "Thinking: High", exact: true }).waitFor();
     assert.equal(cloud.modelSets[1].thinkingLevel, "high");
     assert.equal("model" in cloud.modelSets[1], false, "thinking is a separate API selection");
     // Failure does not change the selected model or hide the error in a closed menu.
@@ -83,7 +83,7 @@ test("web polish: user Markdown, contrasting Send and independent searchable mod
     await dialog.waitFor({ state: "detached" });
     // Both modes remain inside a phone viewport, including the long-catalog search page.
     await page.setViewportSize({ width: 390, height: 844 });
-    await page.getByRole("button", { name: "Model: Model 242 · High", exact: true }).click();
+    await page.getByRole("button", { name: "Thinking: High", exact: true }).click();
     await dialog.getByRole("button", { name: "Choose model", exact: true }).click();
     const mobileBounds = await dialog.boundingBox();
     assert.ok(mobileBounds.x >= 0 && mobileBounds.x + mobileBounds.width <= 391, JSON.stringify(mobileBounds));

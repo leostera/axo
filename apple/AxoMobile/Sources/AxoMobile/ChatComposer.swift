@@ -5,8 +5,9 @@ import PhotosUI
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// An empty, unfocused message box is a small single-row island. Editing expands the same text
-/// view into a rounded card, the words on top and a bar under them with + on the left
+/// The same persistent editor stays above one toolbar, whether empty or focused. Its
+/// Host, Agent, Model and Thinking controls sit between + and voice/Send. The words stay on top
+/// in a rounded card, with + on the left
 /// (the camera, photos, files and plugins, in a menu above it) and voice and Send on the right. It
 /// grows with the words. It stays closed, saying why in its placeholder, when there is nobody to
 /// send to. Once a message runs past a few lines it can be opened full screen. Return starts a new
@@ -29,6 +30,9 @@ struct ChatComposer: View {
   var voiceDestination: PhoneWorkbench.Selection?
   /// Settings › Apps, from the + menu's Plugins.
   var showApps: (() -> Void)?
+  /// Destination selectors share the bottom toolbar; nil only for isolated previews.
+  var phone: PhoneWorkbench?
+  var agent: CodingAgent?
   /// The chat's Pi: its model, and its commands.
   var pi: ComposerPi?
   let send: (PromptDelivery) -> Void
@@ -43,6 +47,7 @@ struct ChatComposer: View {
   @State private var showingCamera = false
   @State private var showingAddMenu = false
   @State private var showingModels = false
+  @State private var showingThinking = false
   @State private var showingDeliveries = false
   /// Send was held: the lift that ends the hold sends nothing.
   @State private var heldSend = false
@@ -53,7 +58,7 @@ struct ChatComposer: View {
 
   /// Keep content and menu anchors open; collapsing is only for an empty, unfocused island.
   private var isExpanded: Bool {
-    editorFocused || !draft.isEmpty || !files.isEmpty || showsVoiceStatus
+    phone != nil || editorFocused || !draft.isEmpty || !files.isEmpty || showsVoiceStatus
       || showingExpandedEditor || showingAddMenu || showingModels || showingDeliveries
       || showingPhotos || showingFiles || showingCamera
   }
@@ -109,7 +114,21 @@ struct ChatComposer: View {
         .frame(minHeight: 30)
         .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { editorHeight = $0 }
       HStack(spacing: 8) {
-        if isExpanded, let pi { modelButton(pi, label: pi.runtime?.label ?? (pi.useDefault != nil ? "Host default" : "Model")) }
+        ScrollView(.horizontal) {
+          HStack(spacing: 4) {
+            if let phone {
+              HostPicker(phone: phone, voice: voice)
+              AgentPicker(phone: phone, voice: voice, currentAgent: agent)
+            }
+            if let pi {
+              modelButton(pi, label: pi.runtime?.model?.name ?? (pi.useDefault != nil ? "Host default" : "Model"))
+              thinkingButton(pi)
+            }
+          }
+        }
+        .scrollIndicators(.hidden)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityIdentifier("composer-selectors")
         if isExpanded, isLong { expandButton }
         if let voice { VoiceButton(voice: voice, enabled: canSend, destination: voiceDestination) }
         sendButton
@@ -184,11 +203,13 @@ struct ChatComposer: View {
   private func modelButton(_ pi: ComposerPi, label: String) -> some View {
     Button { showingModels = true } label: {
       Text(label)
-        .font(.footnote)
+        .font(.caption)
         .foregroundStyle(.secondary)
         .lineLimit(1)
-        .padding(.horizontal, 6)
+        .frame(maxWidth: 100)
+        .padding(.horizontal, 8)
         .frame(height: ComposerMetrics.control)
+        .background(Color.primary.opacity(0.05), in: Capsule())
         .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
@@ -196,7 +217,24 @@ struct ChatComposer: View {
     .accessibilityLabel("Model: \(label)")
     .accessibilityIdentifier("model-picker")
     .popover(isPresented: $showingModels, attachmentAnchor: .point(.top), arrowEdge: .bottom) {
-      ModelMenu(pi: pi) { showingModels = false }
+      ModelMenu(pi: pi, thinkingOnly: false) { showingModels = false }
+        .presentationCompactAdaptation(.popover)
+    }
+  }
+
+  private func thinkingButton(_ pi: ComposerPi) -> some View {
+    let label = pi.runtime?.thinkingLevel?.title ?? "Thinking"
+    return Button { showingThinking = true } label: {
+      Text(label).font(.caption).foregroundStyle(.secondary)
+        .padding(.horizontal, 9).frame(height: ComposerMetrics.control)
+        .background(Color.primary.opacity(0.05), in: Capsule())
+    }
+    .buttonStyle(.plain)
+    .disabled(!canSend)
+    .accessibilityLabel("Thinking: \(label)")
+    .accessibilityIdentifier("thinking-picker")
+    .popover(isPresented: $showingThinking, attachmentAnchor: .point(.top), arrowEdge: .bottom) {
+      ModelMenu(pi: pi, thinkingOnly: true) { showingThinking = false }
         .presentationCompactAdaptation(.popover)
     }
   }
@@ -360,6 +398,7 @@ private struct SlashCommandList: View {
 /// current one supports. Read from the Pi each time it opens.
 private struct ModelMenu: View {
   let pi: ComposerPi
+  let thinkingOnly: Bool
   let done: () -> Void
 
   private var current: PiModel? { pi.models?.first { $0.isModel(pi.runtime?.model) } }
@@ -367,7 +406,7 @@ private struct ModelMenu: View {
   var body: some View {
     ScrollView {
       VStack(alignment: .leading, spacing: 2) {
-        if let useDefault = pi.useDefault {
+        if !thinkingOnly, let useDefault = pi.useDefault {
           row("Use host default", chosen: pi.runtime == nil, id: "model-host-default") {
             useDefault()
             done()
@@ -379,6 +418,7 @@ private struct ModelMenu: View {
             .padding(10).accessibilityIdentifier("model-retry")
         }
         if let models = pi.models {
+          if !thinkingOnly {
           ForEach(Self.providers(models), id: \.provider) { group in
             header(Self.providerName(group.provider))
             ForEach(group.models) { model in
@@ -388,7 +428,8 @@ private struct ModelMenu: View {
               }
             }
           }
-          if let levels = current?.thinkingLevels, !levels.isEmpty {
+          }
+          if thinkingOnly, let levels = current?.thinkingLevels, !levels.isEmpty {
             header("Thinking")
             ForEach(levels, id: \.self) { level in
               row(level.title, chosen: pi.runtime?.thinkingLevel == level, id: "thinking-\(level.rawValue)") {
@@ -412,7 +453,7 @@ private struct ModelMenu: View {
     .fixedSize(horizontal: false, vertical: true)
     .presentationBackground(.thinMaterial)
     .task { await pi.loadModels() }
-    .accessibilityIdentifier("model-menu")
+    .accessibilityIdentifier(thinkingOnly ? "thinking-menu" : "model-menu")
   }
 
   private func header(_ title: String) -> some View {

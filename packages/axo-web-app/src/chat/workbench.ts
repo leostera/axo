@@ -44,6 +44,7 @@ export interface Session {
   /** The last component of its folder on the Mac; never the path (RFD0038). */
   readonly folderName: string | null;
   readonly hasAgent: boolean;
+  readonly agent?: CodingAgent;
   /** Unix seconds. */
   readonly createdAt: number | null;
   /** Unix seconds of the latest completed message. */
@@ -1094,9 +1095,9 @@ export class ChatWorkbench {
       if (!host || !this.ready()) return { kind: "failed" };
       const target = this.reference(host);
       let created: CreatedSession;
+      const agent = this.newChatAgent;
       try {
         // Pi is left unsaid, so that a Mac older than the picker still takes the chat.
-        const agent = this.newChatAgent;
         ({ session: created } = await this.connection!.command("axo.remote.session.create",
           agent === "pi" ? { target } : { target, agent }));
       } catch (error) {
@@ -1114,6 +1115,7 @@ export class ChatWorkbench {
           emoji: created.emoji ?? null,
           folderName: created.folderName ?? null,
           hasAgent: true,
+          agent,
           createdAt: created.createdAt ?? Math.floor(Date.now() / 1000),
           lastMessageAt: null,
           archived: false,

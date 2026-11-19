@@ -39,6 +39,7 @@ impl SyncStore for Host {
                 emoji: None,
                 folder_name: None,
                 has_agent: true,
+                agent: None,
                 created_at: None,
                 last_message_at: None,
                 archived: false,

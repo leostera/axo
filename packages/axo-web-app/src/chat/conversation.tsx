@@ -291,7 +291,6 @@ export function Conversation({ workbench, wide, onShowChats, onToggleInfo, onApp
         ) : null}
         <Composer
           workbench={workbench}
-          wide={wide}
           voice={voice}
           placeholder={!host ? "Choose a Mac to start a draft" : "Message Axo"}
           canCompose={canCompose}
@@ -315,10 +314,8 @@ const encoder = new TextEncoder();
  * the words. While listening the box becomes the listening bar. With a keyboard, Enter sends and
  * Shift-Enter starts a new line; on a touch screen Return starts a new line and Send sends.
  */
-function Composer({ workbench, wide, voice, placeholder, canCompose, canSend, onSend, onEscape, onApps }: {
+function Composer({ workbench, voice, placeholder, canCompose, canSend, onSend, onEscape, onApps }: {
   workbench: ChatWorkbench;
-  /** Wide, the Mac is chosen inside the box; narrow, from a chip floating above it. */
-  wide: boolean;
   voice: VoicePrompt | null;
   placeholder: string;
   canCompose: boolean;
@@ -456,7 +453,6 @@ function Composer({ workbench, wide, voice, placeholder, canCompose, canSend, on
   return (
     <div className="composer-stack">
       {voice ? <VoiceStatusCard voice={voice} /> : null}
-      {!wide ? <HostPicker workbench={workbench} floating /> : null}
       {tooLong ? <p className="composer-note" role="status">Too long to send: {bytes.toLocaleString()} of {maxMessageBytes.toLocaleString()} bytes.</p> : null}
       {files.length ? (
         <ul className="composer-files" aria-label="Attached files">
@@ -516,10 +512,9 @@ function Composer({ workbench, wide, voice, placeholder, canCompose, canSend, on
               else if (choice === "files") picker.current?.click();
               else onApps?.();
             }} plugins={Boolean(onApps)} />
-            {wide ? <HostPicker workbench={workbench} /> : null}
+            <HostPicker workbench={workbench} />
             <AgentPicker workbench={workbench} />
-            <span className="spacer" />
-            {session ? <ModelPicker workbench={workbench} session={session} disabled={!canSend} /> : null}
+            {session ? <ModelPicker workbench={workbench} session={session} disabled={!canSend} /> : <><button type="button" className="model-picker-button" disabled title="The host default applies until this Session starts">Model</button><button type="button" className="model-picker-button" disabled title="The host default applies until this Session starts">Thinking</button></>}
             {voice ? (
               <button type="button" className="round-button composer-mic"
                 disabled={!canCompose || voice.isBusy} onClick={() => void voice.start()}
@@ -638,11 +633,11 @@ export function formatBytes(bytes: number): string {
  * Which Mac the chat is on. On a new chat it is the choice of where to start it: tap, pick a Mac,
  * send. On a chat already going it only says where it is.
  */
-function HostPicker({ workbench, floating = false }: { workbench: ChatWorkbench; floating?: boolean }) {
+function HostPicker({ workbench }: { workbench: ChatWorkbench }) {
   const [open, setOpen] = useState(false);
   const root = useRef<HTMLDivElement>(null);
   const host = workbench.openHost;
-  const choosing = workbench.selection?.kind === "new" && workbench.hosts.length > 1;
+  const drafting = workbench.selection?.kind === "new";
   useEffect(() => {
     if (!open) return;
     const close = (event: PointerEvent) => { if (!root.current?.contains(event.target as Node)) setOpen(false); };
@@ -660,23 +655,22 @@ function HostPicker({ workbench, floating = false }: { workbench: ChatWorkbench;
     </>
   );
   return (
-    <div className={floating ? "host-picker floating" : "host-picker"} ref={root}>
-      {choosing ? (
+    <div className="host-picker" ref={root}>
+      {(
         <button type="button" className="host-picker-button" aria-haspopup="menu" aria-expanded={open}
-          aria-label={`Start on ${host.label}`} title="Choose the computer to start this chat on" onClick={() => setOpen(!open)}>
+          aria-label={`Host: ${host.label}`} title={drafting ? "Choose the computer to start this chat on" : "Start a new Session on another computer; this draft stays here"} onClick={() => setOpen(!open)}>
           {face}<Icon name="arrowDown" size={11} />
         </button>
-      ) : (
-        <span className="host-picker-button static" title={`This chat is on ${host.label}`} aria-label={`On ${host.label}`}>{face}</span>
       )}
       {open ? (
         <div className="host-menu" role="menu" aria-label="Start on">
           {workbench.hosts.map(candidate => (
             <button key={candidate.hostId} type="button" role="menuitemradio" aria-checked={candidate.hostId === host.hostId}
               className="host-menu-item"
-              onClick={() => { workbench.chooseHost(candidate.hostId); setOpen(false); }}>
+              disabled={candidate.status !== "online"}
+              onClick={() => { if (drafting) workbench.chooseHost(candidate.hostId); else workbench.newChat(candidate.hostId); setOpen(false); }}>
               <Icon name={candidate.hostId === host.hostId ? "check" : hostIcon(candidate)} size={15} />
-              <span className="host-picker-label">{candidate.label}</span>
+              <span className="host-picker-label">{drafting ? "" : "New chat on "}{candidate.label}</span>
               <small>{candidate.status === "online" ? "Online" : "Offline"}</small>
             </button>
           ))}
@@ -701,7 +695,15 @@ function AgentPicker({ workbench }: { workbench: ChatWorkbench }) {
     window.addEventListener("pointerdown", close);
     return () => window.removeEventListener("pointerdown", close);
   }, []);
-  if (!drafting) return null;
+  if (!drafting) return <details className="agent-picker" ref={menu} onKeyDown={event => {
+    if (event.key === "Escape" && menu.current) { event.preventDefault(); menu.current.open = false; menu.current.querySelector("summary")?.focus(); }
+  }}>
+    <summary aria-label={`Agent: ${CODING_AGENTS.find(choice => choice.agent === workbench.selectedSession?.agent)?.label ?? "Unknown"}`}>
+      {workbench.selectedSession?.agent ? <BrandIcon name={workbench.selectedSession.agent} /> : <Icon name="sparkles" size={15} />}
+      <span className="agent-picker-label">{CODING_AGENTS.find(choice => choice.agent === workbench.selectedSession?.agent)?.label ?? "Agent"}</span><Icon name="chevronDown" size={12} />
+    </summary>
+    <div role="menu" aria-label="Session agent"><button type="button" role="menuitem" onClick={() => workbench.newChat()}>New chat to choose another agent</button></div>
+  </details>;
   const agents = workbench.availableCodingAgents;
   if (workbench.agentCatalogFailure) return <button type="button" onClick={() => void workbench.refreshAvailableCodingAgents()}>{workbench.agentCatalogFailure}</button>;
   if (agents === null || agents.length === 0) return <span className="agent-picker-status">{agents === null ? "Checking agents…" : "No coding agents available"}</span>;
@@ -715,7 +717,7 @@ function AgentPicker({ workbench }: { workbench: ChatWorkbench }) {
       items[(index + (event.key === "ArrowDown" ? 1 : -1) + items.length) % items.length]?.focus();
     }
   }}>
-    <summary aria-label="Agent"><BrandIcon name={workbench.newChatAgent} />{CODING_AGENTS.find(choice => choice.agent === workbench.newChatAgent)?.label}<Icon name="chevronDown" size={12} /></summary>
+    <summary aria-label="Agent"><BrandIcon name={workbench.newChatAgent} /><span className="agent-picker-label">{CODING_AGENTS.find(choice => choice.agent === workbench.newChatAgent)?.label}</span><Icon name="chevronDown" size={12} /></summary>
     <div role="menu" aria-label="Coding agents">{agents.map(agent => <button type="button" role="menuitemradio" aria-checked={agent === workbench.newChatAgent} key={agent}
       onClick={() => { workbench.chooseAgent(agent); if (menu.current) { menu.current.open = false; menu.current.querySelector("summary")?.focus(); } }}>
       <BrandIcon name={agent} />{CODING_AGENTS.find(choice => choice.agent === agent)?.label}

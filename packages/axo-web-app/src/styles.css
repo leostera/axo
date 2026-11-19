@@ -454,7 +454,12 @@ button:disabled { cursor: default; }
   background: transparent; font-size: 16px; line-height: 22px;
 }
 .composer-toolbar { display: flex; align-items: center; gap: 6px; min-height: 36px; }
-.composer-toolbar .spacer { flex: 1; }
+.composer-toolbar .spacer { flex: 1 1 0; min-width: 0; }
+.composer-toolbar > .add-menu-anchor, .composer-toolbar > .composer-mic { flex: none; }
+.composer-toolbar .host-picker, .composer-toolbar .agent-picker { flex: 0 1 auto; min-width: 0; }
+.composer-toolbar .host-picker-button, .composer-toolbar .agent-picker summary { max-width: 100%; min-width: 0; }
+.composer-toolbar svg { flex: none; }
+.agent-picker-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .composer-toolbar .host-picker { align-self: center; }
 .composer .add-button, .composer .composer-mic { width: 36px !important; height: 36px; background: transparent; color: var(--secondary); }
 .composer .add-button:hover:not(:disabled), .composer .composer-mic:hover:not(:disabled) { color: var(--text); background: var(--fill); }
@@ -473,13 +478,26 @@ button:disabled { cursor: default; }
 .add-menu-item:hover, .add-menu-item:focus-visible { background: var(--fill); outline: none; }
 .add-menu-well { display: grid; width: 40px; height: 40px; flex: none; place-items: center; border-radius: 50%; background: var(--fill-strong); }
 /* What the chat's Pi runs, dimmed beside Send, and its menu (RFD0033). */
-.model-picker { position: relative; flex: 0 1 auto; min-width: 0; }
+.model-picker { position: relative; display: flex; gap: 4px; flex: 1 1 auto; min-width: 0; }
+.model-picker > .model-picker-button:first-child { flex: 1 1 auto; }
+.thinking-short { display: none; }
 .model-picker-button {
   display: inline-flex; height: 32px; max-width: 200px; align-items: center; gap: 5px; padding: 0 8px 0 10px;
-  border: 0; border-radius: 16px; color: var(--tertiary); background: transparent; font-size: 13px; white-space: nowrap;
+  border: 0; border-radius: 16px; color: var(--secondary); background: var(--fill); font-size: 13px; white-space: nowrap; min-width: 0;
 }
 .model-picker-button:hover:not(:disabled), .model-picker-button[aria-expanded="true"] { color: var(--text); background: var(--fill); }
 .model-picker-label { overflow: hidden; text-overflow: ellipsis; }
+.thinking-picker-button { flex: none; }
+@media (max-width: 600px) {
+  .composer-toolbar { gap: 3px; }
+  .composer-toolbar .host-picker-button, .composer-toolbar .agent-picker summary { padding: 0 6px; gap: 3px; }
+  .composer-toolbar .host-picker-button > .host-picker-label, .composer-toolbar .agent-picker-label { display: none; }
+  .composer-toolbar .mac-dot, .composer-toolbar .host-picker-button > svg:last-child, .composer-toolbar .agent-picker summary > svg:last-child { display: none; }
+  .composer-toolbar .model-picker-button { padding: 0 6px; font-size: 11px; }
+  .composer-toolbar .model-picker { flex: 1; }
+  .composer-toolbar .model-picker-button > svg, .thinking-full { display: none; }
+  .thinking-short { display: inline; }
+}
 .host-menu.model-menu { right: 0; left: auto; width: min(340px, calc(100vw - 24px)); min-width: 0; max-height: min(480px, 70dvh); overflow: hidden; padding: 8px; }
 .model-setting-row { display: flex; width: 100%; align-items: center; gap: 12px; padding: 10px; border: 0; border-radius: 10px; background: transparent; color: var(--text); text-align: left; }
 .model-setting-row:hover, .model-setting-row:focus-visible { background: var(--fill); }

@@ -49,6 +49,7 @@ public struct RemoteSession: Decodable, Equatable, Sendable {
   public let emoji: String?
   public let status: RemoteSessionStatus?
   public let hasAgent: Bool?
+  public let agent: CodingAgent?
   public let shells: [RemoteShell]
   public let layout: SessionLayout?
   /// When this snapshot was sent, not when the Session was last active.
@@ -66,7 +67,7 @@ public struct RemoteSession: Decodable, Equatable, Sendable {
 
   public init(
     hostId: UUID, sessionId: SessionID, folderName: String? = nil,
-    name: String? = nil, emoji: String? = nil, status: RemoteSessionStatus? = nil, hasAgent: Bool? = nil,
+    name: String? = nil, emoji: String? = nil, status: RemoteSessionStatus? = nil, hasAgent: Bool? = nil, agent: CodingAgent? = nil,
     shells: [RemoteShell] = [], layout: SessionLayout? = nil, updatedAt: String = "",
     lastMessageAt: Int64? = nil, createdAt: Int64? = nil, workspaceState: WorkspaceState? = nil,
     pi: PiRuntime? = nil
@@ -78,6 +79,7 @@ public struct RemoteSession: Decodable, Equatable, Sendable {
     self.emoji = emoji
     self.status = status
     self.hasAgent = hasAgent
+    self.agent = agent
     self.shells = shells
     self.layout = layout
     self.updatedAt = updatedAt
@@ -93,7 +95,7 @@ public struct RemoteSession: Decodable, Equatable, Sendable {
     self.init(
       hostId: listed.hostId, sessionId: listed.sessionId, folderName: listed.metadata.folderName,
       name: listed.metadata.name, emoji: listed.metadata.emoji,
-      status: listed.status, hasAgent: listed.metadata.hasAgent,
+      status: listed.status, hasAgent: listed.metadata.hasAgent, agent: listed.metadata.agent,
       lastMessageAt: listed.metadata.lastMessageAt, createdAt: listed.metadata.createdAt,
       workspaceState: listed.metadata.workspaceState, pi: listed.metadata.pi)
   }
@@ -145,6 +147,7 @@ public struct SessionMetadata: Decodable, Equatable, Sendable {
   public let emoji: String?
   public let folderName: String?
   public let hasAgent: Bool
+  public let agent: CodingAgent?
   /// Unix seconds.
   public let createdAt: Int64?
   /// Unix seconds of the latest completed user or assistant message.
@@ -158,13 +161,14 @@ public struct SessionMetadata: Decodable, Equatable, Sendable {
 
   public init(
     name: String? = nil, emoji: String? = nil, folderName: String? = nil,
-    hasAgent: Bool = true, createdAt: Int64? = nil, lastMessageAt: Int64? = nil, archived: Bool = false,
+    hasAgent: Bool = true, agent: CodingAgent? = nil, createdAt: Int64? = nil, lastMessageAt: Int64? = nil, archived: Bool = false,
     workspaceState: WorkspaceState? = nil, pi: PiRuntime? = nil
   ) {
     self.name = name
     self.emoji = emoji
     self.folderName = folderName
     self.hasAgent = hasAgent
+    self.agent = agent
     self.createdAt = createdAt
     self.lastMessageAt = lastMessageAt
     self.archived = archived

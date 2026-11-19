@@ -14,6 +14,7 @@ struct DraftComposer: View {
   /// The open chat, for what its Pi runs and takes (RFD0033); nil for a new chat.
   var workbench: HostWorkbenchModel?
   var session: SessionID?
+  var agent: CodingAgent?
   let send: (PromptDelivery) -> Void
 
   var body: some View {
@@ -32,6 +33,8 @@ struct DraftComposer: View {
       voice: voice,
       voiceDestination: destination,
       showApps: showApps,
+      phone: phone,
+      agent: agent,
       pi: pi,
       send: send)
     .onChange(of: voice?.transcript, initial: true) { _, transcript in

@@ -112,6 +112,15 @@ node_test(
     tests_in_data = True,
 )
 
+node_test(
+    name = "composer_browser_test",
+    concurrency = 1,
+    data = _BROWSER_DATA,
+    tags = ["manual", "no-sandbox", "requires-browser"],
+    tests = ["test/composer-pills.test.mjs"],
+    tests_in_data = True,
+)
+
 # The app in Chrome against fixture APIs, served by Vite from the site.
 node_test(
     name = "browser_test",
@@ -123,6 +132,7 @@ node_test(
     ],
     tests = [
         "test/browser.test.mjs",
+        "test/composer-pills.test.mjs",
         "test/chat-list.test.mjs",
         "test/cache.test.mjs",
         "test/web-polish.test.mjs",
