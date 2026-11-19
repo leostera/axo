@@ -161,6 +161,7 @@ impl Backend {
     ) -> io::Result<Value> {
         let mut params = self.turn_params(thread, String::new())?;
         params["input"] = input;
+        params["summary"] = json!("auto");
         let preferences = axo_store::coding::preferences(&self.database.lock().unwrap(), id)?;
         for key in ["model", "effort"] {
             if let Some(value) = preferences.get(key).filter(|v| !v.is_null()) {
