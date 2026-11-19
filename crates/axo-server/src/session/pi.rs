@@ -148,6 +148,11 @@ pub(crate) struct Pi {
 #[derive(Debug, Default)]
 struct Mirror {
     conversation: Option<PathBuf>,
+    /// Converts again whenever the agent writes its file. An agent's events say when a turn
+    /// happens, not when its records reach the disk: Claude Code creates its file after its
+    /// UserPromptSubmit hook and writes its reply after its Stop hook. `None` until the file's
+    /// directory exists.
+    watcher: Option<notify::RecommendedWatcher>,
     running: bool,
     again: bool,
 }
@@ -1432,8 +1437,11 @@ impl Session {
         match event {
             AgentEvent::Bound { agent_session_id } => self.bound(agent_session_id).await,
             AgentEvent::Conversation { file } => {
-                if let Some(pi) = &mut self.pi {
+                if let Some(pi) = &mut self.pi
+                    && pi.mirror.conversation.as_ref() != Some(&file)
+                {
                     pi.mirror.conversation = Some(file);
+                    pi.mirror.watcher = None;
                 }
                 self.mirror_transcript();
             }
@@ -1737,10 +1745,14 @@ impl Session {
         let Some(transcript) = self.row.pi_session_file.clone() else {
             return;
         };
+        let mailbox = self.mailbox();
         let Some(pi) = &mut self.pi else { return };
         let Some(native) = pi.mirror.conversation.clone() else {
             return;
         };
+        if pi.mirror.watcher.is_none() {
+            pi.mirror.watcher = watch_conversation(&native, mailbox);
+        }
         if pi.mirror.running {
             pi.mirror.again = true;
             return;
@@ -1754,7 +1766,13 @@ impl Session {
         let (kind, id, mailbox) = (self.row.agent, self.id, self.mailbox());
         tokio::spawn(async move {
             let converted = tokio::task::spawn_blocking(move || {
-                let native = std::fs::read_to_string(&native)?;
+                let native = match std::fs::read_to_string(&native) {
+                    Ok(native) => native,
+                    // An agent names its file before it writes it (Claude Code, at its first
+                    // prompt); the watcher converts it once it does.
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+                    Err(error) => return Err(error),
+                };
                 let lines = axo_agent::transcript::pi_lines(kind, &native, &header)?;
                 axo_agent::transcript::write_if_changed(&transcript, &lines)
             })
@@ -1790,6 +1808,39 @@ impl Session {
             .as_mut()
             .is_some_and(|pi| change(pi.activity.get_or_insert_default()))
     }
+}
+
+/// Watches the directory of an agent's conversation file (the file may not exist yet) and asks
+/// the Session to convert it again whenever something there changes it. `None` while the
+/// directory does not exist: the next conversion tries again.
+fn watch_conversation(
+    file: &std::path::Path,
+    mailbox: tokio::sync::mpsc::WeakUnboundedSender<Message>,
+) -> Option<notify::RecommendedWatcher> {
+    use notify::Watcher;
+    let directory = file.parent()?;
+    let name = file.file_name()?.to_owned();
+    let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
+        let Ok(event) = event else { return };
+        if matches!(event.kind, notify::EventKind::Access(_))
+            || !event
+                .paths
+                .iter()
+                .any(|path| path.file_name() == Some(&name))
+        {
+            return;
+        }
+        if let Some(mailbox) = mailbox.upgrade() {
+            let _ = mailbox.send(Message::Job(Box::new(|session: &mut Session| {
+                Box::pin(async move { session.mirror_transcript() })
+            })));
+        }
+    })
+    .ok()?;
+    watcher
+        .watch(directory, notify::RecursiveMode::NonRecursive)
+        .ok()?;
+    Some(watcher)
 }
 
 /// A Pi started for a Session that no longer wants it is stopped.

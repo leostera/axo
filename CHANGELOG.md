@@ -7,6 +7,7 @@ What changed in each published version of Axo. Every publish raises the minor ve
 ### Fixed
 
 - OpenCode and Codex Sessions start again while a Pi Session is open. Their servers were stopped as soon as they started, and OpenCode reported that its server "did not say where it listens".
+- Claude Code's replies appear in Axo's conversation again. Claude Code 2.1.327 writes its reply to disk only after it reports the turn finished, so Axo kept only the prompt.
 
 ## 0.79 (Mac app build 351, axod 95)
 

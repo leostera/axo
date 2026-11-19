@@ -2,7 +2,7 @@
 //! (`--session-id ID | --resume ID`, `--settings`, `--mcp-config`, `--append-system-prompt`).
 //! It posts its hooks to the HTTP URL in `--settings`, reads its terminal raw, and takes a
 //! bracketed paste followed by Enter as a prompt: `UserPromptSubmit`, a transcript in Claude's
-//! format under `$CLAUDE_CONFIG_DIR/projects` (or `$HOME/.claude/projects`), then `Stop` with `echo: <text>`. The prompt `hang`
+//! format under `$CLAUDE_CONFIG_DIR/projects` (or `$HOME/.claude/projects`), then `Stop` with `echo: <text>`, and only then (as Claude does) the reply in the transcript. The prompt `hang`
 //! runs until Escape, which (as Claude does) posts no hook.
 //!
 //! It logs to `$AXO_FAKE_CLAUDE_LOG`, or `fake-claude.log` in its working directory.
@@ -47,7 +47,6 @@ fn main() {
     let home = std::env::var("HOME").unwrap();
     let config = std::env::var("CLAUDE_CONFIG_DIR").unwrap_or_else(|_| format!("{home}/.claude"));
     let project = format!("{config}/projects/{}", cwd.replace(|c: char| !c.is_ascii_alphanumeric(), "-"));
-    std::fs::create_dir_all(&project).unwrap();
     let transcript = format!("{project}/{id}.jsonl");
     let hook = |name: &str, fields: Value| {
         let mut body = json!({ "session_id": id, "transcript_path": transcript, "cwd": cwd, "hook_event_name": name });
@@ -83,10 +82,14 @@ fn main() {
             let text = String::from_utf8_lossy(&input[6..input.len() - 7]).into_owned();
             input.clear();
             log(&format!("prompt {text}"));
+            // As Claude Code 2.1.327 does: the file and the prompt's line come after
+            // UserPromptSubmit, and the reply reaches the file only after Stop.
             hook("UserPromptSubmit", json!({ "prompt": text }));
-            write_turn(&transcript, &id, &text);
+            write_user(&transcript, &id, &text);
             if text != "hang" {
                 hook("Stop", json!({ "last_assistant_message": format!("echo: {text}"), "stop_hook_active": false }));
+                std::thread::sleep(std::time::Duration::from_millis(300));
+                write_assistant(&transcript, &id, &text);
             }
         } else if !input.starts_with(b"\x1b") && !input.starts_with(b"\x03") {
             input.clear();
@@ -94,27 +97,31 @@ fn main() {
     }
 }
 
-fn write_turn(transcript: &str, id: &str, text: &str) {
-    let mut file = std::fs::OpenOptions::new().create(true).append(true).open(transcript).unwrap();
-    let user = json!({
+fn write_user(transcript: &str, id: &str, text: &str) {
+    append(transcript, &json!({
         "parentUuid": null, "isSidechain": false, "type": "user",
         "message": { "role": "user", "content": text },
         "uuid": format!("u-{}", text.len()), "timestamp": "2026-08-05T18:59:15.639Z",
         "cwd": "/tmp", "sessionId": id, "version": "2.1.327",
-    });
-    let assistant = json!({
+    }));
+}
+
+fn write_assistant(transcript: &str, id: &str, text: &str) {
+    append(transcript, &json!({
         "parentUuid": format!("u-{}", text.len()), "isSidechain": false, "type": "assistant",
         "message": { "model": "claude-opus-5", "id": "msg_1", "type": "message", "role": "assistant",
             "content": [{ "type": "text", "text": format!("echo: {text}") }], "stop_reason": "end_turn",
             "usage": { "input_tokens": 1, "output_tokens": 1 } },
         "uuid": format!("a-{}", text.len()), "timestamp": "2026-08-05T18:59:16.639Z",
         "cwd": "/tmp", "sessionId": id, "version": "2.1.327",
-    });
-    let mut lines = format!("{user}\n");
-    if text != "hang" {
-        lines.push_str(&format!("{assistant}\n"));
-    }
-    file.write_all(lines.as_bytes()).unwrap();
+    }));
+}
+
+fn append(transcript: &str, record: &Value) {
+    // Claude makes the project's directory only when it first writes there.
+    std::fs::create_dir_all(std::path::Path::new(transcript).parent().unwrap()).unwrap();
+    let mut file = std::fs::OpenOptions::new().create(true).append(true).open(transcript).unwrap();
+    file.write_all(format!("{record}\n").as_bytes()).unwrap();
 }
 
 fn post(url: &str, body: &Value) {

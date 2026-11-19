@@ -121,7 +121,16 @@ async fn prompts_are_typed_hooks_are_reported_and_the_conversation_resumes() {
     let names: Vec<&str> = turn.iter().map(|(name, _)| name.as_str()).collect();
     assert_eq!(names, ["agent.start", "message.start", "message.end", "message.start", "message.end", "agent.settled"]);
     assert_eq!(turn[4].1["message"]["content"][0]["text"], "echo: hello claude");
-    let native = std::fs::read_to_string(&transcript).unwrap();
+    // Claude writes its reply to the file after its Stop hook, so after the turn settles.
+    let deadline = std::time::Instant::now() + TIMEOUT;
+    let native = loop {
+        let native = std::fs::read_to_string(&transcript).unwrap_or_default();
+        if native.contains("echo: hello claude") {
+            break native;
+        }
+        assert!(std::time::Instant::now() < deadline, "the reply never reached the file");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
     let header = crate::transcript::PiHeader {
         session_id: "s".into(),
         timestamp: crate::transcript::rfc3339_utc(0),
