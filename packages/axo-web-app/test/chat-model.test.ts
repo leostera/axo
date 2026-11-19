@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import type { AccountEvents, ClientRecord, ClientSession, OpenRequest } from "@axo/app";
 import { inlineSpans, parseMarkdown } from "../src/chat/markdown.ts";
-import { attachmentsIn, ChatTranscript, toolInput, type ToolActivity } from "../src/chat/transcript.ts";
+import { attachmentsIn, canAnswerQuestionHere, ChatTranscript, toolInput, type ToolActivity } from "../src/chat/transcript.ts";
 import { toolGroupTitle } from "../src/chat/tool-groups.ts";
 import { hostFamily, hostIcon } from "../src/chat/host-model.ts";
 import { ConversationFeed } from "../src/chat/feed.ts";
@@ -18,6 +18,21 @@ import { parseAuthenticatedSession } from "../src/auth-session.ts";
 import { ChatCache } from "../src/chat/cache.ts";
 import { adjacentChat, chatSections, shownChatSections, defaultGrouping, groupOf, holdingSections, parseGrouping, SessionPins, SessionSeen } from "../src/chat/sidebar.ts";
 import { ChatWorkbench, lastActivity, recentChatList, shortAge, type AccountLink, type ChatBackend, type Session } from "../src/chat/workbench.ts";
+
+test("terminal-only and untitled prompts never manufacture remote question cards", () => {
+  for (const kind of ["select", "editor", "custom"] as const) {
+    const transcript = new ChatTranscript();
+    transcript.progress("question", { kind });
+    assert.ok(transcript.question, "hiding the card does not answer or dismiss the pending prompt");
+    assert.equal(canAnswerQuestionHere(transcript.question), false);
+    assert.equal(canAnswerQuestionHere({ kind, title: "Choices are elsewhere" }), false);
+  }
+  for (const kind of ["confirm", "input"] as const) {
+    assert.equal(canAnswerQuestionHere({ kind, title: "A real question?" }), true);
+    assert.equal(canAnswerQuestionHere({ kind, title: null }), false);
+    assert.equal(canAnswerQuestionHere({ kind, title: "  " }), false);
+  }
+});
 
 const hostId = "1e1e7f91-3d8f-4f97-8f71-4fc7d53313c6";
 const hostGeneration = "f9c5761c-3b2d-42a8-bb19-9a8c0b8cf230";

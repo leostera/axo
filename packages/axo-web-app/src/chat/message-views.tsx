@@ -1,6 +1,6 @@
 import { createContext, memo, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import { inlineSpans, parseMarkdown, type InlineSpan, type MarkdownBlock } from "./markdown.ts";
-import type { ChatMessage, ChatQuestion } from "./transcript.ts";
+import { canAnswerQuestionHere, type ChatMessage, type ChatQuestion } from "./transcript.ts";
 import { type AskedQuestion, type WaitingPrompt } from "./workbench.ts";
 import { pendingLabel } from "./pi-controls.ts";
 import { Icon } from "./icons.tsx";
@@ -367,7 +367,8 @@ export function QuestionCard({ question, canAnswer, onAnswer }: {
   onAnswer: (answer: { kind: "yes" } | { kind: "no" } | { kind: "text"; text: string }) => void;
 }) {
   const [text, setText] = useState("");
-  const title = question.title ?? "The agent is asking something";
+  if (!canAnswerQuestionHere(question)) return null;
+  const title = question.title;
   const skip = <button className="question-skip" disabled={!canAnswer} onClick={() => onAnswer({ kind: "no" })}>Skip</button>;
   return (
     <div className="question-card" role="group" aria-label={title}>
@@ -391,12 +392,7 @@ export function QuestionCard({ question, canAnswer, onAnswer }: {
           </form>
           {skip}
         </>
-      ) : (
-        <>
-          <p className="question-elsewhere">The choices are on your Mac. Answer there, or skip the question.</p>
-          {skip}
-        </>
-      )}
+      ) : null}
     </div>
   );
 }

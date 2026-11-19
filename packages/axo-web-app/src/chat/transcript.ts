@@ -82,6 +82,11 @@ export interface ChatQuestion {
   readonly title: string | null;
 }
 
+/** A terminal-only progress marker is not a remotely answerable question. */
+export function canAnswerQuestionHere(question: ChatQuestion): question is ChatQuestion & { readonly kind: "confirm" | "input"; readonly title: string } {
+  return (question.kind === "confirm" || question.kind === "input") && Boolean(question.title?.trim());
+}
+
 interface ToolResult {
   status: ToolStatus;
   output: string;

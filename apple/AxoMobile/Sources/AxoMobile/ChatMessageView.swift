@@ -556,7 +556,7 @@ struct QuestionCard: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 14) {
-      Label(question.title ?? "The agent is asking something", systemImage: "questionmark.bubble")
+      Label(question.title ?? "", systemImage: "questionmark.bubble")
         .font(.headline)
       switch question.kind {
       case .confirm:
@@ -576,9 +576,7 @@ struct QuestionCard: View {
         }
         Button("Skip", role: .cancel) { answer(.no) }.font(.callout).disabled(!canAnswer)
       case .select, .editor, .custom:
-        Text("The choices are on your Mac. Answer there, or skip the question.")
-          .font(.callout).foregroundStyle(.secondary)
-        Button("Skip", role: .cancel) { answer(.no) }.font(.callout).disabled(!canAnswer)
+        EmptyView()
       }
     }
     .padding(18)

@@ -176,6 +176,13 @@ public struct ChatQuestion: Equatable, Sendable {
 
   public let kind: Kind
   public let title: String?
+
+  /// Terminal-only progress is not a question the phone can answer.
+  /// Keep the waiting state, but never manufacture a generic approval card.
+  public var canAnswerHere: Bool {
+    guard kind == .confirm || kind == .input else { return false }
+    return !(title?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+  }
 }
 
 /// One thing in the conversation.

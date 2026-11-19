@@ -178,7 +178,7 @@ struct ConversationFooter: View {
   var personAsked: () -> Bool = { false }
 
   var body: some View {
-    if let question = feed.question {
+    if let question = feed.question, question.canAnswerHere {
       QuestionCard(question: question, canAnswer: canSend) { answer in
         Task { await workbench?.answer(answer, in: session) }
       }

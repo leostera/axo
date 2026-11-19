@@ -13,6 +13,22 @@ func jsonValue(_ json: String) -> JSONValue {
 }
 
 final class ChatTranscriptTests: XCTestCase {
+  func testTerminalOnlyAndUntitledPromptsDoNotBecomeRemoteQuestionCards() {
+    for kind in ["select", "editor", "custom"] {
+      var transcript = ChatTranscript()
+      transcript.progress(slot: "question", snapshot: jsonValue(#"{"kind":"\#(kind)"}"#))
+      XCTAssertNotNil(transcript.question, "Keep the underlying waiting state; hiding is not an answer")
+      XCTAssertFalse(transcript.question?.canAnswerHere ?? true)
+    }
+    for kind in ["confirm", "input"] {
+      var transcript = ChatTranscript()
+      transcript.progress(slot: "question", snapshot: jsonValue(#"{"kind":"\#(kind)","title":"A real question?"}"#))
+      XCTAssertTrue(transcript.question?.canAnswerHere ?? false)
+      transcript.progress(slot: "question", snapshot: jsonValue(#"{"kind":"\#(kind)","title":"  "}"#))
+      XCTAssertFalse(transcript.question?.canAnswerHere ?? true)
+    }
+  }
+
   private func message(_ cursor: Int64, role: String, content: String) -> ClientRecord {
     piRecord(cursor, message: #"{"role":"\#(role)","content":\#(content)}"#)
   }

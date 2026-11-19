@@ -12,7 +12,7 @@ import { CODING_AGENTS, chatTitle, type ChatWorkbench, type DraftAttachment } fr
 import { SendButton, SlashMenu } from "./composer-controls.tsx";
 import { ModelPicker } from "./model-picker.tsx";
 import { matchingCommands, slashQuery, withCommand } from "./pi-controls.ts";
-import type { Delivery } from "./transcript.ts";
+import { canAnswerQuestionHere, type Delivery } from "./transcript.ts";
 import { noteRender } from "./render-count.ts";
 
 /** How close to the bottom still counts as following the conversation. */
@@ -272,7 +272,7 @@ export function Conversation({ workbench, wide, onShowChats, onToggleInfo, onApp
         ) : null}
         {/* What waits for the person sits above the message box, not at the end of the transcript:
             it holds the agent up, so it is seen wherever the reader is in the history (RFD0029). */}
-        {session && transcript?.question ? (
+        {session && transcript?.question && canAnswerQuestionHere(transcript.question) ? (
           <div className="footer-questions" aria-label="Waiting for you">
             {transcript?.question ? (
               <QuestionCard

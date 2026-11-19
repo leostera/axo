@@ -518,7 +518,7 @@ private struct ConversationBottom: View {
 
   var body: some View {
     if let id = content.session {
-      let footer = content.feed.question != nil || content.feed.working
+      let footer = content.feed.question?.canAnswerHere == true || content.feed.working
       VStack(alignment: .leading, spacing: 30) {
         ConversationFooter(
           feed: content.feed, chat: content.chat, workbench: content.workbench, session: id, canSend: content.canSend,
