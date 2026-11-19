@@ -12,6 +12,7 @@ What changed in each published version of Axo. Every publish raises the minor ve
 
 ### Fixed
 
+- Native sidebar status markers no longer pulse or animate between row positions. Pinning and regrouping update rows instantly, and mobile indicators are keyed to their conversation.
 - Host-local pinned Sessions start with axod even when old, wake if already asleep, and recover unavailable agents without restarting running work. Pinning does not send a prompt, reopen a closed Session, or make another device’s pins authoritative.
 - An Active conversation stays in Active while being viewed on Mac, iPhone/iPad and web. Opening an Earlier conversation does not promote it; changing conversations or leaving the view releases retention. Grouping and focus tracking continue in Mac Zen mode.
 - Unread conversations can remain in Earlier on Mac, iPhone/iPad and web. Reading one or marking all read no longer moves old conversations out of Active. Removed the obsolete keep-unread-active setting without resetting read markers or other preferences.

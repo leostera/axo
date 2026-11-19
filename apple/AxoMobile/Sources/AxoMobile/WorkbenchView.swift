@@ -610,6 +610,11 @@ struct WorkbenchView: View {
       case .more(let title, let showAll): showMoreButton(title) { showingAllEarlier = showAll }
       }
     }
+    // A sidebar update replaces/moves complete rows, never animates indicators between them.
+    .transaction { transaction in
+      transaction.animation = nil
+      transaction.disablesAnimations = true
+    }
   }
 
   /// "Mark all read": every chat seen on this phone at once. Shown only while one has activity
@@ -864,6 +869,7 @@ private struct SessionRow: View {
           .lineLimit(1)
       }
       SessionStatusDot(status: shownStatus)
+        .id(selection)
       if let lastActive {
         // Ages only need to move once a minute.
         TimelineView(.periodic(from: .now, by: 60)) { context in
@@ -923,7 +929,6 @@ private struct SessionStatusDot: View {
     switch status {
     case .working:
       Circle().fill(Color.orange).frame(width: 7, height: 7)
-        .phaseAnimator([1.0, 0.35]) { dot, opacity in dot.opacity(opacity) } animation: { _ in .easeInOut(duration: 0.8) }
     case .needsAttention:
       Circle().fill(Color.red).frame(width: 8, height: 8)
     case .unavailable:

@@ -123,7 +123,11 @@ struct WorkbenchSidebar: View {
         }
       }
     }
-    .animation(.easeInOut(duration: 0.2), value: sections.map { $0.sessions.map(\.id) })
+    // Status markers belong to rows; never interpolate them between list positions.
+    .transaction { transaction in
+      transaction.animation = nil
+      transaction.disablesAnimations = true
+    }
     .onHover { sessions.holdRecentOrder($0) }
   }
 
@@ -157,7 +161,7 @@ struct WorkbenchSidebar: View {
           let isPinned = sessions.isPinned(session.id)
           if isPinned || hoveredSessionID == session.id {
             SessionPinButton(sessionID: session.id, isPinned: isPinned) {
-              withAnimation(.easeInOut(duration: 0.2)) { sessions.togglePin(session.id) }
+              sessions.togglePin(session.id)
             }
           }
 
@@ -194,7 +198,7 @@ struct WorkbenchSidebar: View {
   @ViewBuilder
   private func sessionContextMenu(for session: TerminalSession) -> some View {
     Button(sessions.isPinned(session.id) ? "Unpin Session" : "Pin Session") {
-      withAnimation(.easeInOut(duration: 0.2)) { sessions.togglePin(session.id) }
+      sessions.togglePin(session.id)
     }
     Button("Copy Session ID") {
       SessionInfo.copyID(session.id)
