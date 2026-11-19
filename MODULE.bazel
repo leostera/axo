@@ -113,6 +113,15 @@ crate.annotation(
     patches = ["//third_party/cua:platform-linux-launch-command.patch"],
     repositories = ["crates"],
 )
+# The pinned ATXF crate links its schema outside the package. Windows Git checks that
+# symlink out as text; embed the same pinned schema inside src on every platform.
+# Regenerate the schema patch from the pinned source on every ATXF revision bump.
+crate.annotation(
+    crate = "atxf",
+    patch_args = ["-p1"],
+    patches = ["//third_party/atxf:portable-schema.patch"],
+    repositories = ["crates"],
+)
 crate.from_specs(
     name = "crates",
     cargo_lockfile = "//bazel/rust:Cargo.lock",

@@ -280,10 +280,7 @@ impl Host {
     }
     fn read_sync_catalog(&self) -> io::Result<Vec<SyncSession>> {
         let b = self.backend()?;
-        let db = b.database.lock().unwrap();
-        let rows = axo_store::coding::catalog(&db)?;
-        let directory = b.directory.join("codex-transcripts");
-        std::fs::create_dir_all(&directory)?;
+        let rows = axo_store::coding::catalog(&b.database.lock().unwrap())?;
         let mut result = Vec::new();
         for row in rows {
             let id: SessionId = serde_json::from_value(row["id"].clone())?;
@@ -291,39 +288,7 @@ impl Host {
                 "name":row["name"],"emoji":row["emoji"],"folderName":axo_protocol::folder_name(Path::new(row["folder"].as_str().unwrap_or(""))),
                 "hasAgent":true,"createdAt":row["createdAt"],"lastMessageAt":row["lastMessageAt"],"archived":row["archived"]
             }))?;
-            let created = row["createdAt"].as_i64().unwrap_or(0);
-            let mut lines = vec![json!({"type":"session","version":3,"id":id,"timestamp":axo_relay::utc_timestamp(created * 1000),"cwd":row["folder"],"agent":"codex"}).to_string()];
-            let mut cursor = 0;
-            let mut parent = Value::Null;
-            loop {
-                let messages = axo_store::coding::messages(&db, id, cursor)?;
-                for m in &messages {
-                    cursor = m["sequence"].as_i64().unwrap_or(cursor);
-                    let at = m["timestampMs"].as_i64().unwrap_or(0);
-                    if m["role"] == "user" {
-                        if let Some(command) = m["commandId"].as_str() {
-                            let receipt = format!("axo:command:{cursor}");
-                            lines.push(json!({"type":"custom","customType":"axo.command",
-                                "id":receipt,"parentId":parent,"timestamp":axo_relay::utc_timestamp(at),
-                                "data":{"commandId":command}}).to_string());
-                            parent = json!(receipt);
-                        }
-                    }
-                    lines.push(json!({"type":"message","id":m["itemId"],"parentId":parent,"timestamp":axo_relay::utc_timestamp(at),
-                        "message":{"role":m["role"],"content":[{"type":"text","text":m["text"]}],"timestamp":at}}).to_string());
-                    parent = m["itemId"].clone();
-                }
-                if messages.len() < 200 {
-                    break;
-                }
-            }
-            let text = lines.join("\n") + "\n";
-            let path = directory.join(format!("{id}.jsonl"));
-            if std::fs::read(&path).ok().as_deref() != Some(text.as_bytes()) {
-                let temporary = path.with_extension("tmp");
-                std::fs::write(&temporary, text)?;
-                std::fs::rename(temporary, &path)?;
-            }
+            let path = b.write_transcript(id)?;
             // Runtime readers write messages while holding the runtime lock, so release DB
             // before reading runtime state (below).
             result.push(SyncSession {
@@ -334,7 +299,6 @@ impl Host {
                 transcript_in_cloud: false,
             });
         }
-        drop(db);
         for s in &mut result {
             if !s.metadata.archived {
                 s.status = Some(

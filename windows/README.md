@@ -67,7 +67,8 @@ The current unified crate dependency resolver still resolves Cua's pinned source
 5. Closing the window hides it. The animated Axo in the Windows notification area offers **Open
    Terminal**, **Settings…** and **Quit Axo**. Windows may put this icon in the overflow area.
    Quit exits the desktop client; the daemon and running agents remain alive. Session metadata,
-   completed chat messages and Codex thread IDs survive daemon restarts. Select **Reconnect**
+   chat identities, native tool history, exposed reasoning summaries and Codex thread IDs survive
+   daemon restarts. Select **Reconnect**
    after a failed agent process; Axo resumes its saved thread rather than starting a new conversation.
 
 Codex defaults to workspace-write with approval requests routed to the user. **Settings → General →
@@ -100,8 +101,12 @@ and reconnect implementation as macOS. Windows host credentials are protected by
 in the daemon's private directory. No credential is saved in the UI preferences or application
 folder. `--relay-url` / `AXO_RELAY_URL` can select a development relay; non-loopback relays require TLS.
 
-Completed Codex messages are projected into the relay's existing `pi/3` interchange format so
-existing clients can read conversations. Codex's thread and SQLite history remain authoritative.
+Codex's native rollout is converted with the shared ATXF converter into `pi/3` tool calls,
+tool results and exposed reasoning summaries. Desktop history and relay sync read the same
+projection; activity does not depend on the bounded live event buffer. SQLite retains canonical
+chat IDs, prompt receipts and streamed-reply timestamps, so enrichment does not duplicate messages.
+Opaque encrypted reasoning is not presented as readable thinking. Codex's native history is never
+rewritten, and the last materialized activity is retained if its source path is temporarily missing.
 The host reports `windows` and only capabilities recognised by the existing production v2 service;
 it never claims to be Pi. Remote clients can create/list/rename/archive sessions, send
 prompts, resolve supported permission requests by their exact elicitation ID, and stop a turn they
@@ -236,9 +241,9 @@ are additive and are not yet the generic AXP agent protocol or wire-compatible r
 Pi's terminal panes; the Apple client is unchanged.
 
 Not included: raw computer scripts, local inference, the Pi bridge, voice,
-full Ghostty terminal features/configuration, automatic updates or startup registration. Completed chat
-messages are persisted locally; live tool output is not retained across desktop restarts. A turn
-interrupted by a daemon crash may have an incomplete local display, while Codex retains its own
-thread history. Terminal replay is bounded to 2 MiB per shell and the native VT surface is a
+full Ghostty terminal features/configuration, automatic updates or startup registration. Tool history
+is reconstructed from Codex's native rollout on reconnect, including activity predating this adapter.
+In-flight output not yet recorded by Codex cannot be recovered after a crash. Providers may expose
+no reasoning summaries; encrypted reasoning records are not a substitute for public summaries. Terminal replay is bounded to 2 MiB per shell and the native VT surface is a
 basic terminal renderer. Mac, physical IME and real-device relay interoperability need their own
 validation lanes. This is a development preview, not full Mac parity.

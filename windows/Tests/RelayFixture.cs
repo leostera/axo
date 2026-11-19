@@ -120,7 +120,10 @@ sealed class RelayFixture : IAsyncDisposable
     }
     public string[] Messages(string id) => Records(id)
         .Where(record=>record.GetProperty("type").GetString()=="message")
-        .Select(record=>record.GetProperty("message").GetProperty("content")[0].GetProperty("text").GetString()!).ToArray();
+        .Where(record=>record.GetProperty("message").GetProperty("role").GetString() is "user" or "assistant")
+        .SelectMany(record=>record.GetProperty("message").GetProperty("content").EnumerateArray())
+        .Where(block=>block.GetProperty("type").GetString()=="text")
+        .Select(block=>block.GetProperty("text").GetString()!).ToArray();
     public bool HasPromptReceipt(string id,string command,string text)
     {
         var entries=Records(id);

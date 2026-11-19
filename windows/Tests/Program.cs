@@ -296,6 +296,22 @@ try
     Assert(streamed.Length>=2 && streamed.All(m=>m.GetProperty("timestamp").GetInt64()==completed.GetProperty("timestamp").GetInt64()),
         "every streamed chunk and its completed record share one durable reply identity across second boundaries");
     Assert(streamed.All(m=>!m.ToString().Contains("LATE_FRAGMENT")),"late native deltas cannot resurrect a completed assistant reply");
+    var richCommand=Guid.NewGuid().ToString();
+    await relay.CallAsync("axo.remote.session.prompt",new{target,sessionId=id,text="rich-transcript",commandId=richCommand});
+    await Status(id,"ready");
+    bool HasRichActivity()=>relay.Records(id).Any(record=>record.GetProperty("type").GetString()=="message"
+        && record.GetProperty("message").GetProperty("role").GetString()=="toolResult"
+        && record.ToString().Contains("RICH_TOOL_OUTPUT"));
+    await relay.WaitAsync(()=>HasRichActivity() && relay.HasPromptReceipt(id,richCommand,"rich-transcript")
+        && relay.Messages(id).Contains("Rich transcript complete"),"Rich activity and canonical message identities did not converge in the synced transcript");
+    var rich=relay.Records(id);
+    Assert(rich.Any(record=>record.ToString().Contains("\"type\":\"toolCall\"")),"native tool calls reach the phone transcript");
+    Assert(rich.Any(record=>record.ToString().Contains("Checking the owned fixture before editing.")),"exposed reasoning summaries reach the phone transcript");
+    Assert(relay.HasPromptReceipt(id,richCommand,"rich-transcript"),"rich activity preserves originating prompt identity");
+    Assert(relay.Messages(id).Count(text=>text=="Rich transcript complete")==1,"native enrichment does not duplicate canonical assistant messages");
+    var desktopTranscript=await client.CallAsync("axo.session.transcript",new{sessionId=id});
+    var transcriptText=await File.ReadAllTextAsync(desktopTranscript.GetProperty("path").GetString()!);
+    Assert(transcriptText.Contains("RICH_TOOL_OUTPUT")&&transcriptText.Contains("Checking the owned fixture before editing."),"desktop history uses the same durable rich transcript as relay sync");
     await ParityChecks.Controls(client,id,workspace,Assert);
     await ComputerChecks.RunAsync(client, daemonPath, pipe, id, relay, target, Assert);
     var stopCommand=Guid.NewGuid().ToString();
@@ -315,6 +331,9 @@ try
     var flood = await client.CallAsync("axo.session.events.poll", new { sessionId = id, after = 0 });
     Assert(flood.GetProperty("reset").GetBoolean() && flood.GetProperty("events").GetArrayLength() == 200, "bounded event journal reports lost cursor and paginates recovery");
     Assert((await Messages(id)).Contains("flood complete"), "completed message survives event journal overflow");
+    desktopTranscript=await client.CallAsync("axo.session.transcript",new{sessionId=id});
+    transcriptText=await File.ReadAllTextAsync(desktopTranscript.GetProperty("path").GetString()!);
+    Assert(transcriptText.Contains("RICH_TOOL_OUTPUT"),"tool activity survives eviction from the bounded live event journal");
     await client.CallAsync("axo.session.rename", new { sessionId = id, name = "Renamed session" });
     await client.CallAsync("axo.session.prompt", new { sessionId = id, text = "crash" }); await Status(id, "unavailable");
     var recovered = await client.CallAsync("axo.session.open", new { sessionId = id });
@@ -338,6 +357,10 @@ try
     await relay.WaitAsync(()=>relay.Connections>=2,"Relay did not reconnect after daemon restart");
     await relay.WaitAsync(()=>relay.HasPromptReceipt(id,commandId,"relay hello") && relay.HasPromptReceipt(id,repeatedTextCommand,"relay hello"),"Prompt reconciliation identities did not survive daemon restart");
     Assert(true,"prompt receipts survive restart without guessing from repeated message text");
+    desktopTranscript=await client.CallAsync("axo.session.transcript",new{sessionId=id});
+    transcriptText=await File.ReadAllTextAsync(desktopTranscript.GetProperty("path").GetString()!);
+    Assert(transcriptText.Contains("RICH_TOOL_OUTPUT"),"native activity locator and rich desktop history survive daemon restart");
+    await relay.WaitAsync(HasRichActivity,"Rich relay history disappeared after restart");
     Assert(relay.Registration.GetProperty("hostId").GetString()==target.hostId&&relay.Registration.GetProperty("hostGeneration").GetString()!=target.hostGeneration,"DPAPI credential and stable host identity survive restart with a fresh generation");
     Assert(recovered.GetProperty("threadId").GetString() == threadId, "daemon restart preserves Codex thread identity");
     Assert(recovered.GetProperty("name").GetString() == "Renamed session", "session name survives daemon restart");
