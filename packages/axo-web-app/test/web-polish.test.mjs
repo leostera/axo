@@ -238,7 +238,7 @@ test("host icons distinguish platforms and retain them through cached reconnect"
     app = await startApp(cloud);
     const page = await app.browser.newPage({ viewport: { width: 1100, height: 800 } });
     await page.goto(`${app.appUrl}/__tests__/chat/${hostId}/${sid(1)}`, { waitUntil: "networkidle" });
-    await page.locator('.host-picker svg[data-icon="linux"]').waitFor();
+    await page.locator('.host-picker [data-icon="linux"]').waitFor();
     await page.getByRole("button", { name: "Account and computers", exact: true }).click();
     for (const [label, icon] of [["Linux server", "linux"], ["Windows PC", "windows"], ["MacBook", "laptop"], ["Unknown computer", "desktop"]]) {
       assert.equal(await page.locator(".mac-row-wrap", { hasText: label }).locator(".mac-icon").getAttribute("data-icon"), icon);
@@ -250,7 +250,7 @@ test("host icons distinguish platforms and retain them through cached reconnect"
     await page.evaluate(() => window.dispatchEvent(new Event("pagehide")));
     cloud.pause();
     await page.reload({ waitUntil: "domcontentloaded" });
-    await page.locator('.host-picker svg[data-icon="linux"]').waitFor();
+    await page.locator('.host-picker [data-icon="linux"]').waitFor();
     await page.locator(".host-picker .mac-dot.offline").waitFor();
     cloud.resume();
     await page.locator(".host-picker .mac-dot.online").waitFor();
