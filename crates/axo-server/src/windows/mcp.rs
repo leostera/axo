@@ -90,7 +90,7 @@ async fn handle(pipe: &str, session: SessionId, message: &Value) -> io::Result<V
     match message["method"].as_str().unwrap_or_default() {
         "initialize" => Ok(
             json!({"protocolVersion":"2025-06-18","serverInfo":{"name":"axo","version":env!("CARGO_PKG_VERSION")},"capabilities":{"tools":{}},
-            "instructions":"Axo computer use runs on the person's Windows PC. Use computer_tools to read the supported tools and schemas, then call computer. Read a fresh get_window_state before each action; use returned window and element identifiers. Actions may ask the person in Axo or on their connected devices. confirm:true asks, never approves. Never enter passwords or one-time codes; secure request_input is not yet available on Windows. Do not use composite scripts or unlisted driver tools."}),
+            "instructions":"Axo computer use runs on the person's Windows PC. Use computer_tools to read the supported tools and schemas, then call computer. Read a fresh get_window_state before each action; use returned window and element identifiers. Use run_steps for bounded sequences. Actions may ask the person in Axo or on their connected devices. confirm:true asks, never approves. Use request_input for supported sign-in forms. The person supplies private values in Axo and you receive a receipt. Never ask for passwords or one-time codes in chat or pass them as tool arguments."}),
         ),
         "ping" => Ok(json!({})),
         "resources/list" => Ok(json!({"resources":[]})),

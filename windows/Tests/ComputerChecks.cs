@@ -45,6 +45,9 @@ static class ComputerChecks
         await using var mcp = new Mcp(daemonPath, pipe, session);
         var initialized = await mcp.Request("initialize", new { protocolVersion = "2025-06-18", capabilities = new { }, clientInfo = new { name = "Axo isolated test", version = "1" } });
         assert(initialized.GetProperty("serverInfo").GetProperty("name").GetString() == "axo", "Windows axod mcp speaks the same Axo MCP server identity");
+        var instructions = initialized.GetProperty("instructions").GetString()!;
+        assert(instructions.Contains("Use request_input") && instructions.Contains("Use run_steps"),
+            "MCP initialization explains how to use sealed input and gated sequences");
         var tools = await mcp.Request("tools/list", new { });
         assert(tools.GetProperty("tools").EnumerateArray().Select(t => t.GetProperty("name").GetString()).SequenceEqual(new[] { "computer_tools", "computer" }), "Codex gets the computer and computer_tools wrappers");
         var disabled = await mcp.Tool("computer", new { tool = "get_screen_size", args = new { } });
