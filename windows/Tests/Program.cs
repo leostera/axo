@@ -256,10 +256,10 @@ try
     await Status(id,"needsAttention");
     await relay.WaitAsync(()=>!relay.Questions.IsEmpty,"Codex approval did not reach the relay");
     relay.Questions.TryPeek(out var question);
-    remote=await relay.CallAsync("axo.elicitation.resolve",RelayFixture.SignedAnswer(target,question.GetProperty("id").GetString()!,"decline"));
+    remote=await relay.CallAsync("axo.elicitation.resolve",RelayFixture.AccountAnswer(target,question.GetProperty("id").GetString()!,"decline"));
     Assert(remote.TryGetProperty("result",out _),"remote approval names and resolves the exact Codex permission request");
     await Status(id,"ready");
-    remote=await relay.CallAsync("axo.elicitation.resolve",RelayFixture.SignedAnswer(target,question.GetProperty("id").GetString()!,"accept"));
+    remote=await relay.CallAsync("axo.elicitation.resolve",RelayFixture.AccountAnswer(target,question.GetProperty("id").GetString()!,"accept"));
     Assert(remote.TryGetProperty("error",out _),"resolved remote approval cannot authorize a later request");
     await ParityChecks.Controls(client,id,workspace,Assert);
     await ComputerChecks.RunAsync(client, daemonPath, pipe, id, relay, target, Assert);

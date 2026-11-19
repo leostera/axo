@@ -199,7 +199,6 @@ impl Host {
         id: &str,
         answer: axo_protocol::elicitation::ElicitationAnswer,
         sealed: Option<axo_protocol::elicitation::Sealed>,
-        device: Option<axo_protocol::elicitation::DeviceProof>,
     ) -> Result<(), (i64, String)> {
         let missing = || {
             (
@@ -207,19 +206,8 @@ impl Host {
                 "Already answered, expired, or no longer asked".into(),
             )
         };
-        let proof = device.ok_or_else(|| {
-            (
-                axo_protocol::elicitation::BAD_SIGNATURE,
-                "Answers must be signed by your device.".into(),
-            )
-        })?;
-        let signed = axo_seal::answer_message(id, answer, sealed.as_ref());
-        if !axo_seal::verify_answer(&proof.key, &proof.signature, &signed) {
-            return Err((
-                axo_protocol::elicitation::BAD_SIGNATURE,
-                "Invalid answer signature.".into(),
-            ));
-        }
+        // RFD0079: the authenticated account relay admits the person. Device proofs
+        // confer no authority; private values still require request-bound HPKE below.
         let b = self.backend().map_err(|_| missing())?;
         if b.computer.list().iter().any(|q| q.id == id) {
             return b.computer.answer(

@@ -2,7 +2,7 @@
 
 This branch adds a native WPF desktop client in `windows/Axo` and a Windows backend to the
 existing Rust `axod` binary. It runs **Codex CLI**, using `codex app-server` over stdio. Pi is
-not required. Axo reuses `axo-protocol`, the existing workspace/session SQLite catalog in
+not required. Axo reuses `axo-protocol`, the existing folder-based Session SQLite catalog in
 `axo-store`, and `axo-agent`; it does not replace the daemon with a C# service.
 
 ## Set up
@@ -10,6 +10,7 @@ not required. Axo reuses `axo-protocol`, the existing workspace/session SQLite c
 On Windows 11 x64, install:
 
 ```powershell
+winget install --id Microsoft.PowerShell --exact
 winget install --id Git.Git --exact
 winget install --id Bazel.Bazelisk --exact
 winget install --id Microsoft.VisualStudio.2022.BuildTools --exact --override '--wait --quiet --norestart --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended'
@@ -17,7 +18,7 @@ winget install --id Microsoft.DotNet.SDK.10 --exact
 git config --global core.longpaths true
 ```
 
-Open a new PowerShell after installation. Bazel downloads the repository's pinned Rust toolchain;
+Open a new **PowerShell 7** after installation. Bazel downloads the repository's pinned Rust toolchain;
 do not add Cargo manifests or install the Pi agent for this client. Git Bash is required by Bazel.
 The short Bazel cache path avoids Windows path-length problems. Cargo dependency resolution uses
 Git CLI because the pinned Cua source contains unusually deep paths.
@@ -48,13 +49,13 @@ The current unified crate dependency resolver still resolves Cua's pinned source
 
 ## Use
 
-1. Use **+** or **Ctrl+N**, choose a project folder and name the Workspace. Axo creates its first Codex session.
+1. Use **+** or **Ctrl+N**, choose a project folder and optionally name the new Codex Session.
 2. Send a message. Output streams into the conversation; command output and file activity appear
    while it runs. Use **Stop** to interrupt a turn. The composer’s **⋯** menu offers model/reasoning,
    queued messages, steering and interrupt-and-send. **+** attaches files (up to eight); images go
    to Codex as images and other files as local path references. Attachments are snapshotted on send.
-3. **Terminal → New Session** (**Ctrl+Shift+N**) creates another session in a chosen Workspace.
-   The sidebar lists sessions across Workspaces, grouped as Pinned, Active and Earlier.
+3. **Terminal → New Session in Recent Folder** (**Ctrl+Shift+N**) creates another Session in a recent folder.
+   The sidebar lists Sessions across folders, grouped as Pinned, Active and Earlier.
 4. The workbench shows the Codex pane and an embedded PowerShell terminal side by side. **Split Right**
    (**Ctrl+Shift+D**) and **Split Down** (**Ctrl+D**) add independent terminals in a nested layout.
    **Close Terminal** (**Ctrl+W**) asks before stopping the focused shell. Ratios and shell identities
@@ -149,8 +150,10 @@ Raw scripts and nested sequences remain unavailable. The word gate is not a comp
 for shell commands remains separate from the computer-use opt-in and its permission requests.
 
 **request_input** presents fields identified from a retained UI Automation form. Local answers go
-directly from Axo to the protected pipe; remote answers use the shared device-signed HPKE envelope,
-with the host key protected by DPAPI. Axo checks the window, field identities and browser document
+directly from Axo to the protected pipe; remote answers use HPKE sealed values through the
+account-authenticated relay, with the host key protected by DPAPI. Under
+[RFD0079](../docs/rfds/RFD0079-account-based-client-access.md), a signed-in account needs neither
+device enrollment nor answer signatures. Machine credentials and agent IPC cannot approve requests. Axo checks the window, field identities and browser document
 origin again before filling through ValuePattern. It refuses forms that cannot be verified; no
 clipboard or keyboard fallback is used. The agent receives a receipt, not the entered values.
 Filled values are masked in subsequent computer text reads. After an input request, screenshots
@@ -222,7 +225,7 @@ dotnet run --project windows/Tests/Tests.csproj -c Release -- dist/Axo-Windows/a
 
 ## Scope and limits
 
-Implemented: local workspaces, named/archived sessions, Codex conversations with streamed output,
+Implemented: folder-based Sessions, names/archiving, Codex conversations with streamed output,
 interrupts, approvals/questions, catalog persistence, agent reconnection, embedded ConPTY terminals,
 Mac workbench structure, original animated branding, a tray app, and relay/account linking.
 The pipe negotiates only methods actually implemented on Windows. Windows chat/session extensions
