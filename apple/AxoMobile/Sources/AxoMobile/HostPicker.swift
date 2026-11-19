@@ -46,8 +46,8 @@ struct HostPicker: View {
       }
     }
     .font(.caption).foregroundStyle(.secondary)
-    .padding(.horizontal, 8).frame(height: ComposerMetrics.control)
-    .background(Color.primary.opacity(0.05), in: Capsule())
+    .padding(.horizontal, 8)
+    .composerPill()
   }
 
   private var openHost: RemoteHost? {

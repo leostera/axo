@@ -209,8 +209,7 @@ struct ChatComposer: View {
         .lineLimit(1)
         .frame(maxWidth: 100)
         .padding(.horizontal, 8)
-        .frame(height: ComposerMetrics.control)
-        .background(Color.primary.opacity(0.05), in: Capsule())
+        .composerPill()
         .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
@@ -227,8 +226,8 @@ struct ChatComposer: View {
     let label = pi.runtime?.thinkingLevel?.title ?? "Thinking"
     return Button { showingThinking = true } label: {
       Text(label).font(.caption).foregroundStyle(.secondary)
-        .padding(.horizontal, 9).frame(height: ComposerMetrics.control)
-        .background(Color.primary.opacity(0.05), in: Capsule())
+        .padding(.horizontal, 9)
+        .composerPill()
     }
     .buttonStyle(.plain)
     .disabled(!canSend)
@@ -594,6 +593,15 @@ extension View {
         RoundedRectangle(cornerRadius: radius, style: .continuous).stroke(Color.primary.opacity(0.08), lineWidth: 0.5)
       )
       .padding(.horizontal, compact ? 24 : 12)
+  }
+
+  /// Inset the visible capsule without shrinking the control's hit area.
+  func composerPill() -> some View {
+    frame(height: ComposerMetrics.control)
+      .background {
+        Capsule().fill(Color.primary.opacity(0.05)).padding(.vertical, 3)
+      }
+      .contentShape(Rectangle())
   }
 
   /// The composer's rounded box around one row of controls.

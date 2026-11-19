@@ -17,7 +17,7 @@ test("composer: host, actual agent, model and thinking stay separate on one tool
   let app;
   try {
     app = await startApp(cloud);
-    const page = await app.browser.newPage();
+    const page = await app.browser.newPage({ reducedMotion: "reduce" });
     const errors = [];
     page.on("pageerror", error => errors.push(error.message));
     await page.goto(`${app.appUrl}/__tests__/chat/${hostId}/${id}`, { waitUntil: "networkidle" });
@@ -39,7 +39,21 @@ test("composer: host, actual agent, model and thinking stay separate on one tool
         page.locator(".composer-mic"),
         page.getByRole("button", { name: "Send", exact: true }),
       ];
-      const boxes = await Promise.all(controls.map(control => control.boundingBox()));
+      const elements = await Promise.all(controls.map(control => control.elementHandle()));
+      const { boxes, toolbar, pills } = await page.evaluate(elements => {
+        const frame = element => element.getBoundingClientRect().toJSON();
+        return {
+          boxes: elements.map(frame),
+          toolbar: frame(document.querySelector(".composer-toolbar")),
+          pills: elements.slice(1, 5).map(element => {
+            const style = getComputedStyle(element);
+            const height = frame(element).height;
+            const fillHeight = height - parseFloat(style.borderTopWidth) - parseFloat(style.borderBottomWidth);
+            return { height, fillHeight, clip: style.backgroundClip };
+          }),
+        };
+      }, elements);
+      await Promise.all(elements.map(element => element.dispose()));
       for (let i = 0; i < boxes.length; i++) {
         assert.ok(boxes[i] && boxes[i].width > 0);
         assert.ok(boxes[i].x >= 0 && boxes[i].x + boxes[i].width <= width + 1, JSON.stringify({ width, boxes }));
@@ -48,8 +62,8 @@ test("composer: host, actual agent, model and thinking stay separate on one tool
           assert.ok(Math.abs(boxes[i].y + boxes[i].height / 2 - boxes[0].y - boxes[0].height / 2) < 2, "one line");
         }
       }
-      const toolbar = await page.locator(".composer-toolbar").boundingBox();
-      assert.ok(Math.abs(boxes[0].x - toolbar.x) <= 1, "Add hugs the left edge");
+      for (const pill of pills) assert.deepEqual(pill, { height: 36, fillHeight: 30, clip: "padding-box" });
+      assert.ok(Math.abs(boxes[0].x - toolbar.x) <= 1, `Add hugs the left edge at ${width}px: ${boxes[0].x} vs ${toolbar.x}`);
       assert.ok(Math.abs(boxes.at(-1).x + boxes.at(-1).width - toolbar.x - toolbar.width) <= 1, "Send hugs the right edge");
       if (width >= 768) assert.ok(boxes[1].x - (boxes[0].x + boxes[0].width) > 12, "spare space belongs between Add and Host");
       assert.ok(boxes[5].x - (boxes[4].x + boxes[4].width) <= 6, "Thinking stays beside Mic");

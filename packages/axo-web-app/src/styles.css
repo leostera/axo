@@ -484,10 +484,10 @@ button:disabled { cursor: default; }
 .model-picker > .model-picker-button:first-child { flex: 1 1 auto; }
 .thinking-short { display: none; }
 .model-picker-button {
-  display: inline-flex; height: 32px; max-width: 200px; align-items: center; gap: 5px; padding: 0 8px 0 10px;
-  border: 0; border-radius: 16px; color: var(--secondary); background: var(--fill); font-size: 13px; white-space: nowrap; min-width: 0;
+  display: inline-flex; max-width: 200px; align-items: center; gap: 5px; padding: 0 8px 0 10px;
+  border: 0; color: var(--secondary); background-color: var(--fill); font-size: 13px; white-space: nowrap; min-width: 0;
 }
-.model-picker-button:hover:not(:disabled), .model-picker-button[aria-expanded="true"] { color: var(--text); background: var(--fill); }
+.model-picker-button:hover:not(:disabled), .model-picker-button[aria-expanded="true"] { color: var(--text); background-color: var(--fill); }
 .model-picker-label { overflow: hidden; text-overflow: ellipsis; }
 .thinking-picker-button { flex: none; }
 @media (max-width: 600px) {
@@ -552,16 +552,20 @@ button.grouped-row:disabled { color: var(--tertiary); background: transparent; }
 /* Destination badges show the current Session's host and agent; only drafts have menus. */
 .host-picker { position: relative; flex: none; align-self: flex-end; }
 .host-picker-button {
-  display: inline-flex; height: 36px; max-width: 190px; align-items: center; gap: 6px; padding: 0 10px 0 12px;
-  border: 0; border-radius: 18px; color: var(--secondary); background: var(--fill); font-size: 13px; white-space: nowrap;
+  display: inline-flex; max-width: 190px; align-items: center; gap: 6px; padding: 0 10px 0 12px;
+  border: 0; color: var(--secondary); background-color: var(--fill); font-size: 13px; white-space: nowrap;
 }
-button.host-picker-button:hover { background: var(--fill-strong); color: var(--text); }
+button.host-picker-button:hover { background-color: var(--fill-strong); color: var(--text); }
 .host-picker-label { overflow: hidden; text-overflow: ellipsis; }
 .agent-picker { flex: none; align-self: center; position: relative; font-size: 13px; }
-.agent-picker summary, .agent-badge { display: flex; align-items: center; gap: 6px; height: 36px; padding: 0 10px; border-radius: 18px; color: var(--secondary); background: var(--fill); }
+.agent-picker summary, .agent-badge { display: flex; align-items: center; gap: 6px; padding: 0 10px; color: var(--secondary); background-color: var(--fill); }
 .agent-picker summary { cursor: pointer; list-style: none; }
 .agent-picker summary::-webkit-details-marker { display: none; }
-.agent-picker summary:hover { background: var(--fill-strong); color: var(--text); }
+.agent-picker summary:hover { background-color: var(--fill-strong); color: var(--text); }
+/* Fill only the middle 30px; the full 36px row remains available to tap. */
+.composer-toolbar :is(.host-picker-button, .agent-picker summary, .agent-badge, .model-picker-button) {
+  height: 36px; border-block: 3px solid transparent; border-radius: 18px; background-clip: padding-box;
+}
 .agent-picker [role="menu"] { position: absolute; bottom: calc(100% + 8px); left: 0; z-index: 25; min-width: 175px; padding: 5px; border-radius: 12px; background: var(--surface); box-shadow: 0 12px 32px rgb(0 0 0 / 0.18); }
 .agent-picker [role="menu"] button { display: flex; align-items: center; gap: 9px; width: 100%; padding: 8px; border: 0; border-radius: 7px; background: none; color: var(--text); text-align: left; }
 .agent-picker [role="menu"] button:hover, .agent-picker [role="menu"] button:focus-visible { background: var(--fill-strong); }
