@@ -75,6 +75,17 @@ pub fn permissions() -> (bool, bool) {
     platform::permissions()
 }
 
+/// Fixed read-only observation for the Linux platform adapter, never an action or script.
+#[cfg(target_os = "linux")]
+pub(super) fn permission_probe() -> Value {
+    let result = block_on(
+        runtime()
+            .registry
+            .invoke("check_permissions", json!({"prompt":false})),
+    );
+    serde_json::to_value(result).unwrap_or_else(|_| super::error("permission probe failed"))
+}
+
 pub fn call(gate: &'static crate::gate::Gate, tool: &str, mut args: Value) -> Value {
     let runtime = runtime();
     let read = super::ask_for_elements(tool, &mut args);

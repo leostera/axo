@@ -24,6 +24,8 @@ pub enum Peer {
     /// when it connected.
     Socket {
         token: Option<[u8; 32]>,
+        /// Kernel socket credentials identify ancestry, not signed-app authority.
+        pid: Option<u32>,
         connected_at: SystemTime,
     },
     /// The account, through this process's relay connection.
@@ -35,6 +37,7 @@ impl Default for Peer {
     fn default() -> Self {
         Self::Socket {
             token: None,
+            pid: None,
             connected_at: SystemTime::UNIX_EPOCH,
         }
     }
@@ -89,8 +92,19 @@ pub async fn as_relay<F: Future>(request: F) -> F::Output {
 impl Peer {
     /// The peer of a connected Unix socket.
     pub fn of(stream: &tokio::net::UnixStream) -> Self {
+        let token = platform::audit_token(stream);
+        #[cfg(target_os = "linux")]
+        let pid = stream
+            .peer_cred()
+            .ok()
+            .and_then(|credentials| credentials.pid())
+            .and_then(|pid| u32::try_from(pid).ok())
+            .filter(|pid| *pid > 0);
+        #[cfg(not(target_os = "linux"))]
+        let pid = token.as_ref().map(pid_of);
         Self::Socket {
-            token: platform::audit_token(stream),
+            token,
+            pid,
             connected_at: SystemTime::now(),
         }
     }
@@ -99,13 +113,14 @@ impl Peer {
     pub fn process(&self) -> Option<ConnectedProcess> {
         match self {
             Self::Socket {
-                token: Some(token),
+                pid: Some(pid),
                 connected_at,
+                ..
             } => Some(ConnectedProcess {
-                pid: pid_of(token),
+                pid: *pid,
                 connected_at: *connected_at,
             }),
-            Self::Socket { token: None, .. } | Self::Relay => None,
+            Self::Socket { pid: None, .. } | Self::Relay => None,
         }
     }
 
@@ -255,6 +270,7 @@ mod platform {
 
 /// The pid in an `audit_token_t`, eight `u32`s of which the sixth is the pid, as libbsm's
 /// `audit_token_to_pid` reads it.
+#[cfg(not(target_os = "linux"))]
 fn pid_of(token: &[u8; 32]) -> u32 {
     u32::from_ne_bytes([token[20], token[21], token[22], token[23]])
 }
@@ -265,6 +281,16 @@ const APP_IDENTIFIER: &str = "dev.leostera.axo";
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn linux_kernel_peer_pid_identifies_process_without_claiming_signed_authority() {
+        let (stream, _other) = tokio::net::UnixStream::pair().unwrap();
+        let peer = Peer::of(&stream);
+        assert_eq!(peer.process().unwrap().pid, std::process::id());
+        assert!(!peer.is(Signer::ThisBinary));
+        assert!(!peer.is(Signer::AxoApp));
+    }
 
     #[test]
     fn nobody_outside_a_connection_passes() {
@@ -280,6 +306,7 @@ mod tests {
         };
         let peer = Peer::Socket {
             token: Some([7; 32]),
+            pid: Some(u32::from_ne_bytes([7; 4])),
             connected_at: SystemTime::UNIX_EPOCH,
         };
         let seen = scope(peer, async { token(current()) }).await;

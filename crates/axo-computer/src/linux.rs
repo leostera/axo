@@ -2,7 +2,9 @@
 use std::time::Duration;
 
 use cua_driver_core::tool::ToolRegistry;
-use serde_json::{Value, json};
+use serde_json::Value;
+#[cfg(test)]
+use serde_json::json;
 use zbus::zvariant::OwnedObjectPath;
 
 pub(super) fn registry() -> ToolRegistry {
@@ -71,7 +73,7 @@ async fn safe_gnome_helper() -> bool {
 }
 
 pub(super) fn permissions() -> (bool, bool) {
-    let probe = super::native::call("check_permissions", json!({"prompt":false}));
+    let probe = super::native::permission_probe();
     let status = &probe["structuredContent"];
     let wayland_capture = platform_linux::wayland::wayland_enabled()
         && platform_linux::wayland::shell_helper::available()
