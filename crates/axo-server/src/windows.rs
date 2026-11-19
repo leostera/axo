@@ -93,6 +93,7 @@ struct Runtime {
     terminal: Option<Child>,
     terminals: std::collections::BTreeMap<axo_protocol::ShellId, Arc<terminal::Terminal>>,
     remote_command: Option<String>,
+    pending_user_commands: VecDeque<Option<String>>,
     turn_entries: Vec<String>,
     progress: HashMap<String, String>,
     remote_questions: HashMap<String, (String, axo_protocol::elicitation::Elicitation)>,
@@ -931,6 +932,7 @@ impl Backend {
             runtime.status = Some(SessionStatus::Starting);
             runtime.turn = None;
             runtime.pending.clear();
+            runtime.pending_user_commands.clear();
             (runtime.generation, runtime.agent.take())
         };
         // Drop outside the runtime lock. The old reader may still report an exit; its
@@ -989,15 +991,28 @@ impl Backend {
         if method == "item/completed" {
             let item = &event["params"]["item"];
             if let (Some(item_id), Some((role, text))) = (item["id"].as_str(), message_text(item)) {
-                if let Err(error) = axo_store::coding::save_message(
+                let command = if role == "user" {
+                    runtime.pending_user_commands.front().cloned().flatten()
+                } else {
+                    None
+                };
+                match axo_store::coding::save_message_with_command(
                     &self.database.lock().unwrap(),
                     id,
                     item_id,
                     role,
                     &text,
+                    command.as_deref(),
                 ) {
-                    log::error!("event=catalog.message_failed kind={:?}", error.kind());
-                    runtime.error = Some("Could not save the conversation to the catalog".into());
+                    Ok(true) if role == "user" => {
+                        runtime.pending_user_commands.pop_front();
+                    }
+                    Ok(_) => {}
+                    Err(error) => {
+                        log::error!("event=catalog.message_failed kind={:?}", error.kind());
+                        runtime.error =
+                            Some("Could not save the conversation to the catalog".into());
+                    }
                 }
             }
         }
@@ -1013,6 +1028,7 @@ impl Backend {
                 runtime.pending.clear();
                 runtime.status = Some(SessionStatus::Ready);
                 runtime.remote_command = None;
+                runtime.pending_user_commands.clear();
                 runtime.turn_entries.clear();
                 runtime.progress.clear();
                 if event["params"]["turn"]["status"] == "failed" {

@@ -41,10 +41,27 @@ impl Backend {
         if busy && p.delivery == PromptDelivery::Steer {
             let expected =
                 turn.ok_or_else(|| invalid("The turn is still starting; try steering again"))?;
-            let result = agent.request(
+            session
+                .runtime
+                .lock()
+                .unwrap()
+                .pending_user_commands
+                .push_back(p.command_id.clone());
+            let result = match agent.request(
                 "turn/steer",
                 json!({"threadId":thread,"expectedTurnId":expected,"input":input}),
-            )?;
+            ) {
+                Ok(result) => result,
+                Err(error) => {
+                    session
+                        .runtime
+                        .lock()
+                        .unwrap()
+                        .pending_user_commands
+                        .pop_back();
+                    return Err(error);
+                }
+            };
             return Ok(json!({"accepted":true,"delivery":"steer","turnId":result["turnId"]}));
         }
         if busy && p.delivery == PromptDelivery::Turn {
@@ -154,6 +171,7 @@ impl Backend {
             let mut r = session.runtime.lock().unwrap();
             r.status = Some(SessionStatus::Working);
             r.error = None;
+            r.pending_user_commands.push_back(remote_command.clone());
             r.remote_command = remote_command;
             r.turn_entries.clear();
         }
@@ -166,7 +184,9 @@ impl Backend {
                 Ok(json!({"accepted":true,"turnId":result["turn"]["id"]}))
             }
             Err(e) => {
-                session.runtime.lock().unwrap().status = Some(SessionStatus::Ready);
+                let mut runtime = session.runtime.lock().unwrap();
+                runtime.status = Some(SessionStatus::Ready);
+                runtime.pending_user_commands.pop_back();
                 Err(e)
             }
         }
