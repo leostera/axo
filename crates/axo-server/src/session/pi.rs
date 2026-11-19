@@ -1143,6 +1143,25 @@ impl Session {
         dormant
     }
 
+    /// A local pin keeps the process available, never inventing a prompt or force-restarting work.
+    pub(crate) async fn keep_pinned_awake(&mut self) -> bool {
+        let Some(pi) = &mut self.pi else { return false };
+        match pi.state {
+            PiState::Dormant | PiState::Unavailable => {
+                self.start_pi(None).await;
+                true
+            }
+            PiState::Running { .. } if pi.sleep => {
+                // Sleep was already admitted: replace it after exit, never spawn a second writer.
+                pi.sleep = false;
+                pi.restart = true;
+                self.publish();
+                true
+            }
+            PiState::Running { .. } | PiState::Launching { .. } => false,
+        }
+    }
+
     /// Starts the Pi of `shell_id`, which must not be running; `waiter` hears when it is up.
     pub(crate) async fn restart_unavailable(
         &mut self,

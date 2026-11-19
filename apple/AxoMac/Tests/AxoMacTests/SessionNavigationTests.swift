@@ -263,6 +263,40 @@ final class SessionNavigationTests: XCTestCase {
     XCTAssertEqual(client.restartedPis.count, 1, "awake now, so not woken again")
   }
 
+  @MainActor
+  func testPinningWakesOnlyUnavailableLocalAgentsWithoutSelectingOrForceRestarting() async throws {
+    let suite = "axo-pinned-wake-\(UUID().uuidString)"
+    let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+    defer { defaults.removePersistentDomain(forName: suite) }
+    defaults.set(SessionID(2).rawValue, forKey: AxoPreferenceKey.selectedSession)
+    defaults.set(false, forKey: AxoPreferenceKey.automaticPiRestart)
+    let local = TerminalShell(id: 21, processId: 0, initialPwd: "/", ptyDevice: "", attachSocketPath: "/tmp/s", role: .pi, availability: .dormant)
+    let remote = TerminalShell(id: 31, processId: 0, initialPwd: "/", ptyDevice: "", attachSocketPath: "/tmp/s", role: .pi, availability: .dormant)
+    let client = FakeAxodClient()
+    client.methods.append(contentsOf: [AxodMethodName.piRestartAuto.rawValue, AxodMethodName.peerSessionsList.rawValue])
+    client.restartsPi = true
+    client.sessions = [TerminalSession(id: 1, folder: "/", shells: [local]), TerminalSession(id: 2, folder: "/", shells: [])]
+    let host = "2e2e7f91-3d8f-4f97-8f71-4fc7d53313c7"
+    client.peers = PeerSessionList(connected: true,
+      hosts: [PeerHost(hostId: host, label: "Another Mac", online: true)],
+      sessions: [PeerSession(hostId: host, session: TerminalSession(id: 9, folder: "/", shells: [remote]))])
+    let model = TerminalSessionsModel(client: client, selectedSessionDefaults: defaults)
+    model.isLookingAtSelection = { false }
+    await model.refresh()
+    model.togglePin(1)
+    for _ in 0..<100 where model.shell(for: 21)?.isAvailable != true {
+      try await Task.sleep(for: .milliseconds(5))
+    }
+    XCTAssertTrue(try XCTUnwrap(model.shell(for: 21)).isAvailable)
+    XCTAssertEqual(model.selectedSessionID, 2)
+    XCTAssertEqual(client.restartedPis.map(\.automatically), [true], "Never force-restart a now-running process")
+    model.togglePin(9)
+    model.togglePin(1)
+    model.togglePin(1)
+    try await Task.sleep(for: .milliseconds(50))
+    XCTAssertEqual(client.requestedPiRestarts, [21], "Neither peer pins nor already-running local pins restart agents")
+  }
+
   @MainActor func testSessionsSeenOnThisMacAreRememberedAndOnlyNewActivityIsUnseen() async throws {
     let suiteName = "axo-sidebar-seen-\(UUID().uuidString)"
     let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))

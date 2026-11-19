@@ -81,6 +81,184 @@ async fn mac_pins_exempt_both_limits_and_unpin_restores_normal_sleep() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn pinning_a_dormant_session_wakes_it_once_without_a_prompt() {
+    let fixture = Fixture::with(Pi::Fake { turn_ms: 0 }).await;
+    let record = fixture.new_session().await;
+    fixture.wait_for_pi(record.id).await;
+    let original = pid(&fixture.listed(record.id).unwrap(), PaneRole::Pi);
+    assert_eq!(
+        idle_pis::look(&fixture.core, SLEEP_ALL).await,
+        vec![record.id]
+    );
+    fixture
+        .until("Pi asleep", || pi_is_dormant(&fixture, record.id))
+        .await;
+    fixture
+        .core
+        .local_pins
+        .use_source(move || Ok([record.id].into_iter().collect()));
+    assert!(idle_pis::look(&fixture.core, SLEEP_ALL).await.is_empty());
+    fixture.wait_for_pi(record.id).await;
+    let awake = pid(&fixture.listed(record.id).unwrap(), PaneRole::Pi);
+    assert!(alive(awake) && awake != original);
+    assert!(idle_pis::look(&fixture.core, SLEEP_ALL).await.is_empty());
+    assert_eq!(
+        pid(&fixture.listed(record.id).unwrap(), PaneRole::Pi),
+        awake
+    );
+    assert!(!fixture.pi_log().contains("SENT:"));
+    assert!(!fixture.pi_log().contains("RESUME_TURN"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_pin_admitted_during_idle_shutdown_starts_only_after_the_old_pi_exits() {
+    let fixture = Fixture::with(Pi::Fake { turn_ms: 0 }).await;
+    let record = fixture.new_session().await;
+    fixture.wait_for_pi(record.id).await;
+    let original = pid(&fixture.listed(record.id).unwrap(), PaneRole::Pi);
+    fixture
+        .core
+        .local_pins
+        .use_source(move || Ok([record.id].into_iter().collect()));
+    fixture
+        .core
+        .registry
+        .get(record.id)
+        .unwrap()
+        .call(|session| {
+            Box::pin(async move {
+                assert!(session.sleep_pi());
+                assert!(session.keep_pinned_awake().await);
+                assert!(
+                    !session.keep_pinned_awake().await,
+                    "reconciliation must not restart an already-retained process"
+                );
+            })
+        })
+        .await
+        .unwrap();
+    fixture
+        .until("replacement Pi", || {
+            let next = pid(&fixture.listed(record.id).unwrap(), PaneRole::Pi);
+            next != original && alive(next)
+        })
+        .await;
+    fixture.wait_for_pi(record.id).await;
+    assert!(!alive(original));
+    assert!(!fixture.pi_log().contains("SENT:"));
+    assert!(!fixture.pi_log().contains("RESUME_TURN"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn unavailable_pinned_agents_recover_but_stale_pins_cannot_reopen_closed_sessions() {
+    let fixture = Fixture::with(Pi::Fake { turn_ms: 0 }).await;
+    let record = fixture.new_session().await;
+    fixture.wait_for_pi(record.id).await;
+    let original = pid(&fixture.listed(record.id).unwrap(), PaneRole::Pi);
+    fixture
+        .core
+        .local_pins
+        .use_source(move || Ok([record.id].into_iter().collect()));
+    // This is an owned synthetic child, never a personal Session.
+    assert!(original > 1);
+    assert_eq!(unsafe { libc::kill(original, libc::SIGKILL) }, 0);
+    fixture
+        .until("unavailable agent", || {
+            fixture
+                .listed(record.id)
+                .unwrap()
+                .shells
+                .iter()
+                .any(|shell| {
+                    shell.role == PaneRole::Pi
+                        && matches!(shell.availability, Availability::Unavailable { .. })
+                })
+        })
+        .await;
+    assert!(idle_pis::look(&fixture.core, SLEEP_ALL).await.is_empty());
+    fixture.wait_for_pi(record.id).await;
+    assert!(alive(pid(
+        &fixture.listed(record.id).unwrap(),
+        PaneRole::Pi
+    )));
+    sessions::close(&fixture.core, record.id).await.unwrap();
+    assert!(idle_pis::look(&fixture.core, SLEEP_ALL).await.is_empty());
+    assert!(!fixture.core.registry.contains(record.id));
+    assert!(fixture.listed(record.id).is_none());
+    assert!(!fixture.pi_log().contains("SENT:"));
+    assert!(!fixture.pi_log().contains("RESUME_TURN"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn old_pinned_sessions_start_with_axod_while_old_unpinned_sessions_stay_dormant() {
+    let mut fixture = Fixture::with(Pi::Fake { turn_ms: 0 }).await;
+    let pinned = fixture.new_session().await;
+    let other = fixture.new_session().await;
+    fixture.wait_for_pi(pinned.id).await;
+    fixture.wait_for_pi(other.id).await;
+    let old_pids = [
+        pid(&fixture.listed(pinned.id).unwrap(), PaneRole::Pi),
+        pid(&fixture.listed(other.id).unwrap(), PaneRole::Pi),
+    ];
+    sessions::stop(&fixture.core).await;
+    fixture
+        .until("old agents stopped", || {
+            old_pids.iter().all(|pid| !alive(*pid))
+        })
+        .await;
+    fixture
+        .core
+        .store
+        .call(move |database| {
+            // These fake agents have no messages: age creation without inventing transcript contents.
+            database
+                .execute(
+                    "UPDATE sessions SET created_at = ?1, last_message_at = NULL",
+                    rusqlite::params![axo_store::unix_timestamp() - 7200],
+                )
+                .map_err(std::io::Error::other)?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let (core, previous) = crate::open_core(
+        &fixture.directory,
+        &fixture.directory.join("sessions"),
+        &fixture.directory.join("axod.sock"),
+    )
+    .unwrap();
+    core.local_pins
+        .use_source(move || Ok([pinned.id].into_iter().collect()));
+    assert!(
+        crate::local_pins::read(&core)
+            .await
+            .unwrap()
+            .contains(&pinned.id)
+    );
+    sessions::restore(&core, previous).await.unwrap();
+    fixture.core = core;
+    assert!(
+        !pi_is_dormant(&fixture, pinned.id),
+        "pinned restore: {:?}",
+        fixture.listed(pinned.id)
+    );
+    let ready = sessions::wait_for_pi(&fixture.core, pinned.id, Duration::from_secs(10)).await;
+    assert!(
+        ready.is_ok(),
+        "pinned start: {:?}; state: {:?}",
+        ready,
+        fixture.listed(pinned.id)
+    );
+    assert!(alive(pid(
+        &fixture.listed(pinned.id).unwrap(),
+        PaneRole::Pi
+    )));
+    assert!(pi_is_dormant(&fixture, other.id));
+    assert!(!fixture.pi_log().contains("SENT:"));
+    assert!(!fixture.pi_log().contains("RESUME_TURN"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_pin_added_after_the_idle_scan_is_rechecked_before_sleep() {
     let fixture = Fixture::with(Pi::Fake { turn_ms: 0 }).await;
     let record = fixture.new_session().await;

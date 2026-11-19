@@ -1,4 +1,4 @@
-//! Only this host Mac's existing Axo sidebar pins exempt its Pis from idle sleep.
+//! Only this host Mac's existing Axo sidebar pins keep its agents running (RFD0085).
 //! No network synchronization, new pin store, or writes to the person's preferences.
 use crate::core::Core;
 use axo_protocol::SessionId;

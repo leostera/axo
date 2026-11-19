@@ -163,9 +163,11 @@ final class FakeAxodClient: AxodClient {
   /// When set, restarting a Pi succeeds: the listed Session comes back with that pane available.
   var restartsPi = false
   private(set) var restartedPis: [(shellID: ShellID, automatically: Bool)] = []
+  private(set) var requestedPiRestarts: [ShellID] = []
   func restartPi(shellID: ShellID, inSession sessionID: SessionID, automatically: Bool) async throws
     -> TerminalSession
   {
+    requestedPiRestarts.append(shellID)
     guard restartsPi, let index = sessions.firstIndex(where: { $0.id == sessionID }) else {
       throw Unsupported()
     }

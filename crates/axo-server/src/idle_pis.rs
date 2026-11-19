@@ -63,6 +63,14 @@ pub(crate) async fn look(core: &Arc<Core>, policy: Policy) -> Vec<SessionId> {
     let mut asking = tokio::task::JoinSet::new();
     for handle in core.registry.all() {
         if pinned.contains(&handle.id) {
+            asking.spawn(async move {
+                let _ = tokio::time::timeout(
+                    ANSWER_WAIT,
+                    handle.call(|session| Box::pin(session.keep_pinned_awake())),
+                )
+                .await;
+                None
+            });
             continue;
         }
         asking.spawn(async move {

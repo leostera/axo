@@ -631,6 +631,18 @@ final class TerminalSessionsModel {
   func togglePin(_ sessionID: SessionID) {
     sessionPins.toggle(sessionID)
     preferenceDefaults.set(sessionPins.storedValue, forKey: AxoPreferenceKey.pinnedSessions)
+    guard isPinned(sessionID), !isPeerSession(sessionID), let session = session(for: sessionID) else { return }
+    for shell in session.shells where shell.isPi && !shell.isAvailable {
+      Task { [weak self] in
+        guard let self, self.isPinned(sessionID) else { return }
+        do {
+          try await self.restartPiSession(shell.id, automatically: true)
+        } catch {
+          // The daemon reconciles persistent local pins; never force-restart a now-running agent.
+          AxoTrace.commands.notice("event=pin.wake_unavailable")
+        }
+      }
+    }
   }
 
   func setAutomaticPiRestartEnabled(_ enabled: Bool) {

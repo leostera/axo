@@ -36,6 +36,7 @@ sh_test(
     data = [
         "check-recovery.ts",
         "setup/restart-continuation.ts",
+        "setup/pinned-sessions.ts",
         "//:node_modules/@leostera/feynman",
     ],
     target_compatible_with = ["@platforms//os:macos"],

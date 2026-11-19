@@ -93,9 +93,16 @@ pub(crate) fn owner_of(
 }
 
 /// Restores every open Session as axod starts. Pis start for the Sessions the last stop
-/// interrupted and those active in the last hour; the rest stay dormant until wanted.
+/// interrupted, local pinned Sessions, and those active in the last hour; the rest stay dormant until wanted.
 pub(crate) async fn restore(core: &Arc<Core>, previous: Option<DaemonStop>) -> io::Result<()> {
     let active_since = axo_store::unix_timestamp() - ACTIVE_ON_START;
+    let pinned = crate::local_pins::read(core).await.unwrap_or_else(|error| {
+        log::warn!(
+            "event=session.restore_pins_unavailable error_kind={:?}",
+            error.kind()
+        );
+        Default::default()
+    });
     let stored = core
         .store
         .call(move |database| {
@@ -121,7 +128,7 @@ pub(crate) async fn restore(core: &Arc<Core>, previous: Option<DaemonStop>) -> i
         let start = if interrupted.contains(&record.id) {
             starting += 1;
             PiStart::Resume
-        } else if activity >= active_since {
+        } else if pinned.contains(&record.id) || activity >= active_since {
             starting += 1;
             PiStart::Now
         } else {
