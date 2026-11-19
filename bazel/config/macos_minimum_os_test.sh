@@ -4,7 +4,15 @@
 set -euo pipefail
 expected="$1"
 bazelrc="$2"
-if ! grep -qx -- "build --macos_minimum_os=$expected" "$bazelrc"; then
-  echo ".bazelrc must say 'build --macos_minimum_os=$expected', as config.json's apple.macos_min does" >&2
+if ! grep -Fqx -- "build --enable_platform_specific_config" "$bazelrc"; then
+  echo ".bazelrc must enable platform-specific configuration so macOS keeps its minimum OS" >&2
+  exit 1
+fi
+if ! grep -Fqx -- "build:macos --macos_minimum_os=$expected" "$bazelrc"; then
+  echo ".bazelrc must say 'build:macos --macos_minimum_os=$expected', as config.json's apple.macos_min does" >&2
+  exit 1
+fi
+if grep -Eq -- '^build[[:space:]]+--macos_minimum_os=' "$bazelrc"; then
+  echo "The macOS minimum OS must not become a global Linux/Windows build option" >&2
   exit 1
 fi
