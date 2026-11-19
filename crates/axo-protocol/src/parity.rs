@@ -254,6 +254,18 @@ pub const PARITY: &[Parity] = &[
         Remote::LocalOnly("devices are allowed at the Mac, in Axo.app (RFD0077)"),
     ),
     row(
+        method::DEVICE_PAIRING_CREATE,
+        Remote::LocalOnly("only signed Axo.app displays a private physical linking code"),
+    ),
+    row(
+        method::DEVICE_PAIRING_CANCEL,
+        Remote::LocalOnly("only signed Axo.app cancels its private linking code"),
+    ),
+    row(
+        method::DEVICE_PAIRING_STATUS,
+        Remote::LocalOnly("only signed Axo.app reconciles its private linking screen"),
+    ),
+    row(
         method::DEVICE_DECIDE,
         Remote::LocalOnly("only the person at the Mac allows a device"),
     ),
@@ -264,7 +276,7 @@ pub const PARITY: &[Parity] = &[
     row(
         method::AGENTS_LIST,
         Remote::LocalOnly(
-            "the phone and the web offer every agent; a Mac without one refuses the Session"
+            "the phone and the web offer every agent; a Mac without one refuses the Session",
         ),
     ),
 ];

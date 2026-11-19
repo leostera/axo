@@ -146,6 +146,18 @@ public final class AxodConnection: Sendable {
     try await call(AxodMethods.deviceList)
   }
 
+  public func createDeviceLinkCode() async throws -> HostDeviceLinkCode {
+    try await call(AxodMethods.devicePairingCreate)
+  }
+
+  public func devicePairingStatus() async throws -> DevicePairingStatus {
+    try await call(AxodMethods.devicePairingStatus)
+  }
+
+  public func cancelDeviceLinkCode() async throws {
+    _ = try await call(AxodMethods.devicePairingCancel)
+  }
+
   /// Allows a waiting device, or turns it away. axod takes this only from Axo.app.
   public func decideDevice(_ key: String, allow: Bool) async throws {
     _ = try await call(AxodMethods.deviceDecide, DecideDevice(key: key, allow: allow))

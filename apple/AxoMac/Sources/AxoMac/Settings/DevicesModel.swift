@@ -7,6 +7,11 @@ import Observation
 /// `decideDevice` and `revokeDevice` only from Axo.app, by code signature.
 @MainActor
 protocol AxodDevicesClient: AnyObject {
+  func remoteAccessStatus() async throws -> RemoteAccessStatus
+  func linkHost(using code: HostPairingCode) async throws -> HostPairingResult
+  func createDeviceLinkCode() async throws -> HostDeviceLinkCode
+  func devicePairingStatus() async throws -> DevicePairingStatus
+  func cancelDeviceLinkCode() async throws
   func answeringDevices() async throws -> AnsweringDevices
   func decideDevice(_ key: String, allow: Bool) async throws
   func revokeDevice(_ key: String) async throws
@@ -22,6 +27,11 @@ extension AxodConnection: AxodDevicesClient {}
 @Observable
 final class DevicesModel {
   private(set) var devices: AnsweringDevices?
+  private(set) var linkCode: HostDeviceLinkCode?
+  private(set) var creatingLinkCode = false
+  private(set) var needsSignIn = false
+  private(set) var linkCompleted = false
+  @ObservationIgnored private var linkRevision = UUID()
   /// Devices whose decision or removal is on its way to axod.
   private(set) var busy: Set<String> = []
   /// Why the list could not be read, or a choice not saved, worded for the person.
@@ -39,10 +49,57 @@ final class DevicesModel {
     }
     do {
       devices = try await client.answeringDevices()
+      let status = try await client.remoteAccessStatus()
+      needsSignIn = status.linked == false
+      if let linkCode {
+        let progress = try await client.devicePairingStatus()
+        if progress.id == linkCode.id, progress.paired { self.linkCode = nil; linkCompleted = true }
+      }
       failure = nil
     } catch {
       failure = "Axo couldn’t read the devices: \(error.localizedDescription)"
     }
+  }
+
+  /// A native sign-in enrolls the host without making the person copy an eight-character code.
+  /// The temporary native session is never persisted on this Mac; the host keeps its own credential.
+  func linkToAccount(using token: SessionToken) async throws {
+    guard let client else { throw SessionCommandError("axod is not running.") }
+    guard try await client.remoteAccessStatus().linked == false else { return }
+    let account = AccountClient(tokens: StaticSessionToken(token))
+    do {
+      let pairing = try await account.createHostPairing()
+      guard try await client.remoteAccessStatus().linked == false else {
+        try? await account.signOut(); return
+      }
+      _ = try await client.linkHost(using: pairing.code)
+      try? await account.signOut()
+      await refresh()
+    } catch {
+      try? await account.signOut()
+      throw error
+    }
+  }
+
+  func createLinkCode() async {
+    guard let client, !creatingLinkCode else { return }
+    let revision = UUID()
+    linkRevision = revision
+    creatingLinkCode = true
+    linkCompleted = false
+    defer { creatingLinkCode = false }
+    do {
+      let code = try await client.createDeviceLinkCode()
+      guard linkRevision == revision else { try? await client.cancelDeviceLinkCode(); return }
+      linkCode = code
+      failure = nil
+    } catch { failure = "Axo couldn’t create a linking code. Connect Remote Access and try again." }
+  }
+
+  func cancelLinkCode() async {
+    linkRevision = UUID()
+    linkCode = nil
+    try? await client?.cancelDeviceLinkCode()
   }
 
   /// Allows a waiting device to answer this Mac's questions, or turns it away.

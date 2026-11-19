@@ -18,11 +18,11 @@ struct SettingsView: View {
   @State private var confirmingSignOut = false
 
   enum Opening: String, Identifiable {
-    case settings, apps
+    case settings, apps, linkedDevices
     var id: String { rawValue }
   }
 
-  private enum Page: Hashable { case account, apps, appearance, chats, notifications }
+  private enum Page: Hashable { case account, apps, appearance, chats, notifications, linkedDevices }
 
   private var accountName: String {
     hosts.signedIn?.profile?.name ?? hosts.signedIn?.profile?.email ?? "Signed in"
@@ -51,6 +51,7 @@ struct SettingsView: View {
           case .appearance: appearancePage
           case .chats: chatsPage
           case .notifications: notificationsPage
+          case .linkedDevices: LinkedDevicesView(account: account, hosts: hosts, onboarding: opening == .linkedDevices)
           }
         }
         .toolbar {
@@ -73,8 +74,12 @@ struct SettingsView: View {
           }
         }
     }
-    .onAppear { if opening == .apps, path.isEmpty { path.append(Page.apps) } }
-    .task { await apps.refresh() }
+    .onAppear {
+      guard path.isEmpty else { return }
+      if opening == .apps { path.append(Page.apps) }
+      if opening == .linkedDevices { path.append(Page.linkedDevices) }
+    }
+    .task { if opening != .linkedDevices { await apps.refresh() } }
     .alert("Sign out of Axo on this device?", isPresented: $confirmingSignOut) {
       Button("Sign out", role: .destructive) { dismiss(); signOut() }
       Button("Cancel", role: .cancel) {}
@@ -92,7 +97,7 @@ struct SettingsView: View {
     ScrollView {
       VStack(spacing: 24) {
         SettingsCard {
-          destination(.account, "Account", icon: "person.crop.circle", value: accountName)
+          destination(.account, "Profile", icon: "person.crop.circle", value: accountName)
         }
         SettingsCard {
           destination(.apps, "Apps", icon: "powerplug", value: appStatus,
@@ -142,6 +147,9 @@ struct SettingsView: View {
           SettingsNavigationRow(title: accountName, icon: "person.crop.circle", subtitle: hosts.signedIn?.profile?.email,
             disclosure: false)
         }
+        SettingsCard {
+          destination(.linkedDevices, "Linked Axos", icon: "qrcode.viewfinder", subtitle: "Link and approve devices from this phone")
+        }
         SettingsCard { signOutButton }
         Text("Signing out ends this device’s session. Your hosts and conversations stay on your account.")
           .font(.footnote).foregroundStyle(.secondary)
@@ -149,7 +157,7 @@ struct SettingsView: View {
       .padding(20).frame(maxWidth: 640).frame(maxWidth: .infinity)
     }
     .background(ChatColors.background)
-    .navigationTitle("Account").navigationBarTitleDisplayMode(.inline)
+    .navigationTitle("Profile").navigationBarTitleDisplayMode(.inline)
   }
 
   private var appearancePage: some View {

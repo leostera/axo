@@ -30,6 +30,9 @@ public enum AxodMethodName: String, CaseIterable, Sendable {
   case elicitationList = "axo.elicitation.list"
   case elicitationResolve = "axo.elicitation.resolve"
   /// The devices that answer for this Mac (RFD0077). Only Axo.app decides or revokes.
+  case devicePairingCreate = "axo.device.pairing.create"
+  case devicePairingCancel = "axo.device.pairing.cancel"
+  case devicePairingStatus = "axo.device.pairing.status"
   case deviceList = "axo.device.list"
   case deviceDecide = "axo.device.decide"
   case deviceRevoke = "axo.device.revoke"

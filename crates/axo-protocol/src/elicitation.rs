@@ -192,6 +192,11 @@ pub struct DeviceProof {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Device {
+    /// Explicitly granted by physical QR pairing; existing answer permissions do not imply it.
+    #[serde(default)]
+    pub can_link_devices: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link_id: Option<String>,
     /// Base64 of its uncompressed P-256 public key.
     pub key: String,
     pub name: String,

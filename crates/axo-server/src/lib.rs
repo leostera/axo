@@ -19,6 +19,7 @@ mod brief;
 mod callers;
 mod catalog;
 mod core;
+mod device_pairing;
 mod devices;
 mod event_stream;
 mod events;
@@ -520,6 +521,7 @@ fn rpc_handler(
         &questions,
         &computer,
         &devices::DevicesExtension(Arc::clone(&core)),
+        &device_pairing::DevicePairingExtension(Arc::clone(&core)),
     ] {
         if let Err(conflict) = methods.add(extension) {
             panic!("{conflict}");

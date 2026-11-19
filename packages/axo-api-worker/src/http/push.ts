@@ -54,7 +54,7 @@ export async function notificationRequest(request: Request, env: Env, ctx: Execu
   return json({ error: settled ? "Request changed or is no longer pending" : "Answer was not confirmed; review in Axo" }, settled ? 409 : 422);
 }
 
-async function boundedBody(request: Request): Promise<unknown> {
+export async function boundedBody(request: Request): Promise<unknown> {
   if (!request.body) return null;
   const reader = request.body.getReader();
   const chunks: Uint8Array[] = [];

@@ -783,6 +783,18 @@ pub const EXCLUDED: &[(&str, &str)] = &[
         "Only the person at the Mac, in signed Axo.app, allows a device",
     ),
     (
+        method::DEVICE_PAIRING_CREATE,
+        "Private QR capabilities are shown only by signed Axo.app",
+    ),
+    (
+        method::DEVICE_PAIRING_CANCEL,
+        "Only signed Axo.app manages its private linking codes",
+    ),
+    (
+        method::DEVICE_PAIRING_STATUS,
+        "Signed Axo.app reconciles its private linking screen",
+    ),
+    (
         method::DEVICE_REVOKE,
         "Only the person at the Mac, in signed Axo.app, removes a device",
     ),

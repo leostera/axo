@@ -150,6 +150,26 @@ pub fn verify_answer(key: &str, signature: &str, message: &[u8]) -> bool {
     key.verify(message, &signature).is_ok()
 }
 
+/// A one-time QR capability, distinct from the installation's persistent keys.
+pub fn new_pairing_secret() -> zeroize::Zeroizing<Vec<u8>> {
+    let key = p256::ecdsa::SigningKey::random(&mut p256::elliptic_curve::rand_core::OsRng);
+    zeroize::Zeroizing::new(key.to_bytes().to_vec())
+}
+
+pub fn pairing_public(secret: &[u8]) -> Option<String> {
+    let key = p256::ecdsa::SigningKey::from_slice(secret).ok()?;
+    Some(axo_protocol::base64::encode(
+        key.verifying_key().to_encoded_point(false).as_bytes(),
+    ))
+}
+
+pub fn pairing_sign(secret: &[u8], message: &[u8]) -> Option<String> {
+    use p256::ecdsa::signature::Signer as _;
+    let key = p256::ecdsa::SigningKey::from_slice(secret).ok()?;
+    let signature: p256::ecdsa::Signature = key.sign(message);
+    Some(axo_protocol::base64::encode(&signature.to_bytes()))
+}
+
 /// A key's fingerprint as the person compares it across devices: the first 8 bytes of the
 /// SHA-256 of its bytes, as four groups of hex (`@axo/app`'s `keyFingerprint`). `None` when the
 /// key is not base64.

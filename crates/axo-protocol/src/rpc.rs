@@ -132,6 +132,9 @@ pub mod method {
     /// The phones and browsers allowed to answer this Mac's questions, those waiting to, and
     /// this Mac's input key's fingerprint (RFD0077).
     pub const DEVICE_LIST: &str = "axo.device.list";
+    pub const DEVICE_PAIRING_CREATE: &str = "axo.device.pairing.create";
+    pub const DEVICE_PAIRING_CANCEL: &str = "axo.device.pairing.cancel";
+    pub const DEVICE_PAIRING_STATUS: &str = "axo.device.pairing.status";
     /// Axo.app allows a waiting device, or turns it away.
     pub const DEVICE_DECIDE: &str = "axo.device.decide";
     /// Axo.app stops taking an allowed device's answers.
@@ -191,6 +194,9 @@ pub mod method {
         COMPUTER_INPUT,
         SESSION_BRIEF,
         DEVICE_LIST,
+        DEVICE_PAIRING_CREATE,
+        DEVICE_PAIRING_CANCEL,
+        DEVICE_PAIRING_STATUS,
         DEVICE_DECIDE,
         DEVICE_REVOKE,
         AGENTS_LIST,

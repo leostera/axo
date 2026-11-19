@@ -8,7 +8,19 @@ private final class FakeDevicesClient: AxodDevicesClient {
   var devices = AnsweringDevices(allowed: [], waiting: [], inputKey: "1a2b 3c4d 5e6f 7a8b")
   private(set) var decisions: [(String, Bool)] = []
   private(set) var revoked: [String] = []
+  var code: HostDeviceLinkCode?
+  var progress = DevicePairingStatus(id: nil, paired: false)
 
+  func remoteAccessStatus() async throws -> RemoteAccessStatus {
+    RemoteAccessStatus(state: .connected, connectedSinceUnixMillis: nil, hostName: "Mac", hostKind: "macos", lastError: nil, linked: true)
+  }
+  func linkHost(using code: HostPairingCode) async throws -> HostPairingResult { throw NSError(domain: "fixture", code: 1) }
+  func createDeviceLinkCode() async throws -> HostDeviceLinkCode {
+    guard let code else { throw NSError(domain: "fixture", code: 1) }
+    return code
+  }
+  func devicePairingStatus() async throws -> DevicePairingStatus { progress }
+  func cancelDeviceLinkCode() async throws {}
   func answeringDevices() async throws -> AnsweringDevices { devices }
 
   func decideDevice(_ key: String, allow: Bool) async throws {
@@ -29,6 +41,21 @@ private final class FakeDevicesClient: AxodDevicesClient {
 @MainActor
 final class DevicesModelTests: XCTestCase {
   private let phone = AnsweringDevice(key: "AAAA", name: "Leo's iPhone", fingerprint: "6520 7919 59be e144", at: 1)
+
+  func testACompletedScanClosesTheCodeInsteadOfLeavingAStalePairingWindow() async throws {
+    let client = FakeDevicesClient()
+    let object: [String: Any] = ["version": 1, "id": UUID().uuidString.lowercased(),
+      "accountId": UUID().uuidString.lowercased(), "hostId": UUID().uuidString.lowercased(),
+      "expiresAt": 12345, "inputKey": "fixture-public-key", "secret": "fixture-only-not-a-live-capability"]
+    client.code = try JSONDecoder().decode(HostDeviceLinkCode.self, from: JSONSerialization.data(withJSONObject: object))
+    let model = DevicesModel(client: client)
+    await model.createLinkCode()
+    XCTAssertNotNil(model.linkCode)
+    client.progress = DevicePairingStatus(id: client.code?.id, paired: true)
+    await model.refresh()
+    XCTAssertNil(model.linkCode)
+    XCTAssertTrue(model.linkCompleted)
+  }
 
   func testAWaitingDeviceIsAllowedOnceThenRemoved() async {
     let client = FakeDevicesClient()

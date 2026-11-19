@@ -1,5 +1,6 @@
 import { Hono, type Context } from "hono";
 import { registerPush, notificationRequest, notificationHistory } from "./push";
+import { linkDevice, deviceLinkMailbox } from "./device-linking";
 import { uuid } from "@axo/protocol";
 import { authExports } from "../auth/account-access";
 import { completeLogin, currentAccount, exchangeLoginCode, logout, startLogin } from "../auth/login";
@@ -102,6 +103,12 @@ app.all("/api/v1/account/notifications", context =>
   notificationHistory(context.req.raw, context.env, context.executionCtx as ExecutionContext),
 );
 
+app.all("/api/v1/account/devices/pairings", context =>
+  deviceLinkMailbox(context.req.raw, context.env, context.executionCtx as ExecutionContext),
+);
+app.all("/api/v1/account/devices/link", context =>
+  linkDevice(context.req.raw, context.env, context.executionCtx as ExecutionContext),
+);
 app.all("/api/v1/account/push/request", context =>
   notificationRequest(context.req.raw, context.env, context.executionCtx as ExecutionContext),
 );

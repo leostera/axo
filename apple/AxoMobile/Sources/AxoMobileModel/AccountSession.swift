@@ -27,6 +27,8 @@ public final class AccountSession {
   public private(set) var state: State
   /// Changes on every successful sign-in or sign-out, including a switch between accounts.
   public private(set) var credentialRevision = UUID()
+  public private(set) var needsDeviceOnboarding = false
+  public func acknowledgeDeviceOnboarding() { needsDeviceOnboarding = false }
   /// Explicit sign-out wins over a later foreground restore of previously unavailable storage.
   public private(set) var hasEndedSession = false
   /// Why the last sign-in did not take, for the sign-in screen to show.
@@ -60,6 +62,7 @@ public final class AccountSession {
     hasEndedSession = false
     tokenAccess.setEnded(false)
     state = .signedIn
+    needsDeviceOnboarding = true
     credentialRevision = UUID()
   }
 

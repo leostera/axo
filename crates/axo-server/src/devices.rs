@@ -42,6 +42,7 @@ struct State {
     allowed: Vec<Device>,
     waiting: Vec<Device>,
     burned: VecDeque<String>,
+    link_grants: std::collections::BTreeMap<String, (u64, String)>,
 }
 
 /// Why an answer did not count, and the device it puts in front of the person, if any.
@@ -89,10 +90,17 @@ impl AllowedDevices {
             Err(error) if error.kind() == io::ErrorKind::NotFound => Vec::new(),
             Err(error) => return Err(error),
         };
+        let link_grants = match fs::read(path.with_extension("grants.json")) {
+            Ok(bytes) => serde_json::from_slice(&bytes)
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Default::default(),
+            Err(error) => return Err(error),
+        };
         Ok(Self {
             path,
             state: Mutex::new(State {
                 allowed,
+                link_grants,
                 ..State::default()
             }),
         })
@@ -158,6 +166,8 @@ impl AllowedDevices {
             return Err(Refusal::unknown(why, None));
         }
         let device = Device {
+            can_link_devices: false,
+            link_id: None,
             key: proof.key.clone(),
             name: proof.name.chars().take(MAX_NAME_CHARS).collect(),
             fingerprint,
@@ -200,6 +210,159 @@ impl AllowedDevices {
         state.waiting.remove(index);
         state.allowed = allowed;
         Ok(true)
+    }
+
+    /// Only the pairing protocol calls this after checking the QR capability or a scoped grant.
+    pub(crate) fn link(&self, key: &str, name: &str, manager: bool) -> io::Result<Device> {
+        let mut state = lock(&self.state);
+        let mut allowed = state.allowed.clone();
+        let device = if let Some(existing) = allowed.iter_mut().find(|device| device.key == key) {
+            existing.can_link_devices |= manager;
+            existing.clone()
+        } else {
+            if allowed.len() >= MAX_ALLOWED {
+                return Err(io::Error::other("too many linked devices"));
+            }
+            let device = Device {
+                key: key.to_owned(),
+                name: name.to_owned(),
+                fingerprint: axo_seal::fingerprint(key)
+                    .ok_or_else(|| io::Error::other("invalid device key"))?,
+                at: unix_millis(),
+                can_link_devices: manager,
+                link_id: None,
+            };
+            allowed.push(device.clone());
+            device
+        };
+        self.save(&allowed)?;
+        state.allowed = allowed;
+        state.waiting.retain(|device| device.key != key);
+        Ok(device)
+    }
+
+    /// Burn a scoped grant durably before applying it. A crash can refuse a retry, never
+    /// turn a revoked recipient or an uncertain write into a fresh grant after restart.
+    pub(crate) fn link_once(
+        &self,
+        grant: &axo_protocol::device_pairing::DeviceLinkGrant,
+        now: u64,
+    ) -> io::Result<()> {
+        use sha2::{Digest, Sha256};
+        let mut state = lock(&self.state);
+        if !state
+            .allowed
+            .iter()
+            .any(|device| device.key == grant.manager_key && device.can_link_devices)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "linking authority was revoked",
+            ));
+        }
+        let digest = format!("{:x}", Sha256::digest(grant.manager_message()));
+        state.link_grants.retain(|_, (expires, _)| *expires > now);
+        if let Some((_, previous)) = state.link_grants.get(&grant.id) {
+            return if previous == &digest
+                && state.allowed.iter().any(|device| {
+                    device.key == grant.key && device.link_id.as_deref() == Some(grant.id.as_str())
+                }) {
+                Ok(())
+            } else {
+                Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "linking grant was already consumed",
+                ))
+            };
+        }
+        if state.link_grants.len() >= 512
+            || (state.allowed.len() >= MAX_ALLOWED
+                && !state.allowed.iter().any(|device| device.key == grant.key))
+        {
+            return Err(io::Error::other("linking limit reached"));
+        }
+        let mut grants = state.link_grants.clone();
+        grants.insert(grant.id.clone(), (grant.expires_at, digest));
+        let ledger = self.path.with_extension("grants.json");
+        let temporary = self.path.with_extension("grants.json.tmp");
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&temporary)?;
+        file.write_all(&serde_json::to_vec(&grants).map_err(io::Error::other)?)?;
+        file.sync_all()?;
+        fs::rename(&temporary, ledger)?;
+        state.link_grants = grants;
+        let mut allowed = state.allowed.clone();
+        if !allowed.iter().any(|device| device.key == grant.key) {
+            allowed.push(Device {
+                key: grant.key.clone(),
+                name: grant.name.clone(),
+                at: now,
+                fingerprint: axo_seal::fingerprint(&grant.key)
+                    .ok_or_else(|| io::Error::other("invalid device key"))?,
+                can_link_devices: false,
+                link_id: Some(grant.id.clone()),
+            });
+        }
+        if let Some(device) = allowed
+            .iter_mut()
+            .find(|device| device.key == grant.key && !device.can_link_devices)
+        {
+            device.link_id = Some(grant.id.clone());
+        }
+        self.save(&allowed)?;
+        state.allowed = allowed;
+        state.waiting.retain(|device| device.key != grant.key);
+        Ok(())
+    }
+
+    pub(crate) fn unlink(&self, manager: &str, key: &str, link_id: &str) -> io::Result<()> {
+        let mut state = lock(&self.state);
+        if !state
+            .allowed
+            .iter()
+            .any(|device| device.key == manager && device.can_link_devices)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "management authority was revoked",
+            ));
+        }
+        let Some(target) = state.allowed.iter().find(|device| device.key == key) else {
+            return Ok(());
+        };
+        if target.can_link_devices || target.link_id.as_deref() != Some(link_id) {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "this linking generation cannot be removed",
+            ));
+        }
+        let allowed: Vec<_> = state
+            .allowed
+            .iter()
+            .filter(|device| device.key != key)
+            .cloned()
+            .collect();
+        self.save(&allowed)?;
+        state.allowed = allowed;
+        Ok(())
+    }
+
+    pub(crate) fn can_link(&self, key: &str) -> bool {
+        lock(&self.state)
+            .allowed
+            .iter()
+            .any(|device| device.key == key && device.can_link_devices)
+    }
+
+    pub(crate) fn contains(&self, key: &str) -> bool {
+        lock(&self.state)
+            .allowed
+            .iter()
+            .any(|device| device.key == key)
     }
 
     /// Stops taking a device's answers. False if it was not allowed.
@@ -361,10 +524,15 @@ mod tests {
         // What the cloud could do before: make a key, sign Yes with it, and send both.
         let devices = AllowedDevices::open(directory().join(DEVICES_FILE)).unwrap();
         let forged = sign(&new_key(), "r1", Accept);
-        let refusal = devices.check("r1", Accept, None, Some(&forged)).unwrap_err();
+        let refusal = devices
+            .check("r1", Accept, None, Some(&forged))
+            .unwrap_err();
         assert_eq!(refusal.error.code, UNKNOWN_DEVICE);
         let asking = refusal.asking.expect("the person is asked about it");
-        assert_eq!(asking.fingerprint, axo_seal::fingerprint(&forged.key).unwrap());
+        assert_eq!(
+            asking.fingerprint,
+            axo_seal::fingerprint(&forged.key).unwrap()
+        );
         assert_eq!(devices.list(None).waiting, vec![asking]);
     }
 
@@ -377,12 +545,18 @@ mod tests {
         assert!(devices.check("r1", Decline, None, Some(&first)).is_err());
         // A signature over another answer asks nothing.
         let flipped = sign(&phone, "r1", Decline);
-        let other = devices.check("r1", Accept, None, Some(&flipped)).unwrap_err();
+        let other = devices
+            .check("r1", Accept, None, Some(&flipped))
+            .unwrap_err();
         assert_eq!(other.error.code, BAD_SIGNATURE);
         assert!(other.asking.is_none());
         // Unsigned: refused.
         assert_eq!(
-            devices.check("r1", Decline, None, None).unwrap_err().error.code,
+            devices
+                .check("r1", Decline, None, None)
+                .unwrap_err()
+                .error
+                .code,
             BAD_SIGNATURE
         );
 
@@ -428,6 +602,42 @@ mod tests {
         assert!(devices.list(None).allowed.is_empty());
         assert!(devices.list(None).waiting.is_empty());
         assert!(!devices.decide(&first.key, true).unwrap());
+    }
+
+    #[test]
+    fn unlink_is_generation_bound_and_consumed_grants_survive_reopening() {
+        let path = directory().join(DEVICES_FILE);
+        let devices = AllowedDevices::open(path.clone()).unwrap();
+        let manager = axo_seal::new_pairing_secret();
+        let manager_key = axo_seal::pairing_public(&manager).unwrap();
+        devices.link(&manager_key, "Phone", true).unwrap();
+        let recipient = axo_seal::new_pairing_secret();
+        let mut grant = axo_protocol::device_pairing::DeviceLinkGrant {
+            account_id: axo_protocol::new_uuid_v4().unwrap(),
+            host_id: axo_protocol::new_uuid_v4().unwrap(),
+            id: axo_protocol::new_uuid_v4().unwrap(),
+            expires_at: 10000,
+            key: axo_seal::pairing_public(&recipient).unwrap(),
+            name: "iPad".into(),
+            manager_key: manager_key.clone(),
+            signature: String::new(),
+            device_signature: String::new(),
+        };
+        devices.link_once(&grant, 1000).unwrap();
+        devices.unlink(&manager_key, &grant.key, &grant.id).unwrap();
+        let reopened = AllowedDevices::open(path).unwrap();
+        assert!(reopened.link_once(&grant, 1001).is_err());
+        let old_id = grant.id.clone();
+        grant.id = axo_protocol::new_uuid_v4().unwrap();
+        reopened.link_once(&grant, 1002).unwrap();
+        assert!(reopened.unlink(&manager_key, &grant.key, &old_id).is_err());
+        assert!(reopened.contains(&grant.key));
+        reopened.revoke(&manager_key).unwrap();
+        grant.id = axo_protocol::new_uuid_v4().unwrap();
+        assert!(
+            reopened.link_once(&grant, 1003).is_err(),
+            "a revoked manager cannot link anything else"
+        );
     }
 
     #[test]

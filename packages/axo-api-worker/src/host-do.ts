@@ -50,6 +50,7 @@ import { DIRECT_CLIENT_ROLE, HostClients, isDirectClient } from "./host-clients"
 import { withoutWorkspace } from "./stored-metadata";
 import { PI3_FORMAT, type ClientRecord } from "@axo/protocol";
 import { z } from "zod";
+import { deviceLinkCommandSchema } from "./devices/linking";
 
 /**
  * One paired host (RFD0018, HostDO): owns the host's socket and presence, runs the sync
@@ -197,11 +198,11 @@ const HOST_SCHEMA: readonly SchemaStep[] = [
   (sql) => {
     sql.exec("CREATE TABLE IF NOT EXISTS request_push (id TEXT PRIMARY KEY, next_at INTEGER, attempts INTEGER NOT NULL DEFAULT 0)");
   },
-];
   (sql) => {
     sql.exec("CREATE TABLE IF NOT EXISTS resolution_push (id TEXT PRIMARY KEY, route_json TEXT NOT NULL, next_at INTEGER NOT NULL, attempts INTEGER NOT NULL DEFAULT 0)");
     sql.exec("CREATE TABLE IF NOT EXISTS settled_requests (id TEXT PRIMARY KEY, expires_at INTEGER NOT NULL)");
   },
+];
 /** How long a progress snapshot may wait to be saved; an idle object is evicted after longer. */
 const PROGRESS_SAVE_MS = 1_000;
 /** A snapshot longer than this is held but not saved: a row holds at most 2 MB. */
@@ -650,6 +651,23 @@ export class AxoHostDO extends AxoHostRelay {
    * A person's answer to what the Mac asked (RFD0029), from a ClientDO, which takes it only from
    * a signed-in person's client. The Mac decides: the first answer it takes wins.
    */
+  /** The relay cannot approve: axod requires the scanned capability or an existing hub's grant. */
+  async linkDevice(input: unknown): Promise<HostCommandOutcome> {
+    const parsed = deviceLinkCommandSchema.safeParse(input);
+    if (!parsed.success) return { error: { code: -32602, message: "Invalid device linking request" } };
+    const binding = parsed.data.operation === "redeem" ? parsed.data.claim
+      : parsed.data.operation === "link" ? parsed.data.grant : parsed.data.revocation;
+    const identity = this.identity();
+    if (!identity || identity.account_id !== binding.accountId || identity.host_id !== binding.hostId
+      || !this.presence().online || !await this.ctx.exports.AxoAccountDirectory.getByName(identity.account_id).isPushHostActive(identity.host_id))
+      return { error: { code: -32005, message: "Host unavailable" } };
+    return this.callHost({
+      method: parsed.data.operation === "redeem" ? "axo.remote.device.pairing.redeem"
+        : parsed.data.operation === "link" ? "axo.remote.device.link" : "axo.remote.device.unlink",
+      params: binding, deadlineMs: 15_000,
+    });
+  }
+
   async resolveElicitation(params: unknown): Promise<HostCommandOutcome> {
     const parsed = hostElicitationResolveParamsSchema.safeParse(params);
     if (!parsed.success) return { error: { code: -32602, message: "Invalid params" } };
@@ -924,6 +942,8 @@ export class AxoHostDO extends AxoHostRelay {
    */
   private rememberElicitation(elicitation: Elicitation): boolean {
     const sql = this.ctx.storage.sql;
+    sql.exec("DELETE FROM settled_requests WHERE expires_at<=?", Date.now());
+    if (sql.exec("SELECT 1 FROM settled_requests WHERE id=?", elicitation.id).toArray().length) return false;
     const previous = sql.exec<{ elicitation_json: string }>("SELECT elicitation_json FROM pending_elicitations WHERE id = ?", elicitation.id).toArray()[0];
     const known = Boolean(previous);
     if (previous) {
@@ -942,8 +962,6 @@ export class AxoHostDO extends AxoHostRelay {
     return true;
   }
 
-    sql.exec("DELETE FROM settled_requests WHERE expires_at<=?", Date.now());
-    if (sql.exec("SELECT 1 FROM settled_requests WHERE id=?", elicitation.id).toArray().length) return false;
   /** Generic routing data from current authoritative state; no question text crosses to APNs. */
   async pendingPush(requestId: string): Promise<PushRoute | null> {
     const identity = this.identity();
@@ -985,6 +1003,18 @@ export class AxoHostDO extends AxoHostRelay {
 
   protected override async runScheduledWork(): Promise<void> {
     const sql = this.ctx.storage.sql;
+    const resolutions = sql.exec<{ id: string; route_json: string; attempts: number }>(
+      "SELECT id, route_json, attempts FROM resolution_push WHERE next_at<=? LIMIT 4", Date.now()).toArray();
+    for (const work of resolutions) {
+      const route = JSON.parse(work.route_json) as PushRoute;
+      let next: number | null = null;
+      if (route.expiresAt > Date.now() && work.attempts < 8) {
+        try { next = await this.ctx.exports.AxoPushRegistry.getByName("sandbox-v1").resolve(route); }
+        catch { next = Date.now() + 30_000; }
+      }
+      if (next === null || next >= route.expiresAt) sql.exec("DELETE FROM resolution_push WHERE id=?", work.id);
+      else sql.exec("UPDATE resolution_push SET next_at=?, attempts=attempts+1 WHERE id=?", next, work.id);
+    }
     sql.exec("DELETE FROM request_push WHERE id NOT IN (SELECT id FROM pending_elicitations WHERE expires_at>?)", Date.now());
     const due = sql.exec<{ id: string; attempts: number }>(
       "SELECT id, attempts FROM request_push WHERE next_at<=? LIMIT 4", Date.now()).toArray();
@@ -1003,18 +1033,6 @@ export class AxoHostDO extends AxoHostRelay {
   // ─── Notices ───────────────────────────────────────────────────────────────
 
   private queueSession(sessionId: string): void {
-    const resolutions = sql.exec<{ id: string; route_json: string; attempts: number }>(
-      "SELECT id, route_json, attempts FROM resolution_push WHERE next_at<=? LIMIT 4", Date.now()).toArray();
-    for (const work of resolutions) {
-      const route = JSON.parse(work.route_json) as PushRoute;
-      let next: number | null = null;
-      if (route.expiresAt > Date.now() && work.attempts < 8) {
-        try { next = await this.ctx.exports.AxoPushRegistry.getByName("sandbox-v1").resolve(route); }
-        catch { next = Date.now() + 30_000; }
-      }
-      if (next === null || next >= route.expiresAt) sql.exec("DELETE FROM resolution_push WHERE id=?", work.id);
-      else sql.exec("UPDATE resolution_push SET next_at=?, attempts=attempts+1 WHERE id=?", next, work.id);
-    }
     const row = this.indexRow(sessionId);
     if (row) this.queue({ kind: "session", session: this.clientSession(row) });
   }

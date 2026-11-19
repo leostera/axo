@@ -133,6 +133,40 @@ public struct AccountClient: HostPairingIssuing, Sendable {
     self.loader = loader
   }
 
+  public func redeemDevicePairing(_ claim: DevicePairingClaim) async throws -> DevicePairingReceipt {
+    struct Command: Encodable { let operation = "redeem"; let claim: DevicePairingClaim }
+    return try await deviceLinkRequest(Command(claim: claim))
+  }
+
+  public func linkDevice(_ grant: DeviceLinkGrant) async throws {
+    struct Command: Encodable { let operation = "link"; let grant: DeviceLinkGrant }
+    struct Receipt: Decodable { let linked: Bool }
+    let receipt: Receipt = try await deviceLinkRequest(Command(grant: grant))
+    guard receipt.linked else { throw DeviceLinkError.notConfirmed }
+  }
+
+  public func unlinkDevice(_ revocation: DeviceUnlink) async throws {
+    struct Command: Encodable { let operation = "unlink"; let revocation: DeviceUnlink }
+    struct Receipt: Decodable { let unlinked: Bool }
+    let receipt: Receipt = try await deviceLinkRequest(Command(revocation: revocation))
+    guard receipt.unlinked else { throw DeviceLinkError.notConfirmed }
+  }
+
+  public func deviceLinkMailbox(_ command: DeviceLinkMailboxCommand) async throws -> DeviceMailboxReceipt {
+    try await deviceLinkRequest(command, path: "/api/v1/account/devices/pairings")
+  }
+
+  private func deviceLinkRequest<Command: Encodable, Result: Decodable>(_ command: Command,
+    path: String = "/api/v1/account/devices/link") async throws -> Result {
+    var request = URLRequest(url: endpoint.webURL(path))
+    request.httpMethod = "POST"
+    request.timeoutInterval = 20
+    request.httpBody = try JSONEncoder().encode(command)
+    request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+    request = try await RelayCredentials.authorize(request, with: tokens)
+    return try await send(request)
+  }
+
   public func account() async throws -> SignedInAccount {
     try await get(endpoint.meURL)
   }
