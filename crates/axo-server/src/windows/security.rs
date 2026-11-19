@@ -43,6 +43,38 @@ impl ProcessIdentity {
     pub fn is_running(self) -> bool {
         Self::of(self.pid) == Some(self)
     }
+
+    /// Read the parent from the same kernel process, rejecting a parent PID
+    /// that was reused after this child started.
+    pub fn parent(self) -> Option<Self> {
+        use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+        #[repr(C)]
+        struct BasicInformation {
+            exit_status: usize,
+            peb: usize,
+            affinity: usize,
+            priority: usize,
+            pid: usize,
+            parent: usize,
+        }
+        #[link(name = "ntdll")]
+        unsafe extern "system" {
+            fn NtQueryInformationProcess(process: *mut c_void, class: u32,
+                information: *mut c_void, length: u32, returned: *mut u32) -> i32;
+        }
+        unsafe {
+            let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, self.pid);
+            if process.is_null() { return None; }
+            let mut info: BasicInformation = std::mem::zeroed();
+            let status = NtQueryInformationProcess(process, 0,
+                (&mut info as *mut BasicInformation).cast(),
+                std::mem::size_of::<BasicInformation>() as u32, std::ptr::null_mut());
+            CloseHandle(process);
+            if status < 0 || !self.is_running() { return None; }
+            let parent = Self::of(u32::try_from(info.parent).ok()?)?;
+            (parent.created <= self.created && parent != self).then_some(parent)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -53,8 +85,10 @@ mod identity_tests {
     fn process_authority_includes_kernel_creation_time() {
         let current = ProcessIdentity::of(std::process::id()).unwrap();
         assert!(current.is_running());
+        assert!(current.parent().is_some());
         let stale = ProcessIdentity { created: current.created + 1, ..current };
         assert!(!stale.is_running());
+        assert!(stale.parent().is_none());
         assert!(ProcessIdentity::of(u32::MAX).is_none());
     }
 }
