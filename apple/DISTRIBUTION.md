@@ -16,6 +16,10 @@ The canonical graph remains `dev.leostera.axo`, `.watch`, `.watch.complications`
 Identifier preparation is not credential migration. No app submissions are required for
 these foundations, and none are performed by these commands.
 
+## Direct-download Mac releases
+
+See [RFD0087](../docs/rfds/RFD0087-verified-macos-downloads.md). Public Mac releases require Developer ID Application signing for the configured team, secure timestamps, Hardened Runtime, a stapled app ticket and Gatekeeper acceptance. Development/ad-hoc fallback is local-only. `AXO_NOTARIZED_ARCHIVE` supplies the verified stapled ZIP to `bazel run //:publish`; its code-directory identity must match the exact Bazel build. Apple submission, publication and installation have separate approval gates. Preserve every embedded signing identifier, including launchd\'s `axod`; do not repair Keychain ACLs or remove quarantine to pass verification.
+
 ## Inspect signing without changing it
 
 ```sh
@@ -147,6 +151,10 @@ Inspect the Watch's actual installed identity first; do not assume an old-ID Wat
 phone build graph. Source-idle confirmation is required before an update that could terminate
 dictation. A verified probe is **not** token/preferences migration and is not authority to
 remove the canonical startup gate, sign out/delete the source, or claim the move complete.
+
+## Explicit Watch account-based cutover
+
+The person separately approved an in-place canonical Watch companion update using the paired iPhone\'s existing account. This is an informed alternative to migrating an unresolved legacy Watch credential namespace: retain its app container, legacy Keychain items and keys, do not create a replacement device signer, and do not claim those old credentials were migrated or remain accessible under the new exact scope. The Watch uses the existing authenticated phone-companion sync. No uninstall, reset, source sign-out, profile mutation or legacy-item cleanup is authorized. Check recording/draft safety and device locks before cutover, verify matching phone/Watch/complication versions and signed coverage, then distinguish installed/launch evidence from a completed account hello. This task-specific approval does not turn unknown installed signing scope into a preservation proof or general authority for future cutovers.
 
 ## Mobile token/preferences transfer
 

@@ -158,8 +158,9 @@ def _signing_identity(rctx, config):
             return None, "signing.identity %r is not a valid identity of team %s" % (wanted, team)
         return None, "no signing identity of team %s in the keychain" % team
 
-    # Prefer a development identity: the app is signed for development, not notarized.
-    candidates = sorted(candidates, key = lambda identity: (not identity.name.startswith("Apple Development"), identity.name, identity.sha1))
+    # Prefer Developer ID for direct-download Mac artifacts. Development/ad-hoc builds can
+    # still run locally, but the publisher separately requires Developer ID and notarization.
+    candidates = sorted(candidates, key = lambda identity: (not identity.name.startswith("Developer ID Application"), not identity.name.startswith("Apple Development"), identity.name, identity.sha1))
     return candidates[0], None
 
 def _profile_field(rctx, key):

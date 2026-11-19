@@ -19,13 +19,16 @@ printf other > "$root/wrong/Axo.app/Contents/identity"
 /usr/bin/ditto -c -k --keepParent "$root/wrong/Axo.app" "$root/wrong.zip"
 cat > "$root/bin/git" <<'SH'
 #!/usr/bin/env bash
-case "$*" in *status*) exit 0 ;; *rev-parse*) printf '%040d\n' 0 | tr 0 a ;; *) exit 1 ;; esac
+case "$*" in *status*) exit 0 ;; *branch*) echo main ;; *rev-parse*) printf '%040d\n' 0 | tr 0 a ;; *) exit 1 ;; esac
 SH
 cat > "$root/bin/codesign" <<'SH'
 #!/usr/bin/env bash
 case "$1" in
   --verify) exit 0 ;;
-  -dv) echo TeamIdentifier=TESTTEAM >&2 ;;
+  -dv)
+    if [[ "${MOCK_DEVELOPMENT:-}" == 1 ]]; then echo "Authority=Apple Development: Fixture" >&2;
+    else echo "Authority=Developer ID Application: Fixture (TESTTEAM)" >&2; fi
+    printf "TeamIdentifier=TESTTEAM\nTimestamp=fixture secure timestamp\nCodeDirectory flags=0x10000(runtime)\n" >&2 ;;
   -dvvv) for last; do :; done; printf 'CDHash=%s\n' "$(<"$last/Contents/identity")" >&2 ;;
   *) exit 1 ;;
 esac
@@ -61,9 +64,24 @@ while [[ $# -gt 0 ]]; do
 done
 if [[ "$key" == latest.json ]]; then cp "$file" "$FIXTURE_ROOT/result.json"; else cp "$file" "$FIXTURE_ROOT/uploaded.zip"; fi
 SH
+cat > "$root/bin/xcrun" <<'SH'
+#!/usr/bin/env bash
+[[ "$*" == stapler\ validate* ]] || exit 1
+exit "${MISSING_STAPLE:-0}"
+SH
+cat > "$root/bin/spctl" <<'SH'
+#!/usr/bin/env bash
+exit "${GATEKEEPER_DENIED:-0}"
+SH
 chmod +x "$root/bin/"*
 export PATH="$root/bin:$PATH" FIXTURE_ROOT=$root BUILD_WORKSPACE_DIRECTORY=$root
 publish() { bash "$publisher" "$root/app/Axo.app" "$root/input.zip" "$root/bin/cf" TESTTEAM test-bucket https://axo.test/cdn/latest.json "$helper"; }
+if MOCK_DEVELOPMENT=1 publish; then echo "Development signatures must not publish" >&2; exit 1; fi
+[[ ! -e "$root/uploads" ]]
+if MISSING_STAPLE=1 publish; then echo "Missing notarization must not publish" >&2; exit 1; fi
+[[ ! -e "$root/uploads" ]]
+if GATEKEEPER_DENIED=1 publish; then echo "Gatekeeper rejection must not publish" >&2; exit 1; fi
+[[ ! -e "$root/uploads" ]]
 publish
 expected='releases/axo-0.71-aaaaaaaaaaaa-aarch64-apple-darwin.zip
 latest.json'

@@ -1,0 +1,18 @@
+{
+  "appName": "Axo.app",
+  "bundleIdentifier": "dev.leostera.axo",
+  "mainExecutable": "Contents/MacOS/Axo",
+  "executables": [
+    "Contents/Frameworks/RiveRuntime.framework/Versions/A/RiveRuntime",
+    "Contents/Helpers/axo",
+    "Contents/Helpers/axod",
+    "Contents/Helpers/axod-infer",
+    "Contents/Helpers/axod-infer-coreml",
+    "Contents/Helpers/axod-infer-mlx",
+    "Contents/MacOS/Axo"
+  ],
+  "bundles": [
+    "Contents/Frameworks/RiveRuntime.framework"
+  ],
+  "entitlements": {}
+}
