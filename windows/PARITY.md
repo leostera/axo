@@ -98,7 +98,7 @@ Windows reference: [MCP bridge](../crates/axo-server/src/windows/mcp.rs),
 | R02 | Unlink/disconnect account lifecycle | Missing Windows local unlink method/UI | Port shared unlink and retired-credential cleanup, including uncertain network outcomes and restart. | P1 |
 | R03 | Browse account hosts/Sessions and open remote panes | Missing Windows peer UI/operations | Add peer catalog/following, remote panes, host labels and local-view versus remote-Session close distinctions. | P1 |
 | R04 | Incoming account Session/prompt/terminal/model commands | Partial: Windows/Codex subset | Exercise every advertised remote operation against real existing clients, including capability-specific refusals and stale generations. | P1 |
-| R05 | Full Axo MCP/SDK tool surface | Partial: `computer_tools` and `computer` only | Add identity, Session discovery/control and the remaining tool families through shared contracts; keep caller scope intact. | P1 |
+| R05 | Full Axo MCP/SDK tool surface | Partial: `self`, `computer_tools` and `computer` | Add Session discovery/control and the remaining tool families through shared contracts; keep caller scope intact. | P1 |
 | R06 | Apps discovery, tool search, account selection, cloud codemode and remote MCP connections | Missing Windows daemon extension | Reuse the shared apps/account route and run limits; do not bake provider-specific catalogs into WPF. | P1 |
 | R07 | Cross-Session prompts and runtime timers | Missing tool surface | Add bounded timers and caller-scoped messaging/list/cancel semantics without automatic uncertain-write replay. | P1 |
 | R08 | Bounded account host shell execution (`axo.apps.bash`) | Missing: Windows route refuses it | Design the Windows shell equivalent with deadline, cancellation, process-tree cleanup and bounded output. A terminal pane or Codex shell tool is not this API. | P1 |
@@ -127,7 +127,7 @@ Windows reference: [pipe security](../crates/axo-server/src/windows/security.rs)
 | P08 | Useful capture after private input | Partial: all screenshots suppressed for daemon lifetime after input | Design a safe policy before relaxing suppression; do not claim macOS masks arbitrary plain-text secrets in screenshots either. | P2 |
 | P09 | Native credential protection and private cache access | Present Windows equivalents: DPAPI and protected ACLs | Expand Windows rotation/revocation/repair acceptance; preserve existing credentials and opaque data. Keychain/Secure Enclave APIs themselves are macOS-specific. | P1 |
 | P10 | Locked/inactive desktop and OS permission handling | Present fail-closed probes; broader matrix unverified | Exercise lock, disconnect, UAC, integrity levels and multiple sessions/displays. No unlocking, privilege escalation or guard bypass for parity. | P0 |
-| P11 | Accurate tool discovery and agent instructions | Partial | Reconcile initialization guidance with the implemented sealed `request_input` and bounded sequence support; avoid stale “not available” claims. | P1 |
+| P11 | Accurate tool discovery and agent instructions | Present for the current Windows MCP surface | Keep the tool catalog and initialization guidance aligned as capabilities expand. | P1 |
 
 ### Desktop experience, installation and lifecycle
 

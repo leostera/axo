@@ -90,19 +90,27 @@ async fn handle(pipe: &str, session: SessionId, message: &Value) -> io::Result<V
     match message["method"].as_str().unwrap_or_default() {
         "initialize" => Ok(
             json!({"protocolVersion":"2025-06-18","serverInfo":{"name":"axo","version":env!("CARGO_PKG_VERSION")},"capabilities":{"tools":{}},
-            "instructions":"Axo computer use runs on the person's Windows PC. Use computer_tools to read the supported tools and schemas, then call computer. Read a fresh get_window_state before each action; use returned window and element identifiers. Use run_steps for bounded sequences. Actions may ask the person in Axo or on their connected devices. confirm:true asks, never approves. Use request_input for supported sign-in forms. The person supplies private values in Axo and you receive a receipt. Never ask for passwords or one-time codes in chat or pass them as tool arguments."}),
+            "instructions":"self({}) returns your Axo Session ID. Axo computer use runs on the person's Windows PC. Use computer_tools to read the supported tools and schemas, then call computer. Read a fresh get_window_state before each action; use returned window and element identifiers. Use run_steps for bounded sequences. Actions may ask the person in Axo or on their connected devices. confirm:true asks, never approves. Use request_input for supported sign-in forms. The person supplies private values in Axo and you receive a receipt. Never ask for passwords or one-time codes in chat or pass them as tool arguments."}),
         ),
         "ping" => Ok(json!({})),
         "resources/list" => Ok(json!({"resources":[]})),
         "resources/templates/list" => Ok(json!({"resourceTemplates":[]})),
         "prompts/list" => Ok(json!({"prompts":[]})),
         "tools/list" => Ok(json!({"tools":[
+            {"name":"self","description":"Returns the calling Axo Session's ID.","inputSchema":{"type":"object","properties":{},"additionalProperties":false},"outputSchema":{"type":"object","required":["sessionId"],"properties":{"sessionId":{"type":"string"}}},"annotations":{"readOnlyHint":true}},
             {"name":"computer_tools","description":"Lists native Windows computer tools and their input schemas. Optionally filter by tool name.","inputSchema":{"type":"object","properties":{"tool":{"type":"string"}},"additionalProperties":false},"annotations":{"readOnlyHint":true}},
             {"name":"computer","description":"Sees and operates Windows apps using one allowlisted native tool. Inspect computer_tools first. Permission is controlled by the person in Axo. confirm:true asks them first; nothing here approves on their behalf.","inputSchema":{"type":"object","required":["tool"],"properties":{"tool":{"type":"string"},"args":{"type":"object"},"confirm":{"type":"boolean"}},"additionalProperties":false}}
         ]})),
         "tools/call" => {
             let arguments = &message["params"]["arguments"];
             let result = match message["params"]["name"].as_str() {
+                Some("self") => {
+                    if !arguments.is_null() && !arguments.as_object().is_some_and(|args| args.is_empty()) {
+                        return Err(invalid("self takes no arguments"));
+                    }
+                    let identity = json!({"sessionId":session});
+                    json!({"content":[{"type":"text","text":identity.to_string()}],"structuredContent":identity})
+                }
                 Some("computer_tools") => {
                     let mut result = rpc(pipe, computer::TOOLS, json!({})).await?;
                     if let Some(name) = arguments["tool"].as_str() {
