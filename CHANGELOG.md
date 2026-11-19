@@ -4,9 +4,17 @@ What changed in each published version of Axo. Every publish raises the minor ve
 
 ## Unreleased
 
+## 0.81 (Mac app build 353, axod 97)
+
+### Added
+
+- Pi Sessions expose native `/reload`, `/compact`, `/name`, `/model` and `/thinking` controls in client slash menus. These invoke SDK actions rather than becoming model prompts; reload retains command-ID replay protection across bridge replacement. Agent-specific catalogs remain separate.
+
 ### Changed
 
-- Organized Watch conversation rows, session selection and voice controls into focused views. Refreshed Watch grouping regressions and documented simulator builds and existing-identity release safeguards.
+- Web and iPhone/iPad slash menus use compact command-left, description-right rows. The complete bounded command catalog is scrollable instead of stopping after eight web results; keyboard selection stays visible, with Home/End navigation and retained composer focus.
+- Public Mac archives now require Developer ID Application signatures, Hardened Runtime, secure timestamps, a stapled app ticket and Gatekeeper acceptance. Local development fallback is no longer sufficient to publish.
+- Organized Watch conversation rows, session selection and voice controls into focused views. Refreshed Watch grouping regressions and documented simulator builds and the explicitly approved account-based companion cutover, retaining legacy data and keys without claiming legacy credential migration.
 
 ## 0.80 (Mac app build 352, axod 96)
 
