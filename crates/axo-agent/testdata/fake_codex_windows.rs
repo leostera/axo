@@ -26,6 +26,10 @@ fn complete(thread: &str, turn: &str, status: &str, text: &str) {
     );
 }
 fn main() {
+    if std::env::args().any(|arg| arg == "--version") {
+        println!("codex-cli 0.170.0");
+        return;
+    }
     let mut thread = format!("fixture-thread-{}", std::process::id());
     let mut count = 0;
     let mut active = String::new();

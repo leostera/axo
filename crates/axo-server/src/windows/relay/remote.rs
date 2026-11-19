@@ -70,6 +70,19 @@ fn dispatch_remote_call(
     }
 
     match method {
+        "axo.remote.agents.list" => {
+            let request = parsed!(AgentsParams);
+            target_ok!(request.target);
+            let backend = sessions.backend().map_err(map_operation_error)?;
+            let agents = backend
+                .agents()
+                .agents
+                .into_iter()
+                .filter(|entry| entry.installed)
+                .map(|entry| entry.agent)
+                .collect::<Vec<_>>();
+            Ok(RemoteResult::Agents { agents })
+        }
         "axo.remote.session.create" => {
             let request = parsed!(CreateSessionParams);
             target_ok!(request.target);
@@ -276,6 +289,9 @@ pub(super) fn map_operation_error(error: io::Error) -> (i64, &'static str) {
 #[derive(Serialize)]
 #[serde(untagged, rename_all_fields = "camelCase")]
 pub(super) enum RemoteResult {
+    Agents {
+        agents: Vec<axo_agent::AgentKind>,
+    },
     Session {
         session: RemoteSessionSnapshot,
     },
@@ -399,6 +415,12 @@ pub(super) struct RenameSessionParams {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct AgentsParams {
+    target: HostRef,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct CreateSessionParams {
     target: HostRef,
     // The shared parser owns location/name/agent; the outer parser rejects leftover fields.
@@ -466,6 +488,20 @@ mod tests {
         )
         .unwrap();
         assert_eq!(local["error"]["code"], -32601);
+        let stale_agents = answer(
+            &host,
+            json!({"id":4,"method":"axo.remote.agents.list",
+            "params":{"target":{"hostId":"fixture","hostGeneration":"old"}}}),
+        )
+        .unwrap();
+        assert_eq!(stale_agents["error"]["code"], -32002);
+        let invalid_agents = answer(
+            &host,
+            json!({"id":5,"method":"axo.remote.agents.list",
+            "params":{"target":{"hostId":"fixture","hostGeneration":"current"},"extra":true}}),
+        )
+        .unwrap();
+        assert_eq!(invalid_agents["error"]["code"], -32602);
         let stale=answer(&host,json!({"id":2,"method":"axo.remote.session.create","params":{"target":{"hostId":"fixture","hostGeneration":"old"},"agent":"codex"}})).unwrap();
         assert_eq!(stale["error"]["code"], -32002);
         let unknown=answer(&host,json!({"id":3,"method":"axo.remote.session.create","params":{"target":{"hostId":"fixture","hostGeneration":"current"},"extra":true}})).unwrap();

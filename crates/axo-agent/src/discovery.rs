@@ -118,50 +118,7 @@ fn is_executable_file(path: &Path) -> bool {
         .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
 }
 
-/// An agent's version, as `--version` prints it.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
-pub struct AgentVersion {
-    pub major: u32,
-    pub minor: u32,
-    pub patch: u32,
-}
-
-impl fmt::Display for AgentVersion {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "{}.{}.{}", self.major, self.minor, self.patch)
-    }
-}
-
-impl AgentVersion {
-    /// The first `MAJOR.MINOR.PATCH` (optionally `v`-prefixed) word of `output`, as printed by
-    /// `pi --version` (`1.5.2`), `codex --version` (`codex-cli 0.170.0`), `opencode --version`
-    /// (`v2.0.20`) and `claude --version` (`2.1.327 (Claude Code)`).
-    pub fn parse(output: &str) -> Option<Self> {
-        output
-            .split(|c: char| c.is_whitespace() || c == '(' || c == ')')
-            .find_map(Self::parse_word)
-    }
-
-    fn parse_word(word: &str) -> Option<Self> {
-        let word = word.strip_prefix('v').unwrap_or(word);
-        // A pre-release or build suffix (`1.2.3-beta.1`) belongs to the same release line.
-        let core = word.split(['-', '+']).next()?;
-        let mut parts = core.split('.');
-        let mut number = || -> Option<u32> {
-            let part = parts.next()?;
-            if part.is_empty() || part.len() > 9 || !part.bytes().all(|b| b.is_ascii_digit()) {
-                return None;
-            }
-            part.parse().ok()
-        };
-        let version = Self {
-            major: number()?,
-            minor: number()?,
-            patch: number()?,
-        };
-        parts.next().is_none().then_some(version)
-    }
-}
+pub use crate::version::AgentVersion;
 
 /// The oldest version of each kind its adapter was written and tested against. Pi is not
 /// checked: axod has always run whatever Pi is configured.
@@ -347,7 +304,15 @@ mod tests {
         assert_eq!(AgentVersion::parse("v2.0.20"), v(2, 0, 20));
         assert_eq!(AgentVersion::parse("2.1.327 (Claude Code)"), v(2, 1, 327));
         assert_eq!(AgentVersion::parse("tool 3.0.0-beta.2+abc"), v(3, 0, 0));
-        for nonsense in ["", "codex-cli", "1.2", "1.2.3.4", "v.1.2", "1..3", "99999999999.0.0"] {
+        for nonsense in [
+            "",
+            "codex-cli",
+            "1.2",
+            "1.2.3.4",
+            "v.1.2",
+            "1..3",
+            "99999999999.0.0",
+        ] {
             assert_eq!(AgentVersion::parse(nonsense), None, "{nonsense:?}");
         }
     }
@@ -396,7 +361,10 @@ mod tests {
     #[test]
     fn claude_code_is_found_in_the_users_local_bin_without_it_being_on_path() {
         let home = crate::test_directory();
-        fake_agent(&home.join(".local/bin/claude"), "echo '2.1.327 (Claude Code)'");
+        fake_agent(
+            &home.join(".local/bin/claude"),
+            "echo '2.1.327 (Claude Code)'",
+        );
         // Not executable: skipped.
         fs::create_dir_all(home.join("empty/bin")).unwrap();
         fs::write(home.join("empty/bin/claude"), "not a program").unwrap();
@@ -459,7 +427,10 @@ mod tests {
         let error = discover(AgentKind::Codex, &places, Duration::from_millis(300))
             .await
             .unwrap_err();
-        assert!(matches!(error, DiscoveryError::Unrecognized { .. }), "{error}");
+        assert!(
+            matches!(error, DiscoveryError::Unrecognized { .. }),
+            "{error}"
+        );
         assert!(started.elapsed() < Duration::from_secs(5));
         fs::remove_dir_all(home).unwrap();
     }

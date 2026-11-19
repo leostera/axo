@@ -22,11 +22,6 @@ pub enum HostKind {
 }
 
 impl HostKind {
-    #[cfg(target_os = "windows")]
-    pub const fn current() -> Self {
-        Self::Windows
-    }
-
     #[cfg(target_os = "linux")]
     pub const fn current() -> Self {
         Self::Linux
