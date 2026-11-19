@@ -183,7 +183,6 @@ public struct ChatGroupingSettings: Codable, Equatable, Sendable {
 
   public var activeWindowMinutes = 3
   public var regroupIntervalSeconds = 30
-  public var unseenStayActive = true
   public var unseenMarker = ChatUnseenMarker.dotAndBold
   public var pinnedOrder = ChatRowOrder.pinned
   public var activeOrder = ChatRowOrder.name
@@ -206,7 +205,6 @@ public struct ChatGroupingSettings: Codable, Equatable, Sendable {
     }
     activeWindowMinutes = min(max(value(.activeWindowMinutes, defaults.activeWindowMinutes), 1), 24 * 60)
     regroupIntervalSeconds = min(max(value(.regroupIntervalSeconds, defaults.regroupIntervalSeconds), 5), 3_600)
-    unseenStayActive = value(.unseenStayActive, defaults.unseenStayActive)
     unseenMarker = value(.unseenMarker, defaults.unseenMarker)
     pinnedOrder = value(.pinnedOrder, defaults.pinnedOrder)
     let active = value(.activeOrder, defaults.activeOrder)
@@ -250,8 +248,8 @@ public enum ChatGrouping {
   }
 
   /// The group a chat belongs in: Pinned if pinned; Active while its agent works or waits for the
-  /// person, while it has activity not yet seen (if so set), or for a while after its last
-  /// activity; otherwise Earlier.
+  /// person or for a while after its last activity; otherwise Earlier. Unread markers
+  /// do not change a chat's group.
   public static func group(
     of entry: ChatMenuEntry, pins: ChatPins, seen: ChatSeen, now: Int64,
     settings: ChatGroupingSettings = .init(), asking: Set<SessionID> = []
@@ -261,7 +259,6 @@ public enum ChatGrouping {
     if session.status == .working || session.status == .needsAttention || asking.contains(session.sessionId) {
       return .active
     }
-    if settings.unseenStayActive && seen.isUnseen(session) { return .active }
     if now - lastActivity(of: session) < settings.activeWindow { return .active }
     return .earlier
   }

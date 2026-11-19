@@ -27,8 +27,6 @@ struct SessionsSettingsView: View {
           }
         }
         .accessibilityIdentifier("sessions-active-window-picker")
-        Toggle("Keep unseen Sessions in Active until seen", isOn: setting(\.unseenStayActive))
-          .accessibilityIdentifier("sessions-unseen-stay-active-toggle")
         Picker("Move Sessions between groups every", selection: setting(\.regroupIntervalSeconds)) {
           ForEach(SidebarGroupingSettings.regroupIntervalChoices, id: \.self) { seconds in
             Text(seconds < 60 ? "\(seconds) s" : "\(seconds / 60) min").tag(seconds)
@@ -39,7 +37,7 @@ struct SessionsSettingsView: View {
         Text("Active")
       } footer: {
         Text(
-          "A Session is Active while it's working or asking you, for a while after its last activity, and, if you keep them, while it has activity you haven't seen. Working out the groups only now and then means Sessions leave Active a few at a time."
+          "A Session is Active while it's working or asking you, or for a while after its last activity. Unread Sessions can remain in Earlier. Working out the groups only now and then means Sessions leave Active a few at a time."
         )
         .font(.caption)
         .foregroundStyle(.secondary)

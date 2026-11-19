@@ -261,7 +261,7 @@ test("pins toggle, drop duplicates and anything that is not an id, and keep only
 test("settings load with the Mac's defaults, and anything missing or out of range takes its default", () => {
   assert.deepEqual(parseGrouping(undefined), defaultGrouping);
   assert.deepEqual(defaultGrouping, {
-    activeWindowMinutes: 3, regroupIntervalSeconds: 30, unseenStayActive: true, unseenMarker: "dotAndBold",
+    activeWindowMinutes: 3, regroupIntervalSeconds: 30, unseenMarker: "dotAndBold",
     pinnedOrder: "pinned", activeOrder: "name", earlierOrder: "activity", showsGroupTitles: true,
     earlierCollapsed: false, earlierLimit: null,
   });
@@ -273,9 +273,10 @@ test("settings load with the Mac's defaults, and anything missing or out of rang
   assert.equal(odd.earlierLimit, null);
   assert.equal(odd.earlierCollapsed, false);
   assert.equal(parseGrouping({ earlierLimit: 10 }).earlierLimit, 10);
+  assert.deepEqual(parseGrouping({ unseenStayActive: true }), defaultGrouping, "obsolete stored preference cannot restore unread-as-active");
 });
 
-test("chats group as on the Mac: pinned, then working, asking, unseen or just active, then earlier", () => {
+test("chats group as on the Mac: pinned, then working, asking or recently active, then earlier even if unread", () => {
   const now = Date.parse("2026-10-27T12:00:00Z");
   const seconds = (minutesAgo: number) => Math.floor((now - minutesAgo * 60_000) / 1000);
   const mac = host([
@@ -300,12 +301,13 @@ test("chats group as on the Mac: pinned, then working, asking, unseen or just ac
   ]);
   // A longer window keeps the hour-old chat Active.
   assert.equal(groupOf(entries.find(entry => entry.session.name === "Quiet")!, { ...state, settings: { ...defaultGrouping, activeWindowMinutes: 61 } }), "active");
-  // Activity nobody saw keeps a chat Active until it is seen, unless that is turned off.
+  // Unread markers survive in Earlier; reading cannot change group membership.
   const unseen = new SessionSeen(now - 200 * 60_000);
   const older = entries.find(entry => entry.session.name === "Older")!;
-  assert.equal(groupOf(older, { ...state, seen: unseen }), "active");
+  assert.equal(unseen.isUnseen(older), true);
+  assert.equal(groupOf(older, { ...state, seen: unseen }), "earlier");
   assert.equal(groupOf(older, { ...state, seen: unseen.marked(older, now) }), "earlier");
-  assert.equal(groupOf(older, { ...state, seen: unseen, settings: { ...defaultGrouping, unseenStayActive: false } }), "earlier");
+  assert.deepEqual(chatSections(entries, { ...state, seen: unseen }), chatSections(entries, { ...state, seen: unseen.allMarked(entries, now) }), "Mark all read never reclassifies chats");
 });
 
 test("keyboard neighbors use rendered sections, not recency, and skip folded or limited rows", () => {

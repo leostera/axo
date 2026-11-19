@@ -245,9 +245,6 @@ private struct ChatListSettingsSection: View {
       } label: {
         Label("Active for", systemImage: "clock")
       }
-      Toggle(isOn: $preferences.settings.unseenStayActive) {
-        Label("Unseen chats stay Active", systemImage: "circle.inset.filled")
-      }
       Picker(selection: $preferences.settings.unseenMarker) {
         ForEach(ChatUnseenMarker.allCases) { Text($0.title).tag($0) }
       } label: {
@@ -284,7 +281,7 @@ private struct ChatListSettingsSection: View {
     } header: {
       Text("Chats")
     } footer: {
-      Text("Active chats are working, waiting on you, unseen, or active in the last few minutes. Pins and these settings stay on this device.")
+      Text("Active chats are working, waiting on you, or active in the last few minutes. Unread chats can remain in Earlier. Pins and these settings stay on this device.")
     }
     .pickerStyle(.menu)
   }

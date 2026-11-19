@@ -6,6 +6,7 @@ What changed in each published version of Axo. Every publish raises the minor ve
 
 ### Fixed
 
+- Unread conversations can remain in Earlier on Mac, iPhone/iPad and web. Reading one or marking all read no longer moves old conversations out of Active. Removed the obsolete keep-unread-active setting without resetting read markers or other preferences.
 - OpenCode and Codex Sessions start again while a Pi Session is open. Their servers were stopped as soon as they started, and OpenCode reported that its server "did not say where it listens".
 - Claude Code's replies appear in Axo's conversation again. Claude Code 2.1.327 writes its reply to disk only after it reports the turn finished, so Axo kept only the prompt.
 - Codex and OpenCode can use Axo's tools from the moment they start. Their servers connect to Axo before they are ready, and those first calls were refused.

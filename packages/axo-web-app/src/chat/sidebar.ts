@@ -132,8 +132,6 @@ export interface GroupingSettings {
   readonly activeWindowMinutes: number;
   /** How often chats move between groups, in seconds. */
   readonly regroupIntervalSeconds: number;
-  /** Whether a chat with activity not yet seen stays Active until it is seen. */
-  readonly unseenStayActive: boolean;
   readonly unseenMarker: UnseenMarker;
   readonly pinnedOrder: RowOrder;
   readonly activeOrder: RowOrder;
@@ -149,7 +147,6 @@ export interface GroupingSettings {
 export const defaultGrouping: GroupingSettings = {
   activeWindowMinutes: 3,
   regroupIntervalSeconds: 30,
-  unseenStayActive: true,
   unseenMarker: "dotAndBold",
   pinnedOrder: "pinned",
   activeOrder: "name",
@@ -173,7 +170,6 @@ export function parseGrouping(stored: unknown): GroupingSettings {
   return {
     activeWindowMinutes: number("activeWindowMinutes", 1, 24 * 60),
     regroupIntervalSeconds: number("regroupIntervalSeconds", 5, 3_600),
-    unseenStayActive: flag("unseenStayActive"),
     unseenMarker: pick("unseenMarker", Object.keys(unseenMarkerTitles) as UnseenMarker[]),
     pinnedOrder: pick("pinnedOrder", pinnedOrders),
     activeOrder: pick("activeOrder", groupOrders),
@@ -207,14 +203,13 @@ export interface GroupingState {
 
 /**
  * The group a chat belongs in: Pinned if pinned; Active while its agent works or waits for the
- * person, while it has activity not yet seen (if so set), or for a while after its last activity;
- * otherwise Earlier.
+ * person or for a while after its last activity; otherwise Earlier. Unread markers do not
+ * change a chat's group.
  */
 export function groupOf(entry: ChatMenuEntry, state: GroupingState): ChatGroup {
   const { session } = entry;
   if (state.pins.has(session.sessionId)) return "pinned";
   if (session.status === "working" || session.status === "needsAttention" || state.asking?.has(session.sessionId)) return "active";
-  if (state.settings.unseenStayActive && state.seen.isUnseen(entry)) return "active";
   if (state.now - lastActivity(session) < state.settings.activeWindowMinutes * 60_000) return "active";
   return "earlier";
 }

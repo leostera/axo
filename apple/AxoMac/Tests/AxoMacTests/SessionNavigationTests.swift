@@ -86,7 +86,7 @@ final class SessionNavigationTests: XCTestCase {
       TerminalSession(id: 2, folder: "/", shells: [], name: "alpha", lastMessageAt: now - 5),
       TerminalSession(id: 3, folder: "/", shells: [], name: "old", lastMessageAt: 1_000),
       TerminalSession(id: 4, folder: "/", shells: [], name: "older", lastMessageAt: 900),
-      // Quiet for an hour but finished after this Mac last looked: still Active.
+      // Quiet for an hour and unread: Earlier, retaining its unread marker.
       TerminalSession(id: 5, folder: "/", shells: [], name: "mid", lastMessageAt: now - 3_600),
       // Quiet but still working: Active.
       TerminalSession(
@@ -95,14 +95,14 @@ final class SessionNavigationTests: XCTestCase {
     ]
     let sections = SessionGrouping.sections(sessions, pins: SessionPins([7]), seen: seen, now: now)
     XCTAssertEqual(sections.map(\.group), [.pinned, .active, .earlier])
-    XCTAssertEqual(sections.map { $0.sessions.map(\.id) }, [[7], [2, 6, 5, 1], [3, 4]])
+    XCTAssertEqual(sections.map { $0.sessions.map(\.id) }, [[7], [2, 6, 1], [5, 3, 4]])
 
     // More activity in an Active Session moves nothing: A to Z doesn't care.
     var busier = sessions
     busier[0] = TerminalSession(id: 1, folder: "/", shells: [], name: "zeta", lastMessageAt: now)
     XCTAssertEqual(
       SessionGrouping.sections(busier, pins: SessionPins([7]), seen: seen, now: now)[1].sessions.map(\.id),
-      [2, 6, 5, 1])
+      [2, 6, 1])
 
     // Seen and quiet for the window, a Session falls to Earlier.
     var looked = seen
@@ -110,10 +110,10 @@ final class SessionNavigationTests: XCTestCase {
     looked.markSeen(sessions[1], now: now)
     let later = SessionGrouping.sections(
       sessions, pins: SessionPins([7]), seen: looked, now: now + SidebarGroupingSettings().activeWindow)
-    XCTAssertEqual(later.map { $0.sessions.map(\.id) }, [[7], [6, 1], [2, 5, 3, 4]])
+    XCTAssertEqual(later.map { $0.sessions.map(\.id) }, [[7], [6], [2, 1, 5, 3, 4]])
   }
 
-  func testGroupingSettingsChangeTheWindowUnseenRuleAndOrders() {
+  func testGroupingSettingsChangeTheWindowAndOrdersButNeverUseUnreadAsActivity() {
     let now: Int64 = 10_000
     let seen = SessionSeen(baseline: 5_000)
     let sessions = [
@@ -124,13 +124,12 @@ final class SessionNavigationTests: XCTestCase {
       TerminalSession(
         id: 3, folder: "/", shells: [], name: "c", lastMessageAt: 1_000, createdAt: 30),
     ]
-    var settings = SidebarGroupingSettings()
+    var settings = SidebarGroupingSettings(storedValue: Data(#"{"unseenStayActive":true}"#.utf8))
+    XCTAssertFalse(String(decoding: settings.storedValue!, as: UTF8.self).contains("unseenStayActive"))
     let ids = { (settings: SidebarGroupingSettings) in
       SessionGrouping.sections(sessions, pins: SessionPins(), seen: seen, now: now, settings: settings)
         .map { $0.sessions.map(\.id) }
     }
-    XCTAssertEqual(ids(settings), [[2, 1], [3]], "1 is unseen, so Active")
-    settings.unseenStayActive = false
     XCTAssertEqual(ids(settings), [[2], [1, 3]])
     settings.activeWindowMinutes = 15
     XCTAssertEqual(ids(settings), [[2, 1], [3]], "1 is within 15 minutes")
@@ -245,13 +244,13 @@ final class SessionNavigationTests: XCTestCase {
     // Activity from before this Mac kept track isn't news.
     XCTAssertEqual(model.sidebarSections.map(\.group), [.earlier])
 
-    // New activity while nobody looks: unseen, so Active, and it stays Active past the window.
+    // New activity is unread, but leaves Active once its ordinary activity window expires.
     client.sessions[1] = TerminalSession(
       id: 2, folder: "/", shells: [], name: "other", lastMessageAt: now + 5)
     await model.refresh()
     model.advanceSidebarClock(to: .now.addingTimeInterval(3_600))
     XCTAssertTrue(model.isUnseen(try XCTUnwrap(model.session(for: 2))))
-    XCTAssertEqual(model.sidebarSections.map { $0.sessions.map(\.id) }, [[2], [1]])
+    XCTAssertEqual(model.sidebarSections.map { $0.sessions.map(\.id) }, [[2, 1]])
 
     // Selected while Axo is in the background, it isn't seen; in front, it is.
     model.showSession(2)

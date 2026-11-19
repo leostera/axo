@@ -335,17 +335,13 @@ export function ChatListSettings() {
           </select>
         </label>
         <label className="grouped-row">
-          <span className="grouped-label">Keep unseen chats in Active until seen</span>
-          <input type="checkbox" checked={settings.unseenStayActive} onChange={event => set("unseenStayActive", event.target.checked)} />
-        </label>
-        <label className="grouped-row">
           <span className="grouped-label">Move chats between groups every</span>
           <select aria-label="Move chats between groups every" value={settings.regroupIntervalSeconds} onChange={event => set("regroupIntervalSeconds", Number(event.target.value))}>
             {regroupIntervalChoices.map(value => <option key={value} value={value}>{seconds(value)}</option>)}
           </select>
         </label>
       </div>
-      <p className="sheet-note">A chat is Active while it's working or asking you, for a while after its last activity, and, if you keep them, while it has activity you haven't seen.</p>
+      <p className="sheet-note">A chat is Active while it's working or asking you, or for a while after its last activity. Unread chats can remain in Earlier.</p>
       <div className="grouped spaced">
         <OrderRow label="Pinned" value={settings.pinnedOrder} choices={pinnedOrders} onChange={value => set("pinnedOrder", value)} />
         <OrderRow label="Active" value={settings.activeOrder} choices={groupOrders} onChange={value => set("activeOrder", value)} />

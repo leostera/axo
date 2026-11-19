@@ -333,8 +333,6 @@ struct SidebarGroupingSettings: Codable, Equatable {
   var activeWindowMinutes = 3
   /// How often Sessions are moved between groups, in seconds.
   var regroupIntervalSeconds = 30
-  /// Whether a Session with activity this Mac hasn't seen stays Active until it is seen.
-  var unseenStayActive = true
   var unseenMarker = UnseenMarker.dotAndBold
   var pinnedOrder = SidebarRowOrder.pinned
   var activeOrder = SidebarRowOrder.name
@@ -353,7 +351,6 @@ struct SidebarGroupingSettings: Codable, Equatable {
     }
     activeWindowMinutes = min(max(value(.activeWindowMinutes, defaults.activeWindowMinutes), 1), 24 * 60)
     regroupIntervalSeconds = min(max(value(.regroupIntervalSeconds, defaults.regroupIntervalSeconds), 5), 3_600)
-    unseenStayActive = value(.unseenStayActive, defaults.unseenStayActive)
     unseenMarker = value(.unseenMarker, defaults.unseenMarker)
     pinnedOrder = value(.pinnedOrder, defaults.pinnedOrder)
     activeOrder = value(.activeOrder, defaults.activeOrder)
@@ -379,7 +376,6 @@ enum SessionGrouping {
   ) -> SidebarGroup {
     if pins.contains(session.id) { return .pinned }
     if session.status == .working || session.status == .needsAttention { return .active }
-    if settings.unseenStayActive && seen.isUnseen(session) { return .active }
     if now - SessionActivityOrder.lastActivity(of: session) < settings.activeWindow { return .active }
     return .earlier
   }

@@ -204,11 +204,13 @@ test("bracket navigation holds the visible order while opening unread sessions m
     app = await startApp(cloud);
     const page = await app.browser.newPage({ viewport: { width: 1100, height: 800 } });
     await page.addInitScript(() => localStorage.setItem("sidebar.seenSessionsBaseline.v1", "0"));
-    await page.goto(`${app.appUrl}/__tests__/chat/${hostId}/${sid(1)}`, { waitUntil: "networkidle" });
+    await page.goto(`${app.appUrl}/__tests__/chat/${hostId}/${sid(4)}`, { waitUntil: "networkidle" });
     const names = () => page.locator(".chat-row-name").allTextContents();
     const order = await names();
-    assert.deepEqual(order, ["B", "C", "D", "A"], "unread old sessions stay Active; the open, read one is Earlier");
-    for (const name of ["D", "C", "B"]) {
+    assert.deepEqual(order, ["A", "B", "C", "D"], "old sessions stay Earlier even while unread");
+    assert.equal(await page.locator('.chat-section[aria-label="Earlier"] .chat-row-name.unseen').count(), 3);
+    assert.equal(await page.locator('.chat-section[aria-label="Active"]').count(), 0);
+    for (const name of ["C", "B", "A"]) {
       await page.keyboard.press("Meta+BracketLeft");
       await page.waitForFunction(name => {
         const selected = document.querySelector('.chat-row[aria-current="page"] .chat-row-name');
@@ -217,10 +219,42 @@ test("bracket navigation holds the visible order while opening unread sessions m
       assert.deepEqual(await names(), order, "reading a session must not move the navigation targets");
     }
     await page.keyboard.press("Meta+BracketLeft");
-    assert.equal(await page.locator('.chat-row[aria-current="page"] .chat-row-name').textContent(), "B");
+    assert.equal(await page.locator('.chat-row[aria-current="page"] .chat-row-name').textContent(), "A");
     // Leaving keyboard navigation releases the hold and normal grouping resumes.
     await page.getByRole("textbox", { name: "Message", exact: true }).click();
     await page.waitForFunction(() => document.querySelectorAll(".chat-section").length === 1);
+  } finally { await app?.close(); }
+});
+
+test("mark all read clears badges without moving unread Earlier chats on desktop and phone", browserOptions, async () => {
+  const now = Math.floor(Date.now() / 1000);
+  const sessions = ["A", "B", "C"].map((name, index) => {
+    const row = listed(sid(index + 1), name, 1);
+    row.metadata.lastMessageAt = now - 600 - index;
+    return row;
+  });
+  const cloud = await startCloud(new Map(sessions.map(row => [row.sessionId, [record(1, { role: "user", content: row.metadata.name })]])), sessions);
+  let app;
+  try {
+    app = await startApp(cloud);
+    for (const viewport of [{ width: 1100, height: 800 }, { width: 390, height: 844 }]) {
+      const page = await app.browser.newPage({ viewport });
+      await page.addInitScript(() => {
+        localStorage.setItem("sidebar.seenSessionsBaseline.v1", "0");
+        localStorage.setItem("sidebar.grouping.v1", JSON.stringify({ unseenStayActive: true }));
+      });
+      await page.goto(`${app.appUrl}/__tests__/chat/${hostId}/${sid(1)}`, { waitUntil: "networkidle" });
+      if (viewport.width < 600) await page.getByRole("button", { name: "Chats menu" }).click();
+      const earlier = page.locator('.chat-section[aria-label="Earlier"]');
+      assert.equal(await earlier.locator(".chat-row-name.unseen").count(), 2);
+      assert.equal(await page.locator('.chat-section[aria-label="Active"]').count(), 0);
+      const order = await earlier.locator(".chat-row-name").allTextContents();
+      await page.getByRole("button", { name: "Mark all read", exact: true }).click();
+      await page.waitForFunction(() => !document.querySelector(".chat-row-name.unseen"));
+      assert.deepEqual(await earlier.locator(".chat-row-name").allTextContents(), order);
+      assert.equal(await page.locator('.chat-section[aria-label="Active"]').count(), 0);
+      await page.close();
+    }
   } finally { await app?.close(); }
 });
 

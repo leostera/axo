@@ -53,7 +53,6 @@ final class ChatGroupsTests: XCTestCase {
     let settings = ChatGroupingSettings()
     XCTAssertEqual(settings.activeWindowMinutes, 3)
     XCTAssertEqual(settings.regroupIntervalSeconds, 30)
-    XCTAssertTrue(settings.unseenStayActive)
     XCTAssertEqual(settings.unseenMarker, .dotAndBold)
     XCTAssertEqual(settings.pinnedOrder, .pinned)
     XCTAssertEqual(settings.activeOrder, .name)
@@ -94,13 +93,13 @@ final class ChatGroupsTests: XCTestCase {
     XCTAssertEqual(names(sections)["Earlier"], ["old", "older"])
   }
 
-  func testUnseenActivityStaysActiveUntilSeen() {
+  func testUnreadChatsStayInEarlierAndReadingDoesNotRegroupThem() {
     let old = entry(1, name: "news", ago: 3_600)
     var seen = ChatSeen(baseline: now - 7_200)
-    XCTAssertEqual(ChatGrouping.group(of: old, pins: ChatPins(), seen: seen, now: now), .active)
-    var settings = ChatGroupingSettings()
-    settings.unseenStayActive = false
+    XCTAssertTrue(seen.isUnseen(old.session))
+    let settings = ChatGroupingSettings(storedValue: Data(#"{"unseenStayActive":true}"#.utf8))
     XCTAssertEqual(ChatGrouping.group(of: old, pins: ChatPins(), seen: seen, now: now, settings: settings), .earlier)
+    XCTAssertFalse(String(decoding: settings.storedValue!, as: UTF8.self).contains("unseenStayActive"))
     XCTAssertTrue(seen.markSeen(old.session, now: now))
     XCTAssertFalse(seen.markSeen(old.session, now: now + 1), "already seen")
     XCTAssertEqual(ChatGrouping.group(of: old, pins: ChatPins(), seen: seen, now: now), .earlier)

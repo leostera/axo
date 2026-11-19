@@ -94,6 +94,15 @@ node_test(
     tests_in_data = True,
 )
 
+node_test(
+    name = "sidebar_browser_test",
+    concurrency = 1,
+    data = _BROWSER_DATA,
+    tags = ["manual", "no-sandbox", "requires-browser"],
+    tests = ["test/web-polish.test.mjs"],
+    tests_in_data = True,
+)
+
 # The app in Chrome against fixture APIs, served by Vite from the site.
 node_test(
     name = "browser_test",

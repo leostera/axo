@@ -313,7 +313,7 @@ final class AxoMobileUITests: XCTestCase {
     app.buttons["Chats menu"].tapWhereItIs()
     XCTAssertFalse(app.buttons["chat-list-mode"].exists)
     XCTAssertFalse(app.buttons["axo · Studio"].exists, "no folder titles")
-    // Active: working (or waiting on the person), unseen, or active in the last 3 minutes. Then
+    // Active: working (or waiting on the person), or active in the last 3 minutes. Then
     // Earlier, by last message, offline Macs and quiet chats too.
     let active = app.buttons["chat-group-active"]
     let earlier = app.buttons["chat-group-earlier"]
