@@ -12,6 +12,7 @@ rust_binary(
     edition = "2024",
     deps = ["//crates/axo-client:axo_client", "//crates/axo-protocol:axo_protocol", "//crates/axo-pty:axo_pty", "@crates//:gtk4", "@crates//:serde_json", "@crates//:tokio", "@crates//:clap"],
     link_deps = ["@ghostty_gtk//:bridge"],
+    compile_data = ["//assets:brand_catalog"],
     data = ["@ghostty_gtk//:runtime"],
     target_compatible_with = ["@platforms//os:linux"],
 )

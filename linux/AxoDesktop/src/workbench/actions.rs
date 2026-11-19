@@ -18,6 +18,7 @@ pub(super) enum Failure {
 pub(super) struct Creation {
     phase: Cell<Phase>,
     task: RefCell<Option<MainThreadTask>>,
+    agents_task: RefCell<Option<MainThreadTask>>,
     folder: RefCell<Option<(gtk4::FileDialog, gtk4::gio::Cancellable)>>,
     selection: Cell<Option<(SessionId, u64)>>,
     banner: gtk4::Box,
@@ -41,6 +42,7 @@ impl Creation {
         Self {
             phase: Cell::new(Phase::Ready),
             task: RefCell::new(None),
+            agents_task: RefCell::new(None),
             folder: RefCell::new(None),
             selection: Cell::new(None),
             banner,
@@ -85,6 +87,7 @@ impl Creation {
         }
         // Cancels delivery, not an already admitted creation. The worker has its own deadline.
         self.task.borrow_mut().take();
+        self.agents_task.borrow_mut().take();
         self.update_controls(false);
     }
     fn show(&self, message: &str, unconfirmed: bool) {
@@ -125,6 +128,95 @@ impl Workbench {
             });
             menu.append(&item);
         }
+        let agents_box = gtk4::Box::new(gtk4::Orientation::Vertical, 2);
+        menu.append(&agents_box);
+        popover.connect_show({
+            let weak = Rc::downgrade(self);
+            let agents_box = agents_box.downgrade();
+            move |popover| {
+                let Some(model) = weak.upgrade().filter(|model| !model.closing.get()) else {
+                    return;
+                };
+                let Some(agents_box) = agents_box.upgrade() else {
+                    return;
+                };
+                while let Some(child) = agents_box.first_child() {
+                    agents_box.remove(&child);
+                }
+                agents_box.append(&gtk4::Label::new(Some("Checking agents…")));
+                let socket = model.socket.clone();
+                let weak = weak.clone();
+                let popover = popover.downgrade();
+                let task = MainThreadTask::start(
+                    "axo-agent-discovery",
+                    move || {
+                        crate::task::daemon_request(&socket, |mut client| async move {
+                            client
+                                .call_typed::<rpc::AgentsList>(
+                                    rpc::method::AGENTS_LIST,
+                                    serde_json::json!({}),
+                                )
+                                .await
+                        })
+                    },
+                    move |result| {
+                        let Some(model) = weak.upgrade().filter(|model| !model.closing.get())
+                        else {
+                            return;
+                        };
+                        while let Some(child) = agents_box.first_child() {
+                            agents_box.remove(&child);
+                        }
+                        let Ok(catalog) = result else {
+                            agents_box.append(&gtk4::Label::new(Some(
+                                "Could not check agents. Reopen to retry.",
+                            )));
+                            return;
+                        };
+                        let available = catalog
+                            .agents
+                            .into_iter()
+                            .filter(|entry| entry.installed)
+                            .collect::<Vec<_>>();
+                        if available.is_empty() {
+                            agents_box
+                                .append(&gtk4::Label::new(Some("No coding agents available")));
+                        }
+                        for entry in available {
+                            let agent = entry.agent;
+                            let item = gtk4::Button::new();
+                            item.add_css_class("flat");
+                            let row = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
+                            row.append(&agent_icon(agent));
+                            row.append(&gtk4::Label::new(Some(&format!(
+                                "New Session with {agent}"
+                            ))));
+                            item.set_child(Some(&row));
+                            item.set_sensitive(model.can_create());
+                            item.connect_clicked({
+                                let weak = Rc::downgrade(&model);
+                                let popover = popover.clone();
+                                move |_| {
+                                    if let Some(model) = weak.upgrade() {
+                                        model.create_session_with_agent(
+                                            SessionLocation::AtHome,
+                                            agent,
+                                        );
+                                    }
+                                    if let Some(popover) = popover.upgrade() {
+                                        popover.popdown();
+                                    }
+                                }
+                            });
+                            agents_box.append(&item);
+                        }
+                    },
+                );
+                if let Ok(task) = task {
+                    *model.creation.agents_task.borrow_mut() = Some(task);
+                }
+            }
+        });
         popover.set_child(Some(&menu));
         button.set_popover(Some(&popover));
         for command in &self.creation.commands {
@@ -236,6 +328,14 @@ impl Workbench {
             && self.creation.folder.borrow().is_none()
     }
     fn create_session(self: &Rc<Self>, request: SessionLocation) {
+        self.create_session_with_agent(request, axo_protocol::agent::AgentKind::Pi)
+    }
+
+    fn create_session_with_agent(
+        self: &Rc<Self>,
+        request: SessionLocation,
+        agent: axo_protocol::agent::AgentKind,
+    ) {
         if !self.can_create() {
             if !self.closing.get()
                 && !self.online.get()
@@ -256,7 +356,7 @@ impl Workbench {
         let weak = Rc::downgrade(self);
         let task = MainThreadTask::start(
             "axo-session-create",
-            move || execute_creation(&socket, request),
+            move || execute_creation(&socket, request, agent),
             move |result| {
                 let Some(model) = weak.upgrade().filter(|model| !model.closing.get()) else {
                     return;
@@ -334,14 +434,38 @@ mod tests {
     }
 }
 
+fn agent_icon(agent: axo_protocol::agent::AgentKind) -> gtk4::Image {
+    use axo_protocol::agent::AgentKind;
+    let bytes: &'static [u8] = match agent {
+        AgentKind::Pi => include_bytes!(
+            "../../../../assets/brands/BrandLogos.xcassets/agent-pi.imageset/agent-pi.svg"
+        ),
+        AgentKind::Codex => include_bytes!(
+            "../../../../assets/brands/BrandLogos.xcassets/agent-codex.imageset/agent-codex.svg"
+        ),
+        AgentKind::OpenCode => include_bytes!(
+            "../../../../assets/brands/BrandLogos.xcassets/agent-opencode.imageset/agent-opencode.svg"
+        ),
+        AgentKind::ClaudeCode => include_bytes!(
+            "../../../../assets/brands/BrandLogos.xcassets/agent-claude-code.imageset/agent-claude-code.svg"
+        ),
+    };
+    crate::style::brand_icon(bytes)
+}
+
 fn execute_creation(
     socket: &std::path::Path,
     request: SessionLocation,
+    agent: axo_protocol::agent::AgentKind,
 ) -> io::Result<Result<SessionRecord, Failure>> {
     execute_action(
         socket,
         rpc::method::SESSION_CREATE,
-        |mut client| async move { client.create_session(request.into()).await },
+        |mut client| async move {
+            let mut params: rpc::CreateSession = request.into();
+            params.agent = agent;
+            client.create_session(params).await
+        },
     )
 }
 

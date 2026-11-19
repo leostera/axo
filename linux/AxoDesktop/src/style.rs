@@ -34,6 +34,14 @@ pub fn inset(widget: &impl IsA<gtk4::Widget>, vertical: i32, horizontal: i32) {
     widget.set_margin_end(horizontal);
 }
 
+/// Embedded marks, not theme-dependent substitutes or remotely loaded images.
+pub fn brand_icon(bytes: &'static [u8]) -> gtk4::Image {
+    let icon = gtk4::gio::BytesIcon::new(&gtk4::glib::Bytes::from_static(bytes));
+    let image = gtk4::Image::from_gicon(&icon);
+    image.set_pixel_size(16);
+    image
+}
+
 pub fn icon_button(icon: &str, label: &str) -> gtk4::Button {
     let button = gtk4::Button::from_icon_name(icon);
     button.set_tooltip_text(Some(label));

@@ -45,7 +45,13 @@ pub fn create_window(
     host.set_xalign(0.0);
     host.add_css_class("axo-host-caption");
     crate::style::inset(&host, 5, 8);
-    sidebar.append(&host);
+    let host_row = gtk4::Box::new(gtk4::Orientation::Horizontal, 4);
+    host_row.set_margin_start(8);
+    host_row.append(&crate::style::brand_icon(include_bytes!(
+        "../../../assets/brands/BrandLogos.xcassets/host-linux.imageset/host-linux.svg"
+    )));
+    host_row.append(&host);
+    sidebar.append(&host_row);
     let heading = gtk4::Label::new(Some("Sessions"));
     heading.set_xalign(0.0);
     heading.add_css_class("axo-section-caption");
