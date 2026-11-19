@@ -49,7 +49,10 @@ static class ComputerChecks
         assert(instructions.Contains("Use request_input") && instructions.Contains("Use run_steps"),
             "MCP initialization explains how to use sealed input and gated sequences");
         var tools = await mcp.Request("tools/list", new { });
-        assert(tools.GetProperty("tools").EnumerateArray().Select(t => t.GetProperty("name").GetString()).SequenceEqual(new[] { "computer_tools", "computer" }), "Codex gets the computer and computer_tools wrappers");
+        assert(tools.GetProperty("tools").EnumerateArray().Select(t => t.GetProperty("name").GetString()).SequenceEqual(new[] { "self", "computer_tools", "computer" }), "Codex discovers Session identity and computer use");
+        var identity = (await mcp.Tool("self", new { })).GetProperty("structuredContent");
+        assert(identity.EnumerateObject().Count() == 1 && identity.GetProperty("sessionId").GetString() == session,
+            "MCP self returns only the bridge's Session identity, even when computer use is disabled");
         var disabled = await mcp.Tool("computer", new { tool = "get_screen_size", args = new { } });
         assert(IsError(disabled), "a configured MCP server cannot operate the PC while computer use is disabled");
 
