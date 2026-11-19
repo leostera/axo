@@ -95,8 +95,33 @@ struct Runtime {
     remote_command: Option<String>,
     pending_user_commands: VecDeque<Option<String>>,
     turn_entries: Vec<String>,
-    progress: HashMap<String, String>,
+    progress: HashMap<String, StreamingMessage>,
+    last_message_timestamp_ms: i64,
     remote_questions: HashMap<String, (String, axo_protocol::elicitation::Elicitation)>,
+}
+
+struct StreamingMessage {
+    text: String,
+    started_at_ms: i64,
+}
+
+impl Runtime {
+    fn next_message_timestamp(&mut self) -> i64 {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()
+            .min(i64::MAX as u128) as i64;
+        self.last_message_timestamp_ms = now.max(self.last_message_timestamp_ms.saturating_add(1));
+        self.last_message_timestamp_ms
+    }
+
+    fn message_timestamp(&mut self, item: &str) -> i64 {
+        self.progress
+            .get(item)
+            .map(|message| message.started_at_ms)
+            .unwrap_or_else(|| self.next_message_timestamp())
+    }
 }
 
 #[derive(Default)]
@@ -926,13 +951,20 @@ impl Backend {
         {
             return Ok(agent);
         }
+        let last_message_timestamp =
+            axo_store::coding::last_message_timestamp(&self.database.lock().unwrap(), id)?;
         let (generation, old_agent) = {
             let mut runtime = session.runtime.lock().unwrap();
             runtime.generation += 1;
+            runtime.last_message_timestamp_ms = runtime
+                .last_message_timestamp_ms
+                .max(last_message_timestamp);
             runtime.status = Some(SessionStatus::Starting);
             runtime.turn = None;
             runtime.pending.clear();
             runtime.pending_user_commands.clear();
+            runtime.progress.clear();
+            runtime.turn_entries.clear();
             (runtime.generation, runtime.agent.take())
         };
         // Drop outside the runtime lock. The old reader may still report an exit; its
@@ -996,13 +1028,17 @@ impl Backend {
                 } else {
                     None
                 };
-                match axo_store::coding::save_message_with_command(
+                let started_at_ms = runtime.message_timestamp(item_id);
+                match axo_store::coding::save_message_with_metadata(
                     &self.database.lock().unwrap(),
                     id,
                     item_id,
                     role,
                     &text,
-                    command.as_deref(),
+                    axo_store::coding::MessageMetadata {
+                        command_id: command.as_deref(),
+                        started_at_ms: Some(started_at_ms),
+                    },
                 ) {
                     Ok(true) if role == "user" => {
                         runtime.pending_user_commands.pop_front();
@@ -1078,13 +1114,28 @@ impl Backend {
                 .as_str()
                 .unwrap_or_default()
                 .to_owned();
-            let text = runtime.progress.entry(item).or_default();
-            if text.len() < 128 * 1024 {
-                text.push_str(event["params"]["delta"].as_str().unwrap_or_default());
+            // A completion is final. Replayed deltas must not resurrect its partial row.
+            if runtime.turn.is_none() || runtime.turn_entries.contains(&item) {
+                None
+            } else {
+                let started_at_ms = runtime.message_timestamp(&item);
+                let message = runtime
+                    .progress
+                    .entry(item)
+                    .or_insert_with(|| StreamingMessage {
+                        text: String::new(),
+                        started_at_ms,
+                    });
+                if message.text.len() < 128 * 1024 {
+                    message
+                        .text
+                        .push_str(event["params"]["delta"].as_str().unwrap_or_default());
+                }
+                Some(
+                    json!({"type":"message_update","message":{"role":"assistant",
+                    "content":[{"type":"text","text":message.text}],"timestamp":message.started_at_ms}}),
+                )
             }
-            Some(
-                json!({"type":"message_update","message":{"role":"assistant","content":[{"type":"text","text":text}],"timestamp":axo_store::unix_timestamp()*1000}}),
-            )
         } else {
             None
         };
@@ -1275,6 +1326,22 @@ mod tests {
         assert!(events.iter().any(|event| matches!(event.as_ref(),
             Event::SessionSnapshot { session } if session.id == record.id && session.agent == record.agent)));
         backend.unsubscribe(&subscription).unwrap();
+    }
+
+    #[test]
+    fn reply_stamps_are_distinct_even_when_the_clock_has_not_advanced() {
+        let mut runtime = Runtime::default();
+        let first = runtime.next_message_timestamp();
+        let second = runtime.next_message_timestamp();
+        assert!(second > first);
+        runtime.progress.insert(
+            "item".into(),
+            StreamingMessage {
+                text: String::new(),
+                started_at_ms: first,
+            },
+        );
+        assert_eq!(runtime.message_timestamp("item"), first);
     }
 
     #[test]

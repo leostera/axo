@@ -284,6 +284,18 @@ try
     await Status(id,"ready");
     remote=await relay.CallAsync("axo.elicitation.resolve",RelayFixture.AccountAnswer(target,question.GetProperty("id").GetString()!,"accept"));
     Assert(remote.TryGetProperty("error",out _),"resolved remote approval cannot authorize a later request");
+    await relay.CallAsync("axo.remote.session.prompt",new{target,sessionId=id,text="stream-reconciliation",commandId=Guid.NewGuid().ToString()});
+    await Status(id,"ready");
+    await relay.WaitAsync(()=>relay.Messages(id).Contains("Stream fixture: partial and complete"),"Completed streaming fixture was not synced");
+    var streamed=relay.Progress.Where(p=>p.GetProperty("sessionId").GetString()==id && p.GetProperty("slot").GetString()=="message"
+        && p.GetProperty("snapshot").ValueKind==JsonValueKind.Object && p.GetProperty("snapshot").TryGetProperty("message",out var message)
+        && message.GetProperty("content")[0].GetProperty("text").GetString()!.StartsWith("Stream fixture:"))
+        .Select(p=>p.GetProperty("snapshot").GetProperty("message")).ToArray();
+    var completed=relay.Records(id).Single(r=>r.GetProperty("type").GetString()=="message"
+        && r.GetProperty("message").GetProperty("content")[0].GetProperty("text").GetString()=="Stream fixture: partial and complete").GetProperty("message");
+    Assert(streamed.Length>=2 && streamed.All(m=>m.GetProperty("timestamp").GetInt64()==completed.GetProperty("timestamp").GetInt64()),
+        "every streamed chunk and its completed record share one durable reply identity across second boundaries");
+    Assert(streamed.All(m=>!m.ToString().Contains("LATE_FRAGMENT")),"late native deltas cannot resurrect a completed assistant reply");
     await ParityChecks.Controls(client,id,workspace,Assert);
     await ComputerChecks.RunAsync(client, daemonPath, pipe, id, relay, target, Assert);
     var stopCommand=Guid.NewGuid().ToString();
