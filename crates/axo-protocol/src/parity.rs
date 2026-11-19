@@ -249,12 +249,7 @@ pub const PARITY: &[Parity] = &[
         method::SESSION_BRIEF,
         Remote::LocalOnly("the system prompt of an agent running on this Mac"),
     ),
-    row(
-        method::AGENTS_LIST,
-        Remote::LocalOnly(
-            "the phone and the web offer every agent; a Mac without one refuses the Session",
-        ),
-    ),
+    row(method::AGENTS_LIST, Remote::Call("axo.remote.agents.list")),
 ];
 
 /// Remote calls with no local counterpart: what only a person away from the Mac needs.

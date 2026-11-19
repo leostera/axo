@@ -9,6 +9,7 @@ public enum CodingAgent: String, Codable, Sendable, CaseIterable, Identifiable {
   case claudeCode = "claude-code"
 
   public var id: String { rawValue }
+  public var logoName: String { "agent-" + rawValue }
 
   /// The agent's name as its makers write it.
   public var displayName: String {

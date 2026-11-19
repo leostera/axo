@@ -107,6 +107,7 @@ export async function startCloud(transcripts, sessions, { models = [], hosts } =
         if (holdAnswers) answerReplies.push(done); else done();
         return;
       }
+      if (call.method === "axo.remote.agents.list") return reply({ agents: ["pi", "codex"] });
       if (call.method === "axo.remote.session.models") return reply({ models });
       if (call.method === "axo.remote.session.model.set") {
         modelSets.push(call.params);

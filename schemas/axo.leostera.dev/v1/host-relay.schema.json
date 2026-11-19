@@ -63,6 +63,9 @@
           "$ref": "#/$defs/RemoteSessionCommandsCall"
         },
         {
+          "$ref": "#/$defs/RemoteAgentsCall"
+        },
+        {
           "$ref": "#/$defs/RemoteSessionModelsCall"
         },
         {
@@ -1046,6 +1049,25 @@
         "params"
       ],
       "description": "The slash commands the Session's Pi runs when a client sends them (RFD0033)."
+    },
+    "RemoteAgentsCall": {
+      "allOf": [
+        { "$ref": "#/$defs/BaseCall" },
+        { "properties": {
+          "method": { "const": "axo.remote.agents.list" },
+          "params": {
+            "type": "object", "additionalProperties": false, "required": ["target"],
+            "properties": { "target": { "$ref": "common.schema.json#/$defs/HostRef" } }
+          }
+        } }
+      ],
+      "unevaluatedProperties": false, "required": ["params"]
+    },
+    "AvailableAgents": {
+      "type": "object", "additionalProperties": false, "required": ["agents"],
+      "properties": {
+        "agents": { "type": "array", "maxItems": 4, "items": { "enum": ["pi", "codex", "opencode", "claude-code"] } }
+      }
     },
     "RemoteSessionModelsCall": {
       "allOf": [

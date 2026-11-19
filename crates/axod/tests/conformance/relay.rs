@@ -73,6 +73,27 @@ fn wait_for_status(axod: &Axod, state: &str) -> Value {
 }
 
 #[test]
+fn the_account_can_discover_runnable_agents_without_private_paths() {
+    let hub = FakeHub::start();
+    let (_axod, target) = linked(&hub, Pi::Fake);
+    let result = hub
+        .call("axo.remote.agents.list", json!({ "target": target }))
+        .unwrap();
+    let agents = result["agents"].as_array().unwrap();
+    assert!(agents.iter().all(|a| a.is_string()));
+    assert!(!result.to_string().contains("executable"));
+    let refused = hub
+        .call(
+            "axo.remote.agents.list",
+            json!({ "target": {
+                "hostId": target["hostId"], "hostGeneration": "stale"
+            }}),
+        )
+        .unwrap_err();
+    assert_eq!(refused["code"], STALE_HOST);
+}
+
+#[test]
 fn unlink_closes_the_live_socket_forgets_credentials_and_does_not_reconnect() {
     let hub = FakeHub::start();
     let (mut axod, _) = linked(&hub, Pi::Fake);

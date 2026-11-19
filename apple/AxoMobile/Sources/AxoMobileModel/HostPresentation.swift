@@ -12,6 +12,14 @@ public enum HostPresentation {
     !hosts.isEmpty && hosts.allSatisfy(isKnownMac) ? "Macs" : "Hosts"
   }
 
+  public static func logoName(_ host: RemoteHost) -> String? {
+    switch host.hostKind {
+    case "linux": return "host-linux"
+    case "windows": return "host-windows"
+    default: return nil
+    }
+  }
+
   public static func symbol(_ host: RemoteHost) -> String {
     guard isKnownMac(host) else {
       return host.hostKind == "windows" ? "desktopcomputer" : "server.rack"

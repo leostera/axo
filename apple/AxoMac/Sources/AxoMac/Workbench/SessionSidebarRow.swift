@@ -19,10 +19,10 @@ struct SidebarHeader: View {
         if !hosts.isEmpty {
           Divider()
           ForEach(hosts) { host in
-            choice(host.online ? host.label : "\(host.label) (offline)", .mac(host.hostId))
+            choice(host.online ? host.label : "\(host.label) (offline)", .mac(host.hostId), host: host)
           }
           Divider()
-          choice("All Macs", .all)
+          choice("All hosts", .all)
         }
       } label: {
         HStack(spacing: 3) {
@@ -37,7 +37,7 @@ struct SidebarHeader: View {
       .buttonStyle(.plain)
       .menuIndicator(.hidden)
       .fixedSize()
-      .help("Choose which Macs' Sessions to list")
+      .help("Choose which hosts’ Sessions to list")
       .accessibilityLabel("Sessions on \(title)")
       .accessibilityIdentifier("sidebar-macs-menu")
       Spacer(minLength: 0)
@@ -59,11 +59,15 @@ struct SidebarHeader: View {
     .frame(height: 22 + topPadding)
   }
 
-  private func choice(_ label: String, _ macs: SidebarMacs) -> some View {
+  private func choice(_ label: String, _ macs: SidebarMacs, host: PeerHost? = nil) -> some View {
     Button {
       onSelect(macs)
     } label: {
-      if selection == macs {
+      if let host {
+        Label {
+          HStack { Text(label); if selection == macs { Image(systemName: "checkmark") } }
+        } icon: { PeerHostIcon(host: host) }
+      } else if selection == macs {
         Label(label, systemImage: "checkmark")
       } else {
         Text(label)

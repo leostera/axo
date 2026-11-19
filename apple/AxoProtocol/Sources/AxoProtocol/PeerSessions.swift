@@ -5,10 +5,14 @@ public struct PeerHost: Decodable, Equatable, Identifiable, Sendable {
   public let hostId: String
   public let label: String
   public let online: Bool
+  public let hostKind: String?
+  public let model: HostModel?
 
   public var id: String { hostId }
 
-  public init(hostId: String, label: String, online: Bool) {
+  public init(hostId: String, label: String, online: Bool, hostKind: String? = nil, model: HostModel? = nil) {
+    self.hostKind = hostKind
+    self.model = model
     self.hostId = hostId
     self.label = label
     self.online = online

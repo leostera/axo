@@ -287,7 +287,7 @@ final class TerminalSessionsModel {
   var sidebarMacsTitle: String {
     switch sidebarMacs {
     case .thisMac: "This Mac"
-    case .all: "All Macs"
+    case .all: "All hosts"
     case .mac(let hostID): peerHosts.first { $0.hostId == hostID }?.label ?? "Another Mac"
     }
   }
@@ -407,6 +407,7 @@ final class TerminalSessionsModel {
   /// Re-reads the whole catalog. Used after commands whose outcome must be reconciled; the
   /// connection-level resync is `resynchronize()`.
   func refresh() async {
+    Task { await refreshAvailableCodingAgents() }
     do {
       try await reloadCatalog()
     } catch {
@@ -416,7 +417,15 @@ final class TerminalSessionsModel {
 
   /// Renegotiates (Axod may have been upgraded or restarted) and re-reads the catalog. Called by
   /// `TerminalCatalogSync` whenever it (re)subscribes; failures go back to it for retry.
+  private(set) var availableCodingAgents: [CodingAgent] = []
+
+  func refreshAvailableCodingAgents() async {
+    guard let client else { return }
+    availableCodingAgents = (try? await client.availableCodingAgents()) ?? []
+  }
+
   func resynchronize() async throws {
+    Task { await refreshAvailableCodingAgents() }
     capabilities?.forget()
     try await reloadCatalog()
     viewportReporter.reconnected()

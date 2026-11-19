@@ -1,6 +1,6 @@
 # Host icons
 
-Status: deferred; not urgent. User preference recorded 2026-11-18.
+Status: implementing for 0.75. User preference recorded 2026-11-18; requested 2026-11-19.
 
 - Windows hosts: use the Windows logo.
 - Linux hosts: use the Linux logo.

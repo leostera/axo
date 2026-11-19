@@ -10,6 +10,7 @@ protocol AxodClient: AnyObject {
   func negotiate() async throws -> ProtocolNegotiation
   /// Includes whether Axod has finished starting (`ready`).
   func health() async throws -> DaemonHealth
+  func availableCodingAgents() async throws -> [CodingAgent]
   func listSessionSnapshot() async throws -> TerminalSessionListSnapshot
 
   /// The catalog's events as axod pushes them, until the stream ends.

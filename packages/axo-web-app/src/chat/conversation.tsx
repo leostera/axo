@@ -1,13 +1,14 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ClipboardEvent, type KeyboardEvent, type TouchEvent, type WheelEvent } from "react";
 import { flushSync } from "react-dom";
 import { AxoMascot } from "../axo-mascot.tsx";
+import { BrandIcon } from "./brand-icon.tsx";
 import { hostIcon } from "./host-model.ts";
 import { Icon } from "./icons.tsx";
 import { MessageView, PendingView, QuestionCard } from "./message-views.tsx";
 import { appendTranscript, BrowserDictation, VoicePrompt, waveformHeight } from "./voice.ts";
 import { ConversationFeed, type FeedItem } from "./feed.ts";
 import { HoldRow } from "./tool-views.tsx";
-import { CODING_AGENTS, chatTitle, type ChatWorkbench, type CodingAgent, type DraftAttachment } from "./workbench.ts";
+import { CODING_AGENTS, chatTitle, type ChatWorkbench, type DraftAttachment } from "./workbench.ts";
 import { SendButton, SlashMenu } from "./composer-controls.tsx";
 import { ModelPicker } from "./model-picker.tsx";
 import { matchingCommands, slashQuery, withCommand } from "./pi-controls.ts";
@@ -337,7 +338,8 @@ function Composer({ workbench, wide, voice, placeholder, canCompose, canSend, on
   const hasDraft = draft.trim().length > 0 || files.length > 0;
   const bytes = encoder.encode(draft).length;
   const tooLong = bytes > maxMessageBytes;
-  const ready = canSend && workbench.canSendDraft && !tooLong && !workbench.isSending;
+  const agentReady = workbench.selection?.kind !== "new" || workbench.availableCodingAgents?.includes(workbench.newChatAgent) === true;
+  const ready = canSend && agentReady && workbench.canSendDraft && !tooLong && !workbench.isSending;
   const attach = (list: FileList | null) => {
     if (!list?.length) return;
     workbench.attach([...list].map(file => ({ file, name: file.name || "pasted image" })));
@@ -683,16 +685,37 @@ function HostPicker({ workbench, floating = false }: { workbench: ChatWorkbench;
  * Which coding agent a new chat runs. Shown only while starting one: a chat keeps its agent.
  */
 function AgentPicker({ workbench }: { workbench: ChatWorkbench }) {
-  if (workbench.selection?.kind !== "new") return null;
-  return (
-    <label className="agent-picker" title="The coding agent this chat runs">
-      <span className="visually-hidden">Agent</span>
-      <select value={workbench.newChatAgent} aria-label="Agent"
-        onChange={event => workbench.chooseAgent(event.currentTarget.value as CodingAgent)}>
-        {CODING_AGENTS.map(choice => <option key={choice.agent} value={choice.agent}>{choice.label}</option>)}
-      </select>
-    </label>
-  );
+  const menu = useRef<HTMLDetailsElement>(null);
+  const drafting = workbench.selection?.kind === "new";
+  const host = workbench.openHost;
+  useEffect(() => {
+    if (drafting) void workbench.refreshAvailableCodingAgents();
+  }, [drafting, host?.hostId, host?.hostGeneration, workbench.link, workbench]);
+  useEffect(() => {
+    const close = (event: PointerEvent) => { if (menu.current && !menu.current.contains(event.target as Node)) menu.current.open = false; };
+    window.addEventListener("pointerdown", close);
+    return () => window.removeEventListener("pointerdown", close);
+  }, []);
+  if (!drafting) return null;
+  const agents = workbench.availableCodingAgents;
+  if (workbench.agentCatalogFailure) return <button type="button" onClick={() => void workbench.refreshAvailableCodingAgents()}>{workbench.agentCatalogFailure}</button>;
+  if (agents === null || agents.length === 0) return <span className="agent-picker-status">{agents === null ? "Checking agents…" : "No coding agents available"}</span>;
+  return <details className="agent-picker" ref={menu} onKeyDown={event => {
+    if (event.key === "Escape" && menu.current) { menu.current.open = false; menu.current.querySelector("summary")?.focus(); }
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      if (menu.current) menu.current.open = true;
+      const items = [...(menu.current?.querySelectorAll<HTMLButtonElement>("button") ?? [])];
+      const index = items.indexOf(document.activeElement as HTMLButtonElement);
+      items[(index + (event.key === "ArrowDown" ? 1 : -1) + items.length) % items.length]?.focus();
+    }
+  }}>
+    <summary aria-label="Agent"><BrandIcon name={workbench.newChatAgent} />{CODING_AGENTS.find(choice => choice.agent === workbench.newChatAgent)?.label}<Icon name="chevronDown" size={12} /></summary>
+    <div role="menu" aria-label="Coding agents">{agents.map(agent => <button type="button" role="menuitemradio" aria-checked={agent === workbench.newChatAgent} key={agent}
+      onClick={() => { workbench.chooseAgent(agent); if (menu.current) { menu.current.open = false; menu.current.querySelector("summary")?.focus(); } }}>
+      <BrandIcon name={agent} />{CODING_AGENTS.find(choice => choice.agent === agent)?.label}
+    </button>)}</div>
+  </details>;
 }
 
 /**

@@ -468,6 +468,29 @@ final class PhoneWorkbenchTests: XCTestCase {
     try await eventually { workbench.current?.status == .offline }
   }
 
+  func testAgentPickerUsesOnlyTheSelectedHostsRunnableAgents() async throws {
+    let a = Mac("A", online: true, sessions: [1])
+    let world = PhoneWorld([a], answers: false)
+    try await world.start()
+    let phone = world.workbench!
+    phone.select(host: a.id, session: nil)
+    let channel = try await world.transport.channel()
+    let loading = Task { await phone.refreshAvailableCodingAgents() }
+    let request = try await channel.nextRequest("axo.remote.agents.list")
+    channel.reply(to: request.id, result: #"{"agents":["codex"]}"#)
+    await loading.value
+    XCTAssertEqual(phone.availableCodingAgents, [.codex])
+    XCTAssertEqual(phone.newChatAgent, .codex)
+
+    let empty = Task { await phone.refreshAvailableCodingAgents() }
+    let next = try await channel.nextRequest("axo.remote.agents.list")
+    channel.reply(to: next.id, result: #"{"agents":[]}"#)
+    await empty.value
+    phone.setDraft("hello", for: phone.selection!)
+    XCTAssertEqual(phone.availableCodingAgents, [])
+    XCTAssertFalse(phone.canSendDraft)
+  }
+
   // MARK: - What the agents ask (RFD0029)
 
   func testWhatAMacAsksShowsInItsChatUntilSettledAndOnlyOneAnswerGoes() async throws {

@@ -8,6 +8,12 @@ final class HostPresentationTests: XCTestCase {
       model: model, status: .online, sessions: [])
   }
 
+  func testOSMarksTakePrecedenceAndMacsKeepHardwareSymbols() {
+    XCTAssertEqual(HostPresentation.logoName(host(kind: "linux")), "host-linux")
+    XCTAssertEqual(HostPresentation.logoName(host(kind: "windows")), "host-windows")
+    XCTAssertNil(HostPresentation.logoName(host(model: HostModel(identifier: "Mac13,2"))))
+  }
+
   func testOnlyAnEntirelyKnownMacCollectionIsCalledMacs() {
     let studio = host(model: HostModel(identifier: "Mac13,2", name: "Mac Studio"))
     let book = host(model: HostModel(identifier: "MacBookPro18,1"))

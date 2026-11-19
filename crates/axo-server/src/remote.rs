@@ -124,6 +124,20 @@ impl Extension for Remote {
         add(
             handler,
             core,
+            "axo.remote.agents.list",
+            |core, _: AgentsParams| async move {
+                let agents = crate::agents::list(&core.home)
+                    .await
+                    .into_iter()
+                    .filter(|entry| entry.installed)
+                    .map(|entry| entry.agent)
+                    .collect::<Vec<_>>();
+                Ok(serde_json::json!({ "agents": agents }))
+            },
+        );
+        add(
+            handler,
+            core,
             "axo.remote.session.create",
             // The account names no paths: a new Session starts beside another, or at home.
             |core, request: CreateSessionParams| async move {
@@ -534,6 +548,7 @@ macro_rules! params {
 }
 
 params! {
+    AgentsParams {}
     SessionTargetParams { session_id: SessionId }
     CreateSessionParams {
         like: Option<SessionId> = default,

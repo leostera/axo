@@ -85,6 +85,7 @@ export interface AccountLink {
   older(sessionId: string, before: number, limit: number): Promise<OlderPage>;
   closeSession(sessionId: string): void;
   resolveElicitation(hostId: string, elicitationId: string, action: ElicitationAnswer, device: DeviceProof | undefined, sealed?: Sealed): Promise<void>;
+  command(method: "axo.remote.agents.list", params: { target: HostRef }): Promise<{ agents: CodingAgent[] }>;
   command(method: "axo.remote.session.create", params: { target: HostRef; agent?: CodingAgent }): Promise<{ session: CreatedSession }>;
   command(method: "axo.remote.session.prompt", params: { target: HostRef; sessionId: string; text: string; commandId: string; attachments?: Attachment[]; delivery?: Delivery }): Promise<unknown>;
   command(method: "axo.remote.session.restart", params: { target: HostRef; sessionId: string }): Promise<unknown>;
@@ -360,6 +361,33 @@ export class ChatWorkbench {
   selection: Selection | null = null;
   /** The coding agent a new chat starts with (RFD0072); a Mac without it refuses the chat. */
   newChatAgent: CodingAgent = "pi";
+  private agentCatalog: CodingAgent[] | null = null;
+  private agentCatalogHost: string | null = null;
+  private agentCatalogRequest = 0;
+  agentCatalogFailure: string | null = null;
+
+  private get agentHostKey(): string { return `${this.openHostId}/${this.openHost?.hostGeneration}`; }
+  get availableCodingAgents(): CodingAgent[] | null {
+    return this.agentCatalogHost === this.agentHostKey ? this.agentCatalog : null;
+  }
+
+  async refreshAvailableCodingAgents(): Promise<void> {
+    const host = this.openHost;
+    const connection = this.connection;
+    if (!host || !connection || this.selection?.kind !== "new" || this.link !== "connected" || host.status !== "online") return;
+    const key = this.agentHostKey, request = ++this.agentCatalogRequest;
+    this.agentCatalogHost = key; this.agentCatalog = null; this.agentCatalogFailure = null; this.changed();
+    try {
+      const result = await connection.command("axo.remote.agents.list", { target: this.reference(host) });
+      if (request !== this.agentCatalogRequest || this.agentHostKey !== key || this.connection !== connection) return;
+      this.agentCatalog = CODING_AGENTS.filter(choice => result.agents.includes(choice.agent)).map(choice => choice.agent);
+      if (!this.agentCatalog.includes(this.newChatAgent) && this.agentCatalog[0]) this.newChatAgent = this.agentCatalog[0];
+    } catch {
+      if (request !== this.agentCatalogRequest || this.agentHostKey !== key || this.connection !== connection) return;
+      this.agentCatalogFailure = "Could not check agents. Retry";
+    }
+    this.changed();
+  }
   failure: string | null = null;
   isSending = false;
   /** Bumped on every change, for `useSyncExternalStore`. */
@@ -947,7 +975,8 @@ export class ChatWorkbench {
 
   /** The coding agent the new chat starts with. */
   chooseAgent(agent: CodingAgent): void {
-    if (agent === this.newChatAgent || !CODING_AGENTS.some(choice => choice.agent === agent)) return;
+    if (agent === this.newChatAgent || !CODING_AGENTS.some(choice => choice.agent === agent)
+      || (this.availableCodingAgents !== null && !this.availableCodingAgents.includes(agent))) return;
     this.newChatAgent = agent;
     this.changed();
   }
@@ -1032,6 +1061,7 @@ export class ChatWorkbench {
 
   /** Whether what is in the box can go: words or files, and no file still on its way. */
   get canSendDraft(): boolean {
+    if (this.selection?.kind === "new" && this.availableCodingAgents !== null && !this.availableCodingAgents.includes(this.newChatAgent)) return false;
     const files = this.attachments();
     if (files.some(file => file.state !== "ready")) return false;
     return this.draft().trim().length > 0 || files.length > 0;

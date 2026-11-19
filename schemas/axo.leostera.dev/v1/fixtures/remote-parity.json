@@ -11,6 +11,7 @@
     "axo.remote.terminal.input",
     "axo.remote.terminal.resize",
     "axo.remote.session.prompt",
+    "axo.remote.agents.list",
     "axo.remote.session.key",
     "axo.remote.session.stop",
     "axo.remote.session.commands",

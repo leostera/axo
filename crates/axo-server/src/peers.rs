@@ -111,6 +111,8 @@ fn host_of(index: &PeerIndex, host_id: &str) -> Option<PeerHost> {
             host_id: host_id.to_owned(),
             label: host["label"].as_str().unwrap_or("Mac").to_owned(),
             online: host["online"].as_bool().unwrap_or(false),
+            host_kind: host["hostKind"].as_str().map(str::to_owned),
+            model: serde_json::from_value(host["model"].clone()).ok(),
         })
 }
 

@@ -188,6 +188,7 @@ struct ConversationView: View {
   /// A chat can be written to when its Mac is online and nothing is on its way.
   private var canSend: Bool {
     workbench?.status == .online && session?.hasAgent != false
+      && (!phone.isDrafting || phone.availableCodingAgents?.contains(phone.newChatAgent) == true)
   }
 
   private var composerPlaceholder: String {

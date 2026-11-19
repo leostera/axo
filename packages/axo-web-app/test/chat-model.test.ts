@@ -1084,6 +1084,21 @@ test("a signed-in browser sends encrypted form values without enrollment or key 
   assert.deepEqual(account.devices, [undefined]);
 });
 
+test("agent discovery filters the selected host and prevents unavailable choices", async () => {
+  const { workbench, account } = await workbenchWith();
+  workbench.newChat();
+  account.answers.set("axo.remote.agents.list", { agents: ["codex"] });
+  await workbench.refreshAvailableCodingAgents();
+  assert.deepEqual(workbench.availableCodingAgents, ["codex"]);
+  assert.equal(workbench.newChatAgent, "codex");
+  workbench.chooseAgent("claude-code");
+  assert.equal(workbench.newChatAgent, "codex");
+  account.answers.set("axo.remote.agents.list", { agents: [] });
+  await workbench.refreshAvailableCodingAgents();
+  workbench.setDraft("hello");
+  assert.equal(workbench.canSendDraft, false);
+});
+
 test("a signed-in browser answers without creating a device key", async () => {
   const { workbench, account } = await workbenchWith();
   const elicitation = { id: "6c4e2f0a-1b2c-4d3e-8f9a-0b1c2d3e4f70", sessionId: sid(1), kind: "confirm" as const, message: "Go?", createdAt: 1, expiresAt: 2 };

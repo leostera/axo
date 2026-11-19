@@ -37,7 +37,7 @@ import {
 } from "@axo/protocol";
 import {
   hostRefSchema,
-  type hostV1Results,
+  hostV1Results,
   remoteSessionCreateResultSchema,
   remoteSessionCloseResultSchema,
   remoteLayoutSetResultSchema,
@@ -147,6 +147,7 @@ const rpcIdSchema = z.union([
   z.null(),
 ]);
 const appRemoteResults = {
+  "axo.remote.agents.list": hostV1Results["axo.remote.agents.list"],
   "axo.remote.session.create": remoteSessionCreateResultSchema,
   "axo.remote.session.close": remoteSessionCloseResultSchema,
   "axo.remote.session.rename": remoteLayoutSetResultSchema,

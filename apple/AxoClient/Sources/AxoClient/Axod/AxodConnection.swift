@@ -49,6 +49,11 @@ public final class AxodConnection: Sendable {
       ProtocolNegotiationRequest(protocolVersion: ProtocolNegotiation.supportedVersion))
   }
 
+  public func availableCodingAgents() async throws -> [CodingAgent] {
+    let catalog = try await call(AxodMethod<NoParams, LocalAgentCatalog>(.agentsList))
+    return catalog.agents.filter(\.installed).map(\.agent)
+  }
+
   public func health() async throws -> DaemonHealth {
     let health = try await call(AxodMethods.health)
     if let version = health.version, version.isEmpty {

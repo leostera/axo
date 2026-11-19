@@ -2,40 +2,44 @@ import AxoMobileModel
 import AxoProtocol
 import SwiftUI
 
-/// Which coding agent a new chat runs, as a chip above the message box (RFD0072). Shown only
-/// while starting a chat: a chat keeps the agent it started with.
+/// Host discovery, not the static list of adapters, determines the choices.
 struct AgentPicker: View {
   @Bindable var phone: PhoneWorkbench
 
   var body: some View {
     if let selection = phone.selection, selection.session == nil {
       HStack {
-        Menu {
-          Picker("Agent", selection: $phone.newChatAgent) {
-            ForEach(CodingAgent.allCases) { agent in
-              Text(agent.displayName).tag(agent)
+        if let agents = phone.availableCodingAgents, !agents.isEmpty {
+          Menu {
+            Picker("Agent", selection: $phone.newChatAgent) {
+              ForEach(agents) { agent in
+                Label(agent.displayName, image: agent.logoName).tag(agent)
+              }
             }
+          } label: {
+            HStack(spacing: 6) {
+              Image(phone.newChatAgent.logoName).resizable().scaledToFit().frame(width: 15, height: 15)
+              Text(phone.newChatAgent.displayName).font(.footnote).lineLimit(1)
+              Image(systemName: "chevron.down").font(.system(size: 10, weight: .bold))
+            }
+            .padding(.horizontal, 11).frame(height: 28)
+            .background(.regularMaterial, in: Capsule())
           }
-        } label: {
-          HStack(spacing: 6) {
-            Image(systemName: "sparkles").font(.system(size: 12, weight: .medium))
-            Text(phone.newChatAgent.displayName).font(.footnote).lineLimit(1)
-            Image(systemName: "chevron.down").font(.system(size: 10, weight: .bold))
-          }
-          .foregroundStyle(.secondary)
-          .padding(.horizontal, 11)
-          .frame(height: 28)
-          .background(.regularMaterial, in: Capsule())
-          .overlay(Capsule().stroke(Color.primary.opacity(0.06), lineWidth: 0.5))
-          .contentShape(Capsule())
-          .fixedSize()
+          .accessibilityLabel("Agent: \(phone.newChatAgent.displayName)")
+          .accessibilityIdentifier("agent-picker")
+        } else if let failure = phone.agentCatalogFailure {
+          Button(failure) { Task { await phone.refreshAvailableCodingAgents() } }.font(.caption)
+        } else {
+          Text(phone.availableCodingAgents == nil ? "Checking agents…" : "No coding agents available")
+            .font(.caption).foregroundStyle(.secondary)
         }
-        .accessibilityLabel("Agent: \(phone.newChatAgent.displayName)")
-        .accessibilityHint("Chooses the coding agent this chat runs")
-        .accessibilityIdentifier("agent-picker")
         Spacer(minLength: 0)
       }
       .padding(.horizontal, 16)
+      .task(id: phone.current?.reference) { await phone.refreshAvailableCodingAgents() }
+      .onChange(of: phone.link) { _, value in
+        if value == .connected { Task { await phone.refreshAvailableCodingAgents() } }
+      }
     }
   }
 }

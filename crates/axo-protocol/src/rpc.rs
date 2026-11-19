@@ -824,6 +824,17 @@ pub struct PeerHost {
     pub host_id: String,
     pub label: String,
     pub online: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<PeerHostModel>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct PeerHostModel {
+    pub identifier: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 }
 
 /// Another Mac's Session: its record as a local one would be, with the Mac it runs on. Its

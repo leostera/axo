@@ -7,6 +7,7 @@ import Observation
 public protocol AccountFeed: ChatFeed {
   var events: AsyncStream<AccountEvent> { get }
   var connectionLost: AsyncStream<Void> { get }
+  func availableCodingAgents(on host: RemoteHostRef) async throws -> [CodingAgent]
   func connect() async throws
   func disconnect() async
   func refresh() async throws -> ClientHello
@@ -67,6 +68,32 @@ public final class PhoneWorkbench {
   }
   /// The coding agent a new chat starts with (RFD0072); a Mac without it refuses the chat.
   public var newChatAgent: CodingAgent = .pi
+  private var agentCatalog: [CodingAgent]?
+  private var agentCatalogHost: RemoteHostRef?
+  private var agentCatalogRequest = UUID()
+  public private(set) var agentCatalogFailure: String?
+
+  public var availableCodingAgents: [CodingAgent]? {
+    guard current?.reference == agentCatalogHost else { return nil }
+    return agentCatalog
+  }
+
+  public func refreshAvailableCodingAgents() async {
+    guard isDrafting, link == .connected, let target = current?.reference, current?.status == .online else { return }
+    let request = UUID(); agentCatalogRequest = request
+    let credential = account.credentialRevision
+    agentCatalog = nil; agentCatalogHost = target; agentCatalogFailure = nil
+    do {
+      let agents = try await feed.availableCodingAgents(on: target)
+      guard !Task.isCancelled, agentCatalogRequest == request, current?.reference == target,
+        account.credentialRevision == credential else { return }
+      agentCatalog = CodingAgent.allCases.filter { agents.contains($0) }
+      if !agents.contains(newChatAgent), let first = agentCatalog?.first { newChatAgent = first }
+    } catch {
+      guard agentCatalogRequest == request, current?.reference == target, account.credentialRevision == credential else { return }
+      agentCatalogFailure = "Could not check agents. Tap to retry."
+    }
+  }
   private var preparedChats: [DraftTarget: RemoteSession] = [:]
   @ObservationIgnored private var navigationRevision = 0
 
@@ -602,6 +629,7 @@ public final class PhoneWorkbench {
 
   /// Whether the open chat's box can go: words or files, and every file uploaded.
   public var canSendDraft: Bool {
+    if isDrafting, let agents = availableCodingAgents, !agents.contains(newChatAgent) { return false }
     guard let selection else { return false }
     let files = attachments(for: selection)
     guard files.allSatisfy({ if case .ready = $0.state { true } else { false } }) else { return false }

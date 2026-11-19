@@ -203,9 +203,10 @@ struct AxoApp<Launch: AxoLaunchMode>: App {
         .keyboardShortcut("t", modifiers: .command)
 
         Menu("New Session with Agent") {
-          ForEach(CodingAgent.allCases) { agent in
-            Button(agent.displayName) {
-              Task { await sessions.createSession(agent: agent) }
+          if sessions.availableCodingAgents.isEmpty { Text("No coding agents available") }
+          ForEach(sessions.availableCodingAgents) { agent in
+            Button { Task { await sessions.createSession(agent: agent) } } label: {
+              Label(agent.displayName, image: agent.logoName)
             }
           }
         }

@@ -440,6 +440,8 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
           { name: "axo-share", description: "Share this conversation", source: "extension" },
           { name: "hivemind", description: "Search the team's memory", source: "skill" },
         ] });
+      } else if (method === "axo.remote.agents.list") {
+        reply({ agents: ["pi", "codex"] });
       } else if (method === "axo.remote.session.models") {
         reply({ models: [
           { provider: "anthropic", id: "claude-opus-4-1", name: "Opus 4.1", thinkingLevels: ["off", "low", "medium", "high"] },
@@ -876,6 +878,13 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     // A new chat: its first message starts it in the Mac's home folder.
     await chats.getByRole("button", { name: "New chat", exact: true }).click();
     await expect(page.getByRole("heading", { name: "New chat", exact: true }));
+    const agents = page.locator(".agent-picker");
+    await agents.locator("summary").click();
+    await page.getByRole("menu", { name: "Coding agents" }).waitFor();
+    assert.equal(await agents.getByRole("menuitemradio").count(), 2);
+    assert.equal(await agents.locator('[data-brand="codex"]').count(), 1);
+    assert.equal(await agents.getByRole("menuitemradio", { name: "Claude Code" }).count(), 0);
+    await agents.press("Escape");
     await box.fill("Start fresh");
     await box.press("Enter");
     await expect(page.getByRole("heading", { name: "Session 2", exact: true }));

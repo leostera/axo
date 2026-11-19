@@ -5,6 +5,12 @@ import Foundation
 /// `AxodConnection`, so a client treats "this Mac" and a remote host alike. Calls name the host and
 /// the run of it they mean; the relay refuses a call for an older run ("Stale host") instead of
 /// acting on the wrong one, and refuses one for a host that is offline instead of queueing it.
+extension AccountConnection {
+  public func availableCodingAgents(on host: RemoteHostRef) async throws -> [CodingAgent] {
+    try await HostConnection(account: self, host: host).availableCodingAgents()
+  }
+}
+
 public struct HostConnection: Sendable {
   public let host: RemoteHostRef
   private let account: AccountConnection
@@ -13,6 +19,13 @@ public struct HostConnection: Sendable {
     self.account = account
     self.host = host
   }
+
+  public func availableCodingAgents() async throws -> [CodingAgent] {
+    let result: AvailableAgents = try await call("axo.remote.agents.list", AgentsTarget(target: host))
+    return result.agents
+  }
+
+  private struct AgentsTarget: Encodable, Sendable { let target: RemoteHostRef }
 
   // MARK: - Sessions
 

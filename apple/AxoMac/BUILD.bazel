@@ -140,7 +140,7 @@ macos_ui_test(
     bundle_id = AXO["apple"]["bundle_ids"]["mac_visual_tests"],
     minimum_os_version = AXO["apple"]["macos_min"],
     test_host = ":AxoUITestApp",
-    resources = ["//crates/axod:axod"],
+    resources = ["//crates/axod:axod", "//assets:brand_catalog"],
     deps = [":AxoVisualUITestsLib"],
     tags = ["manual", "no-sandbox"],
     timeout = "long",
@@ -243,7 +243,7 @@ _APP_CONTENTS = {
 macos_application(
     name = "AxoApp",
     app_icons = ["//assets:macos_app_icon"],
-    resources = ["//assets:mascot"],
+    resources = ["//assets:mascot", "//assets:brand_catalog"],
     bundle_id = AXO["apple"]["bundle_ids"]["mac"],
     bundle_name = "Axo",
     executable_name = "Axo",

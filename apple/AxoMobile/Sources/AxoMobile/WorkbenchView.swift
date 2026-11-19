@@ -1095,10 +1095,8 @@ private struct HostRow: View {
 
   var body: some View {
     HStack(spacing: 12) {
-      Image(systemName: host.symbol)
-        .font(.system(size: 17))
-        .accessibilityLabel(host.model?.name ?? "Mac")
-        .accessibilityIdentifier("host-symbol-\(host.symbol)")
+      HostIcon(host: host)
+        .frame(width: 20, height: 20)
         .foregroundStyle(host.status == .online ? Color.primary : Color.secondary)
         .frame(width: 26)
       VStack(alignment: .leading, spacing: 1) {
@@ -1234,6 +1232,7 @@ extension ClientID {
           case "axo.remote.session.stop": #"{"stopped":true}"#
           case "axo.remote.session.prompt": queue(params?["params"] as? [String: Any]) ? #"{"accepted":true}"# : nil
           case "axo.remote.session.commands": PreviewFixture.commands
+          case "axo.remote.agents.list": "{\"agents\":[\"pi\",\"codex\"]}"
           case "axo.remote.session.models": PreviewFixture.models
           case "axo.remote.session.model.set": #"{"saved":true}"#
           case "axo.remote.session.restart":

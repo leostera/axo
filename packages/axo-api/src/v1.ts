@@ -196,7 +196,10 @@ const targetSchema = z.object({ target: hostRefSchema }).strict();
 const sessionTargetSchema = targetSchema.extend({ sessionId: sessionIdSchema }).strict();
 const shellTargetSchema = sessionTargetSchema.extend({ shellId: shellIdSchema }).strict();
 
+export const availableAgentsSchema = z.object({ agents: z.array(z.enum(["pi", "codex", "opencode", "claude-code"])).max(4) }).strict();
+
 export const hostV1Methods = {
+  "axo.remote.agents.list": targetSchema,
   "axo.host.register": hostRegisterSchema,
   "axo.host.heartbeat": hostHeartbeatSchema,
   "axo.host.sessions.publish": hostSessionsPublishSchema,
@@ -323,6 +326,7 @@ export const remoteTerminalResizeResultSchema = z.object({
 }).strict();
 
 export const hostV1Results = {
+  "axo.remote.agents.list": availableAgentsSchema,
   "axo.host.register": hostRegisterResultSchema,
   "axo.host.heartbeat": heartbeatResultSchema,
   "axo.host.sessions.publish": sessionsPublishResultSchema,

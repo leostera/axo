@@ -17,9 +17,11 @@ struct HostPicker: View {
               Button {
                 phone.chooseHost(candidate.hostId)
               } label: {
-                Label(
-                  "\(candidate.label)\(candidate.status == .online ? "" : ", offline")",
-                  systemImage: candidate.hostId == host.hostId ? "checkmark" : candidate.symbol)
+                Label {
+                  Text("\(candidate.label)\(candidate.status == .online ? "" : ", offline")")
+                } icon: {
+                  HostIcon(host: candidate).frame(width: 16, height: 16)
+                }
               }
               .disabled(candidate.status != .online)
             }
@@ -48,7 +50,7 @@ struct HostPicker: View {
 
   private func chip(_ host: RemoteHost, choosing: Bool) -> some View {
     HStack(spacing: 6) {
-      Image(systemName: host.symbol).font(.system(size: 13, weight: .medium))
+      HostIcon(host: host).frame(width: 15, height: 15)
       Text(host.label).font(.footnote).lineLimit(1)
       Circle()
         .fill(host.status == .online ? Color.green : Color.secondary.opacity(0.5))

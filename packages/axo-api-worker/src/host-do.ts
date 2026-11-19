@@ -210,6 +210,7 @@ const MAX_SAVED_SNAPSHOT_CHARS = 512 * 1024;
 
 /** What a client may ask the Mac to do, through `command`, and the params each takes. */
 const hostRemoteMethods = {
+  "axo.remote.agents.list": hostV1Methods["axo.remote.agents.list"],
   "axo.remote.session.create": hostV1Methods["axo.remote.session.create"],
   "axo.remote.session.close": hostV1Methods["axo.remote.session.close"],
   "axo.remote.shell.create": hostV1Methods["axo.remote.shell.create"],

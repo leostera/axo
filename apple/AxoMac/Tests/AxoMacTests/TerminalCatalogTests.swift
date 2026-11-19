@@ -55,6 +55,8 @@ final class FakeCatalogEvents: CatalogEvents, @unchecked Sendable {
 /// An in-memory Axod for catalog tests: listing returns `sessions`, events come from `events`.
 @MainActor
 final class FakeAxodClient: AxodClient {
+  var agents: [CodingAgent] = [.pi]
+  func availableCodingAgents() async throws -> [CodingAgent] { agents }
   var sessions: [TerminalSession] = []
   var resumeSessionID: SessionID?
   /// Other Macs' Sessions, listed when `methods` offers them.
