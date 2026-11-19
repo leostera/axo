@@ -32,6 +32,10 @@ struct TerminalWorkbenchView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onGeometryChange(for: CGSize.self, of: \.size) { terminalAreaSize = $0 }
         .safeAreaInset(edge: .top, spacing: 0) {
+          if isZenMode {
+            // No sidebar reserves room for native window controls in Zen mode.
+            WindowDragStrip().frame(height: WindowDragStrip.height)
+          }
           if daemonIsRunning, case .reconnecting(let reason) = sessions.catalogConnection {
             CatalogReconnectingBanner(reason: reason)
           }
