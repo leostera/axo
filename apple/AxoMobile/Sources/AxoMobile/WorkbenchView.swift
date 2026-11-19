@@ -1208,6 +1208,8 @@ extension ClientID {
       }
     }
 
+    private var agentChecks = 0
+
     private func notify(_ method: String, _ params: [String: Any]) {
       let notice: [String: Any] = ["jsonrpc": "2.0", "method": method, "params": params]
       sink.yield(try! JSONSerialization.data(withJSONObject: notice))
@@ -1235,7 +1237,12 @@ extension ClientID {
           case "axo.remote.session.stop": #"{"stopped":true}"#
           case "axo.remote.session.prompt": queue(params?["params"] as? [String: Any]) ? #"{"accepted":true}"# : nil
           case "axo.remote.session.commands": PreviewFixture.commands
-          case "axo.remote.agents.list": "{\"agents\":[\"pi\",\"codex\"]}"
+          case "axo.remote.agents.list":
+            {
+              let failures = min(5, max(0, Int(ProcessInfo.processInfo.environment["AXO_MOBILE_PREVIEW_AGENT_FAILURES"] ?? "") ?? 0))
+              let attempt = lock.withLock { agentChecks += 1; return agentChecks }
+              return attempt <= failures ? nil : "{\"agents\":[\"pi\",\"codex\"]}"
+            }()
           case "axo.remote.session.models": PreviewFixture.models
           case "axo.remote.session.model.set": #"{"saved":true}"#
           case "axo.remote.session.restart":

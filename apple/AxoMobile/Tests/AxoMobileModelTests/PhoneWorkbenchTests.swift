@@ -482,13 +482,86 @@ final class PhoneWorkbenchTests: XCTestCase {
     XCTAssertEqual(phone.availableCodingAgents, [.codex])
     XCTAssertEqual(phone.newChatAgent, .codex)
 
-    let empty = Task { await phone.refreshAvailableCodingAgents() }
+    let empty = Task { await phone.refreshAvailableCodingAgents(force: true) }
     let next = try await channel.nextRequest("axo.remote.agents.list")
     channel.reply(to: next.id, result: #"{"agents":[]}"#)
     await empty.value
     phone.setDraft("hello", for: phone.selection!)
     XCTAssertEqual(phone.availableCodingAgents, [])
     XCTAssertFalse(phone.canSendDraft)
+  }
+
+  func testAgentDiscoveryRetriesTransientFailuresWithoutAnExplicitRetryOrChangingTheDraft() async throws {
+    let a = Mac("A", online: true)
+    let world = PhoneWorld([a], answers: false)
+    try await world.start()
+    let phone = world.workbench!
+    phone.agentCatalogRetryDelays = [.milliseconds(1)]
+    let destination = try XCTUnwrap(phone.selection)
+    phone.setDraft("Keep this message", for: destination)
+    let channel = try await world.transport.channel()
+    let loading = Task { await phone.refreshAvailableCodingAgents() }
+    let first = try await channel.nextRequest("axo.remote.agents.list")
+    channel.reply(to: first.id, error: -32005, message: "Host connecting")
+    let second = try await channel.nextRequest("axo.remote.agents.list")
+    channel.reply(to: second.id, result: #"{"agents":["pi"]}"#)
+    await loading.value
+    XCTAssertEqual(phone.availableCodingAgents, [.pi])
+    XCTAssertEqual(phone.draft(for: destination), "Keep this message")
+    XCTAssertEqual(channel.requestsSent(for: "axo.remote.agents.list"), 2)
+    XCTAssertTrue(world.creations.places.isEmpty)
+    XCTAssertTrue(world.creations.prompts.isEmpty)
+  }
+
+  func testAgentChecksCoalesceSurviveAWaiterCancellationAndReuseFreshResults() async throws {
+    let world = PhoneWorld([Mac("A", online: true)], answers: false)
+    try await world.start()
+    let phone = world.workbench!
+    let channel = try await world.transport.channel()
+    let first = Task { await phone.refreshAvailableCodingAgents() }
+    let request = try await channel.nextRequest("axo.remote.agents.list")
+    let second = Task { await phone.refreshAvailableCodingAgents() }
+    first.cancel()
+    channel.reply(to: request.id, result: #"{"agents":["pi"]}"#)
+    await first.value
+    await second.value
+    XCTAssertEqual(phone.availableCodingAgents, [.pi])
+    await phone.refreshAvailableCodingAgents()
+    XCTAssertEqual(channel.requestsSent(for: "axo.remote.agents.list"), 1)
+  }
+
+  func testChangingHostCancelsDiscoveryAndLateResultsCannotReplaceTheNewCatalog() async throws {
+    let a = Mac("A", online: true), b = Mac("B", online: true)
+    let world = PhoneWorld([a, b], answers: false)
+    try await world.start()
+    let phone = world.workbench!
+    phone.select(host: a.id, session: nil)
+    let channel = try await world.transport.channel()
+    let old = Task { await phone.refreshAvailableCodingAgents() }
+    let oldRequest = try await channel.nextRequest("axo.remote.agents.list")
+    phone.chooseHost(b.id)
+    let current = Task { await phone.refreshAvailableCodingAgents() }
+    let newRequest = try await channel.nextRequest("axo.remote.agents.list")
+    channel.reply(to: newRequest.id, result: #"{"agents":["codex"]}"#)
+    await current.value
+    channel.reply(to: oldRequest.id, result: #"{"agents":["pi"]}"#)
+    await old.value
+    XCTAssertEqual(phone.availableCodingAgents, [.codex])
+    XCTAssertEqual(phone.newChatAgent, .codex)
+  }
+
+  func testUnsupportedHostIsNotRetriedAndShowsAnActionableUpdateState() async throws {
+    let world = PhoneWorld([Mac("A", online: true)], answers: false)
+    try await world.start()
+    let phone = world.workbench!
+    let channel = try await world.transport.channel()
+    let loading = Task { await phone.refreshAvailableCodingAgents() }
+    let request = try await channel.nextRequest("axo.remote.agents.list")
+    channel.reply(to: request.id, error: -32601, message: "Method not found")
+    await loading.value
+    XCTAssertEqual(phone.agentCatalogState, .updateRequired)
+    XCTAssertNil(phone.availableCodingAgents)
+    XCTAssertEqual(channel.requestsSent(for: "axo.remote.agents.list"), 1)
   }
 
   // MARK: - What the agents ask (RFD0029)

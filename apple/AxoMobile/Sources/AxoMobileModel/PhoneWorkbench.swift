@@ -71,30 +71,83 @@ public final class PhoneWorkbench {
   private var agentCatalog: [CodingAgent]?
   private var agentCatalogHost: RemoteHostRef?
   private var agentCatalogRequest = UUID()
-  public private(set) var agentCatalogFailure: String?
+  public enum AgentCatalogState: Equatable, Sendable { case checking, retrying, updateRequired }
+  public private(set) var agentCatalogState: AgentCatalogState = .checking
+  private var agentCatalogCredential: UUID?
+  @ObservationIgnored private var agentCatalogLoadedAt: Date?
+  @ObservationIgnored private var agentCatalogTask: Task<Void, Never>?
+  @ObservationIgnored var agentCatalogRetryDelays: [Duration] = [.milliseconds(300), .seconds(1), .seconds(3), .seconds(10), .seconds(30)]
 
   public var availableCodingAgents: [CodingAgent]? {
-    guard current?.reference == agentCatalogHost else { return nil }
+    guard current?.reference == agentCatalogHost, account.credentialRevision == agentCatalogCredential else { return nil }
     return agentCatalog
   }
 
-  public func refreshAvailableCodingAgents(voice: VoicePrompt? = nil) async {
-    guard isDrafting, link == .connected, let target = current?.reference, current?.status == .online else { return }
-    let request = UUID(); agentCatalogRequest = request
+  public var agentDiscoveryRevision: UUID { account.credentialRevision }
+
+  public func refreshAvailableCodingAgents(force: Bool = false, voice: VoicePrompt? = nil) async {
+    guard !account.hasEndedSession, isDrafting, link == .connected, let target = current?.reference, current?.status == .online else {
+      cancelAgentDiscovery()
+      return
+    }
     let credential = account.credentialRevision
-    agentCatalog = nil; agentCatalogHost = target; agentCatalogFailure = nil
-    do {
-      let agents = try await feed.availableCodingAgents(on: target)
-      guard !Task.isCancelled, agentCatalogRequest == request, current?.reference == target,
-        account.credentialRevision == credential else { return }
-      agentCatalog = CodingAgent.allCases.filter { agents.contains($0) }
-      if !agents.contains(newChatAgent), let first = agentCatalog?.first {
-        voice?.destinationOptionsChanged()
-        newChatAgent = first
+    let sameScope = agentCatalogHost == target && agentCatalogCredential == credential
+    if sameScope, let task = agentCatalogTask { await task.value; return }
+    if sameScope, !force, agentCatalog != nil, let loaded = agentCatalogLoadedAt,
+      Date().timeIntervalSince(loaded) < 30 { return }
+    cancelAgentDiscovery()
+    if !sameScope { agentCatalog = nil }
+    agentCatalogHost = target
+    agentCatalogCredential = credential
+    agentCatalogState = .checking
+    let request = agentCatalogRequest
+    // Owned by the model: SwiftUI cancelling one waiter must not cancel the shared read.
+    let task = Task { [weak self] in
+      await self?.discoverAgents(on: target, credential: credential, request: request, voice: voice)
+      if self?.agentCatalogRequest == request { self?.agentCatalogTask = nil }
+    }
+    agentCatalogTask = task
+    await task.value
+  }
+
+  public func cancelAgentDiscovery() {
+    agentCatalogRequest = UUID()
+    agentCatalogTask?.cancel()
+    agentCatalogTask = nil
+  }
+
+  private func discoverAgents(on target: RemoteHostRef, credential: UUID, request: UUID, voice: VoicePrompt?) async {
+    func isCurrent() -> Bool {
+      !Task.isCancelled && !account.hasEndedSession && isDrafting && link == .connected && current?.status == .online
+        && current?.reference == target && agentCatalogRequest == request && account.credentialRevision == credential
+    }
+    var attempt = 0
+    while isCurrent() {
+      do {
+        let agents = try await feed.availableCodingAgents(on: target)
+        guard isCurrent() else { return }
+        agentCatalog = CodingAgent.allCases.filter { agents.contains($0) }
+        agentCatalogLoadedAt = .now
+        agentCatalogState = .checking
+        if !agents.contains(newChatAgent), let first = agentCatalog?.first {
+          voice?.destinationOptionsChanged()
+          newChatAgent = first
+        }
+        return
+      } catch {
+        guard isCurrent() else { return }
+        if account.noteFailure(error) { return }
+        if case AxoClientError.serverRejected(let code, _) = error, code == -32601 || code == -32602 {
+          agentCatalogState = .updateRequired
+          return
+        }
+        // This operation only reads availability. Never apply this retry policy to sends or answers.
+        agentCatalogState = .retrying
+        let delays = agentCatalogRetryDelays
+        let delay = delays.isEmpty ? Duration.seconds(30) : delays[min(attempt, delays.count - 1)]
+        attempt += 1
+        do { try await Task.sleep(for: delay) } catch { return }
       }
-    } catch {
-      guard agentCatalogRequest == request, current?.reference == target, account.credentialRevision == credential else { return }
-      agentCatalogFailure = "Could not check agents. Tap to retry."
     }
   }
   public func chooseAgent(_ agent: CodingAgent, voice: VoicePrompt? = nil) {
@@ -379,6 +432,7 @@ public final class PhoneWorkbench {
   public func suspend() {
     guard started, link != .suspended else { return }
     suspended = true
+    cancelAgentDiscovery()
     reconnectTask?.cancel()
     reconnectTask = nil
     link = .suspended
@@ -451,6 +505,7 @@ public final class PhoneWorkbench {
   }
 
   public func select(host hostID: UUID, session: SessionID?) {
+    if session != nil || selection?.host != hostID { cancelAgentDiscovery() }
     guard let remote = hosts.hosts.first(where: { $0.hostId == hostID }) else { return }
     if current?.reference.hostId != hostID {
       current?.stop()
@@ -771,6 +826,7 @@ public final class PhoneWorkbench {
   }
 
   public func close() {
+    cancelAgentDiscovery()
     current?.stop()
     current = nil
     navigationRevision += 1
@@ -779,6 +835,7 @@ public final class PhoneWorkbench {
 
   /// Stops following the account: the socket goes.
   public func stop() {
+    cancelAgentDiscovery()
     eventTask?.cancel()
     lossTask?.cancel()
     reconnectTask?.cancel()

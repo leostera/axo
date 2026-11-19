@@ -4,6 +4,14 @@ What changed in each published version of Axo. Every publish raises the minor ve
 
 ## Unreleased
 
+## 0.78 (Mac app build 350, axod 94)
+
+### Fixed
+
+- New-chat agent discovery retries transient read failures automatically with capped backoff instead of asking the person to tap Retry.
+- Concurrent checks share one request; cancelling a view’s waiter does not cancel the underlying discovery. Checks stop when leaving the draft, disconnecting, suspending or signing out.
+- Fresh results are reused briefly for the same host generation and account credentials. Host/connection changes restart discovery automatically; unsupported hosts show an update hint instead of an endless retry button.
+
 ## 0.77 (Mac app build 349, axod 93)
 
 ### Fixed

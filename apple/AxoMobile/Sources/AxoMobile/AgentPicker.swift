@@ -28,19 +28,32 @@ struct AgentPicker: View {
           }
           .accessibilityLabel("Agent: \(phone.newChatAgent.displayName)")
           .accessibilityIdentifier("agent-picker")
-        } else if let failure = phone.agentCatalogFailure {
-          Button(failure) { Task { await phone.refreshAvailableCodingAgents(voice: voice) } }.font(.caption)
         } else {
-          Text(phone.availableCodingAgents == nil ? "Checking agents…" : "No coding agents available")
-            .font(.caption).foregroundStyle(.secondary)
+          Text(status).font(.caption).foregroundStyle(.secondary)
         }
         Spacer(minLength: 0)
       }
       .padding(.horizontal, 16)
-      .task(id: phone.current?.reference) { await phone.refreshAvailableCodingAgents(voice: voice) }
-      .onChange(of: phone.link) { _, value in
-        if value == .connected { Task { await phone.refreshAvailableCodingAgents(voice: voice) } }
+      .task(id: DiscoveryContext(host: phone.current?.reference, connected: phone.link == .connected,
+        online: phone.current?.status == .online, credential: phone.agentDiscoveryRevision)) {
+        await phone.refreshAvailableCodingAgents(voice: voice)
       }
     }
+  }
+
+  private var status: String {
+    if phone.availableCodingAgents != nil { return "No coding agents available" }
+    switch phone.agentCatalogState {
+    case .checking: return "Checking agents…"
+    case .retrying: return "Checking agents again…"
+    case .updateRequired: return "Update Axo on this host to check agents"
+    }
+  }
+
+  private struct DiscoveryContext: Equatable {
+    let host: RemoteHostRef?
+    let connected: Bool
+    let online: Bool
+    let credential: UUID
   }
 }

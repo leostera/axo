@@ -140,6 +140,10 @@ final class ScriptedChannel: AxoMessageChannel, @unchecked Sendable {
       .compactMap { ($0.params["cursor"] as? NSNumber)?.int64Value }
   }
 
+  func requestsSent(for method: String) -> Int {
+    lock.withLock { sent.compactMap(ScriptedRequest.init).filter { $0.method == method }.count }
+  }
+
   func closes(of session: SessionID) -> Int {
     notices.filter { $0.method == "axo.client.session.close" && $0.params["sessionId"] as? String == session.rawValue }.count
   }

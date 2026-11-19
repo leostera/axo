@@ -2,6 +2,16 @@ import XCTest
 
 final class AxoMobileAgentPickerTests: XCTestCase {
   @MainActor
+  func testAgentDiscoveryRecoversWithoutAskingThePersonToRetry() {
+    let app = XCUIApplication()
+    app.launchEnvironment = ["AXO_PHONE_PREVIEW": "1", "AXO_MOBILE_PREVIEW_AGENT_FAILURES": "2"]
+    app.launch()
+    XCTAssertTrue(app.buttons["agent-picker"].waitForExistence(timeout: 20))
+    XCTAssertFalse(app.buttons["Could not check agents. Tap to retry."].exists)
+    XCTAssertEqual(app.staticTexts["conversation-title"].label, "New chat")
+  }
+
+  @MainActor
   func testHostsShowOSMarksAndMacHardware() {
     let app = XCUIApplication()
     app.launchEnvironment = ["AXO_PHONE_PREVIEW": "1", "AXO_PHONE_PREVIEW_HOSTS": "1", "AXO_MOBILE_PREVIEW_OS_LOGOS": "1"]
