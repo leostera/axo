@@ -4,6 +4,14 @@ What changed in each published version of Axo. Every publish raises the minor ve
 
 ## Unreleased
 
+## 0.79 (Mac app build 351, axod 95)
+
+### Fixed
+
+- Interrupted Pi work continues after managed restarts using the installed Pi’s supported hidden-message API. The runtime notice stays out of human chat rows; Stop, queued human work and uncertain-action safeguards remain unchanged. No private Pi SDK patch is required.
+- Session title-setting is callable through codemode, without a separate tool declaration. Naming guidance covers first requests, materially changed focus and hidden restart turns.
+- Typed mobile drafts and recognized speech are checkpointed locally per account and restored for review after relaunch, never automatically sent. Final transcript handoff does not duplicate words; another microphone tap cannot overwrite an unconsumed transcript. Cancel still discards the recording, not typed text. Attachments and raw audio are not newly persisted.
+
 ## 0.78 (Mac app build 350, axod 94)
 
 ### Fixed
