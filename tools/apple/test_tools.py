@@ -9,9 +9,24 @@ from pathlib import Path
 from common import Release, approved, exclusive_json, private_directory, source_sha, version_parts
 import install_mac
 import install_mobile
+from inspect_permissions import summarize
 
 
 class ToolBoundaries(unittest.TestCase):
+    def test_permission_owner_metadata_does_not_turn_a_denial_into_a_grant(self):
+        helper = Path("/Applications/Axo.app/Contents/Helpers/axod")
+        report = {"processId": 42, "developerTools": "notGranted", "credential": "never emit", "screenRecording": "future-state"}
+        value = summarize(report, str(helper), 42, helper)
+        self.assertTrue(value["installedHelperMatchesRunningPath"])
+        self.assertTrue(value["daemonIsResponsibleProcess"])
+        self.assertEqual(value["permissions"], {"developerTools": "notGranted", "screenRecording": "unknown"})
+        self.assertNotIn("credential", json.dumps(value))
+        value = summarize(report, None, None, helper)
+        self.assertIsNone(value["daemonIsResponsibleProcess"])
+        self.assertIsNone(value["installedHelperMatchesRunningPath"])
+        with self.assertRaises(RuntimeError):
+            summarize({"processId": True}, None, None, helper)
+
     def test_source_and_versions_are_parsed_without_coercing_bad_values(self):
         self.assertEqual(source_sha("a" * 40), "a" * 40)
         for value in ["main", "a" * 7, "A" * 40, "../source"]:

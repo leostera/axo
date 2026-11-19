@@ -30,7 +30,7 @@ sh_test(
     name = "python_test",
     srcs = ["test_python.sh"],
     args = ["$(rootpath :test_tools.py)"],
-    data = ["test_tools.py", "common.py", "install_mac.py", "install_mobile.py", "release_gates.py"],
+    data = ["test_tools.py", "common.py", "install_mac.py", "install_mobile.py", "release_gates.py", "inspect_permissions.py"],
 )
 
 node_test(

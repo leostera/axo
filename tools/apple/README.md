@@ -11,6 +11,10 @@ bazel build //tools/apple:typecheck
 
 The tests exercise parsing, read-only defaults, scoped-approval requirements, source/version boundaries, private state directories and exclusive attempt fences. They do not prove Apple acceptance or physical-device delivery.
 
+## Inspect the permission owner
+
+`python3 tools/apple/inspect_permissions.py` reads the running daemon's report, verifies whether its executable matches the installed helper and reports whether it is its own responsible process. Unavailable ownership metadata stays unknown. It never reads or edits TCC databases, grants access, resets permissions or restarts a process. A GUI toggle is not proof that this running code identity is admitted.
+
 ## Prepare exact-source evidence
 
 From clean committed main:
