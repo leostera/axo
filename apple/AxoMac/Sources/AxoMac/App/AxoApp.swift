@@ -287,7 +287,7 @@ struct AxoApp<Launch: AxoLaunchMode>: App {
       }
     }
 
-    Window("Axo Settings", id: "settings") {
+    Window("Settings", id: "settings") {
       SettingsView(
         daemon: daemon,
         sessions: sessions,

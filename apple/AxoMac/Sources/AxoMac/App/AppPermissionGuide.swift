@@ -7,9 +7,12 @@ import SwiftUI
 @MainActor
 final class PermissionDragTile: NSView, NSDraggingSource {
   let executable: URL
+  private let icon: NSImage
   private var down: NSEvent?
   init(executable: URL) {
     self.executable = executable
+    // The preview can be friendly without changing the file/identity granted by macOS.
+    icon = NSApplication.shared.applicationIconImage ?? NSWorkspace.shared.icon(forFile: executable.path)
     super.init(frame: NSRect(x: 0, y: 0, width: 320, height: 44))
     setAccessibilityLabel("Drag axod into the permission list")
   }
@@ -19,7 +22,7 @@ final class PermissionDragTile: NSView, NSDraggingSource {
   override func draw(_ dirtyRect: NSRect) {
     NSColor.controlBackgroundColor.setFill()
     NSBezierPath(roundedRect: bounds, xRadius: 8, yRadius: 8).fill()
-    NSWorkspace.shared.icon(forFile: executable.path).draw(in: NSRect(x: 10, y: 6, width: 32, height: 32))
+    icon.draw(in: NSRect(x: 10, y: 6, width: 32, height: 32))
     ("axod — Axo’s background service" as NSString).draw(at: NSPoint(x: 52, y: 14),
       withAttributes: [.font: NSFont.systemFont(ofSize: 12, weight: .semibold), .foregroundColor: NSColor.labelColor])
   }
@@ -27,10 +30,15 @@ final class PermissionDragTile: NSView, NSDraggingSource {
   override func mouseDragged(with event: NSEvent) {
     guard let down, hypot(event.locationInWindow.x - down.locationInWindow.x,
       event.locationInWindow.y - down.locationInWindow.y) >= 3 else { return }
-    let item = NSDraggingItem(pasteboardWriter: executable as NSURL)
-    item.setDraggingFrame(bounds, contents: NSWorkspace.shared.icon(forFile: executable.path))
+    let item = fileDragItem()
     beginDraggingSession(with: [item], event: down, source: self).animatesToStartingPositionsOnCancelOrFail = true
     self.down = nil
+  }
+  /// Keep the preview image independent of the file whose OS permission is being granted.
+  func fileDragItem() -> NSDraggingItem {
+    let item = NSDraggingItem(pasteboardWriter: executable as NSURL)
+    item.setDraggingFrame(bounds, contents: icon)
+    return item
   }
   func draggingSession(_ session: NSDraggingSession,
     sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation { .copy }
@@ -53,11 +61,12 @@ struct PermissionGuideView: View {
         Spacer()
         Button(action: close) { Image(systemName: "xmark") }.buttonStyle(.plain).help("Close guide")
       }
-      Text("Drag axod into the list, then turn it on.")
+      Text("Drag this installed copy of axod into the list, then turn it on.")
         .font(.callout).foregroundStyle(.secondary)
       PermissionTile(executable: executable).frame(height: 44)
       HStack {
-        Text("Updates when macOS confirms access.").font(.caption).foregroundStyle(.secondary)
+        Text("Checks the running axod, not Axo.app. If an older axod entry is already enabled, remove that entry in System Settings and add this installed copy. Axo never changes permissions for you.")
+        .font(.caption).foregroundStyle(.secondary)
         Spacer()
         Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([executable]) }
           .controlSize(.small)
