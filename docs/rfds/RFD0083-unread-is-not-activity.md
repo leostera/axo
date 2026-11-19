@@ -1,7 +1,7 @@
 # RFD0083 - Axo: unread is not activity
 
 - Feature Name: `unread-is-not-activity`
-- Status: Implemented; not released
+- Status: Implemented
 - Author: leostera
 - Start Date: 2026-11-19
 - Document Type: Policy

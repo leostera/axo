@@ -1,7 +1,7 @@
 # RFD0084 - Axo: viewed Session group retention
 
 - Feature Name: `viewed-session-group-retention`
-- Status: Implemented; not released
+- Status: Implemented
 - Author: leostera
 - Start Date: 2026-11-19
 - Document Type: Policy

@@ -4,6 +4,8 @@ What changed in each published version of Axo. Every publish raises the minor ve
 
 ## Unreleased
 
+## 0.80 (Mac app build 352, axod 96)
+
 ### Added
 
 - Mac Zen mode hides the sidebar and its divider completely. Toggle it from View, the command palette, or ⌃⌘Z. Leaving Zen restores the previous expanded/collapsed sidebar preference.

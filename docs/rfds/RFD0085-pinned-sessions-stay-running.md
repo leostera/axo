@@ -1,7 +1,7 @@
 # RFD0085 - Axo: pinned Sessions stay running
 
 - Feature Name: `pinned-sessions-stay-running`
-- Status: Implemented; not released
+- Status: Implemented
 - Author: leostera
 - Start Date: 2026-11-19
 - Document Type: Policy
