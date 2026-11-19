@@ -70,7 +70,7 @@ public partial class MainWindow
         switch (button.Tag)
         {
             case "Axo": Add("Settings…", ShowSettings, "Ctrl+,"); menu.Items.Add(new Separator()); Add("Quit Axo", Quit, "Ctrl+Q"); break;
-            case "Terminal": Add("New Workspace…", OpenFolder, "Ctrl+N"); Add("New Session", ChooseNewSession, "Ctrl+Shift+N"); menu.Items.Add(new Separator()); Add("Split Right", OpenTerminal, "Ctrl+Shift+D", selected is not null); Add("Split Down", SplitDown, "Ctrl+D", selected is not null); Add("Close Terminal", CloseFocusedTerminal, "Ctrl+W", selected is not null); Add("Open External Terminal", OpenExternalTerminal, "", selected is not null); menu.Items.Add(new Separator()); Add("Session", ShowSessionMenu, "", selected is not null); break;
+            case "Terminal": Add("New Session…", OpenFolder, "Ctrl+N"); Add("New Session in Recent Folder", ChooseNewSession, "Ctrl+Shift+N"); menu.Items.Add(new Separator()); Add("Split Right", OpenTerminal, "Ctrl+Shift+D", selected is not null); Add("Split Down", SplitDown, "Ctrl+D", selected is not null); Add("Close Terminal", CloseFocusedTerminal, "Ctrl+W", selected is not null); Add("Open External Terminal", OpenExternalTerminal, "", selected is not null); menu.Items.Add(new Separator()); Add("Session", ShowSessionMenu, "", selected is not null); break;
             case "View": Add("Command Palette…", ShowPalette, "Ctrl+Shift+P"); Add("Toggle Sidebar", ToggleSidebar, "Ctrl+B"); Add("Close Terminal Pane", CloseTerminal, "", selected is not null); break;
         }
         menu.PlacementTarget = button; menu.IsOpen = true;
@@ -93,10 +93,22 @@ public partial class MainWindow
     async void OpenExternalTerminal(object sender, RoutedEventArgs e) { if (selected is null) return; try { await daemon.CallAsync("axo.terminal.open", new { sessionId = selected }); } catch (Exception error) { ShowError(error.Message); } }
     void ChooseNewSession(object sender, RoutedEventArgs e)
     {
-        var workspaces = (WorkspacePicker.ItemsSource as IEnumerable<WorkspaceView>)?.ToArray() ?? [];
-        if (workspaces.Length == 0) { OpenFolder(sender, e); return; }
-        var menu = new ContextMenu(); foreach (var w in workspaces) { var item = new MenuItem { Header = w.Name }; item.Click += (_, _) => { WorkspacePicker.SelectedItem = w; NewSession(sender, e); }; menu.Items.Add(item); }
-        menu.PlacementTarget = AppMenu; menu.IsOpen = true;
+        var folders = allSessions.Select(session => session.Directory)
+            .Distinct(StringComparer.OrdinalIgnoreCase).Order(StringComparer.OrdinalIgnoreCase).ToArray();
+        if (folders.Length == 0) { OpenFolder(sender, e); return; }
+        var menu = new ContextMenu();
+        foreach (var folder in folders)
+        {
+            var item = new MenuItem { Header = folder, ToolTip = folder };
+            item.Click += async (_, _) =>
+            {
+                try { await CreateSessionAsync(folder); }
+                catch (Exception error) { ShowError(error.Message); }
+            };
+            menu.Items.Add(item);
+        }
+        menu.PlacementTarget = AppMenu;
+        menu.IsOpen = true;
     }
     void ShowHostMenu(object sender, RoutedEventArgs e)
     {

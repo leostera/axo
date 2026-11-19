@@ -125,18 +125,11 @@ public partial class MainWindow : Window
         refreshing = true;
         try
         {
-            var workspaceResult = await daemon.CallAsync("axo.workspace.list");
-            var workspaces = workspaceResult.GetProperty("workspaces").EnumerateArray().Select(w => new WorkspaceView(
-                w.GetProperty("workspaceId").GetString()!, w.GetProperty("name").GetString()!, w.GetProperty("directoryPath").GetString()!)).ToList();
-            var oldWorkspace = (WorkspacePicker.SelectedItem as WorkspaceView)?.Id;
-            WorkspacePicker.ItemsSource = workspaces;
-            WorkspacePicker.SelectedItem = workspaces.FirstOrDefault(w => w.Id == oldWorkspace) ?? workspaces.FirstOrDefault();
             var result = await daemon.CallAsync("axo.session.list");
             allSessions = result.GetProperty("sessions").EnumerateArray().Select(SessionView.From).ToList();
             foreach(var item in result.GetProperty("sessions").EnumerateArray()) if(item.GetProperty("id").GetString()==selected) await EmbeddedTerminal.SynchronizeAsync(item);
             FilterSessions();
             if (selected is null && Sessions.Count > 0) SessionList.SelectedItem = Sessions[0];
-            NewSessionButton.IsEnabled = workspaces.Count > 0;
         }
         finally { refreshing = false; }
     }
@@ -157,12 +150,6 @@ public partial class MainWindow : Window
         Sessions.Clear();
         foreach (var item in filtered) Sessions.Add(item);
         SessionList.SelectedItem = Sessions.FirstOrDefault(s => s.Id == previous);
-    }
-
-    void OnWorkspaceChanged(object sender, SelectionChangedEventArgs e)
-    {
-        if (!refreshing) FilterSessions();
-        if (!refreshing && SessionList.SelectedItem is null) SessionList.SelectedItem = Sessions.FirstOrDefault();
     }
 
     async void OnSessionChanged(object sender, SelectionChangedEventArgs e)
@@ -395,34 +382,23 @@ public partial class MainWindow : Window
 
     async void OpenFolder(object sender, RoutedEventArgs e)
     {
-        var picker = new OpenFolderDialog { Title = "Open a workspace in Axo" };
+        var picker = new OpenFolderDialog { Title = "Choose a Session folder" };
         if (picker.ShowDialog(this) != true) return;
-        var creation = new WorkspaceNameSheet(picker.FolderName) { Owner = this };
+        var creation = new SessionNameSheet(picker.FolderName) { Owner = this };
         if (creation.ShowDialog() != true) return;
         try
         {
             HideError();
-            var folder = creation.Directory;
-            var name = creation.WorkspaceName;
-            var result = await daemon.CallAsync("axo.workspace.create", new { name, directoryPath = folder });
-            await RefreshCatalogAsync();
-            var workspace = result.GetProperty("workspace").GetProperty("workspaceId").GetString();
-            WorkspacePicker.SelectedValue = workspace; FilterSessions();
-            SessionList.SelectedItem = Sessions.FirstOrDefault(s => s.Id == result.GetProperty("session").GetProperty("id").GetString());
+            await CreateSessionAsync(creation.Directory, creation.SessionName);
         }
         catch (Exception error) { ShowError(error.Message); }
     }
 
-    async void NewSession(object sender, RoutedEventArgs e)
+    async Task CreateSessionAsync(string folder, string? name = null)
     {
-        if (WorkspacePicker.SelectedItem is not WorkspaceView workspace) return;
-        try
-        {
-            var session = await daemon.CallAsync("axo.workspace.session.create", new { workspaceId = workspace.Id });
-            await RefreshCatalogAsync();
-            SessionList.SelectedItem = Sessions.First(s => s.Id == session.GetProperty("id").GetString());
-        }
-        catch (Exception error) { ShowError(error.Message); }
+        var session = await daemon.CallAsync("axo.session.create", new { folder, name, agent = "codex" });
+        await RefreshCatalogAsync();
+        SessionList.SelectedItem = Sessions.First(s => s.Id == session.GetProperty("id").GetString());
     }
 
     async void Send(object sender, RoutedEventArgs e) => await SendAsync();
@@ -539,11 +515,9 @@ public partial class MainWindow : Window
     void HideError() { ErrorBanner.Visibility = Visibility.Collapsed; }
 }
 
-public sealed record WorkspaceView(string Id, string Name, string Directory);
 public sealed class SessionView : INotifyPropertyChanged
 {
     public required string Id { get; init; }
-    public required string WorkspaceId { get; init; }
     public required string Directory { get; init; }
     string name = "", status = "ready";
     public string Name { get => name; set { name = value; Changed(); } }
@@ -559,7 +533,7 @@ public sealed class SessionView : INotifyPropertyChanged
     public Brush StatusBrush => Status switch { "working" => SystemColors.HighlightBrush, "needsAttention" => Brushes.Goldenrod, "starting" or "unavailable" => SystemColors.GrayTextBrush, _ => Brushes.ForestGreen };
     public string Tooltip => $"{Name}\n{Directory}\n{StatusLabel}";
     public static string ReadableStatus(string? status) => status == "needsAttention" ? "needs attention" : status ?? "ready";
-    public static SessionView From(JsonElement s) => new() { Id = s.GetProperty("id").GetString()!, WorkspaceId = s.GetProperty("workspaceId").GetString()!, Directory = s.GetProperty("initialPwd").GetString()!, Name = s.GetProperty("name").GetString()!, Status = s.GetProperty("status").GetString() ?? "ready", LastActive = s.TryGetProperty("lastMessageAt", out var at) && at.ValueKind == JsonValueKind.Number ? at.GetInt64() : s.GetProperty("createdAt").GetInt64(), Glyph = s.TryGetProperty("emoji", out var emoji) && emoji.ValueKind == JsonValueKind.String ? emoji.GetString()! : "✧" };
+    public static SessionView From(JsonElement s) => new() { Id = s.GetProperty("id").GetString()!, Directory = s.GetProperty("folder").GetString()!, Name = s.GetProperty("name").GetString()!, Status = s.GetProperty("status").GetString() ?? "ready", LastActive = s.TryGetProperty("lastMessageAt", out var at) && at.ValueKind == JsonValueKind.Number ? at.GetInt64() : s.GetProperty("createdAt").GetInt64(), Glyph = s.TryGetProperty("emoji", out var emoji) && emoji.ValueKind == JsonValueKind.String ? emoji.GetString()! : "✧" };
     public void Update(SessionView other) { Name = other.Name; Status = other.Status; LastActive = other.LastActive; Pinned = other.Pinned; Changed(nameof(Age)); Changed(nameof(Group)); }
     public event PropertyChangedEventHandler? PropertyChanged;
     void Changed([CallerMemberName] string? property = null) => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(property));

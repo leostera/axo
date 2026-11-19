@@ -117,8 +117,8 @@ try
     daemon = Start(); await Ready();
     if (live)
     {
-        var project = await client.CallAsync("axo.workspace.create", new { name = "Live Codex smoke test", directoryPath = workspace });
-        var sessionId = project.GetProperty("session").GetProperty("id").GetString()!;
+        var project = await client.CallAsync("axo.session.create", new { name = "Live Codex smoke test", folder = workspace, agent = "codex" });
+        var sessionId = project.GetProperty("id").GetString()!;
         var snapshot = await client.CallAsync("axo.session.open", new { sessionId });
         var savedThread = snapshot.GetProperty("threadId").GetString();
         Console.WriteLine("Real Codex thread opened.");
@@ -180,11 +180,13 @@ try
     }
     var subscription=(await client.CallAsync("axo.session.subscribe",new{includeTerminalOutput=false})).GetProperty("subscriptionId").GetString();
     var change=client.CallAsync("axo.session.events.next",new{subscriptionId=subscription,timeoutMs=10000,maxEvents=128});
-    var created = await client.CallAsync("axo.workspace.create", new { name = "Fixture workspace", directoryPath = workspace });
-    Assert((await change).GetProperty("events").EnumerateArray().Any(e=>e.GetProperty("type").GetString() is "session.snapshot" or "workspace.changed"),"catalog long-poll wakes on workspace creation");
-    var id = created.GetProperty("session").GetProperty("id").GetString()!;
-    var workspaceId = created.GetProperty("workspace").GetProperty("workspaceId").GetString()!;
-    Assert(created.GetProperty("session").GetProperty("initialPwd").GetString() == workspace, "workspace paths preserve spaces and Unicode");
+    var created = await client.CallAsync("axo.session.create", new { name = "Fixture session", folder = workspace, agent = "codex" });
+    Assert((await change).GetProperty("events").EnumerateArray().Any(e=>e.GetProperty("type").GetString() == "session.snapshot"),"catalog long-poll wakes on Session creation");
+    var id = created.GetProperty("id").GetString()!;
+    Assert(created.GetProperty("folder").GetString() == workspace, "Session folders preserve spaces and Unicode");
+    Assert(created.GetProperty("agent").GetString() == "codex", "Session records preserve the canonical Codex agent identity");
+    Assert(await Fails("axo.workspace.create", new { name = "Obsolete workspace", directoryPath = workspace }), "obsolete workspace creation is not exposed");
+    Assert(await Fails("axo.session.create", new { folder = workspace, agent = "pi" }), "unsupported agents fail explicitly rather than silently becoming Codex");
     var opened = await client.CallAsync("axo.session.open", new { sessionId = id });
     var threadId = opened.GetProperty("threadId").GetString();
     Assert(!string.IsNullOrEmpty(threadId), "session opens a real child process and records its thread ID");
@@ -240,7 +242,9 @@ try
     Assert(relay.Messages(id).Contains("Echo: hello\nsecond line"),"Codex messages upload through the existing relay transcript format");
     var target=new{hostId=relay.Registration.GetProperty("hostId").GetString(),hostGeneration=relay.Registration.GetProperty("hostGeneration").GetString()};
     var remote=await relay.CallAsync("axo.remote.workspace.list",new{target});
-    Assert(remote.GetProperty("result").GetProperty("workspaces")[0].GetProperty("workspaceId").GetString()==workspaceId,"remote clients can list Windows workspaces");
+    Assert(remote.TryGetProperty("error", out _), "obsolete remote workspace RPCs are not restored");
+    await relay.WaitAsync(()=>relay.Manifest.GetProperty("sessions").EnumerateArray().Any(s=>s.GetProperty("sessionId").GetString()==id && s.GetProperty("metadata").GetProperty("folderName").GetString()==Path.GetFileName(workspace)), "Session folder metadata was not synced through the current relay catalog");
+    Assert(true, "remote catalog receives folder-based Session metadata through shared sync");
     var commandId=Guid.NewGuid().ToString();
     remote=await relay.CallAsync("axo.remote.session.prompt",new{target,sessionId=id,text="relay hello",commandId});
     Assert(remote.TryGetProperty("result",out _),"relay routes a remote prompt to the Codex agent");
@@ -311,8 +315,9 @@ try
     Assert(list.GetProperty("sessions").GetArrayLength() == 0, "closing session archives it and stops its agent");
     await client.CallAsync("axo.session.reopen", new { sessionId = id });
     Assert((await Messages(id)).Contains("flood complete"), "reopening archived session retains history");
-    var second = await client.CallAsync("axo.workspace.session.create", new { workspaceId });
+    var second = await client.CallAsync("axo.session.create", new { like = id, agent = "codex" });
     Assert(second.GetProperty("id").GetString() != id, "sessions receive distinct Axo UUIDs");
+    Assert(second.GetProperty("folder").GetString() == workspace, "creating a Session like another preserves its folder");
     // A genuine native PowerShell window is opened, then closed by session shutdown.
     var terminal = await client.CallAsync("axo.terminal.open", new { sessionId = id });
     Assert(terminal.GetProperty("processId").GetInt32() > 0, "daemon opens an interactive terminal in the workspace");

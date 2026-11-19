@@ -28,6 +28,7 @@ rust_library(
 
     ] + select({
         "@platforms//os:macos": ["@crates//:security-framework"],
+        "@platforms//os:windows": ["@crates//:windows-sys"],
         "//conditions:default": [],
     }),
 )

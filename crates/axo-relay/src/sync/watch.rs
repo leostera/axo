@@ -147,9 +147,9 @@ mod tests {
 
     fn directory(name: &str) -> PathBuf {
         let directory = std::env::temp_dir().join(format!(
-            "axo-watch-{name}-{}-{:?}",
+            "axo-watch-{name}-{}-{}",
             std::process::id(),
-            std::time::Instant::now()
+            axo_protocol::new_uuid_v4().unwrap()
         ));
         std::fs::create_dir_all(&directory).unwrap();
         directory

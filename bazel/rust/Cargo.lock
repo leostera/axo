@@ -1472,6 +1472,7 @@ dependencies = [
  "p256",
  "platform-linux",
  "platform-macos",
+ "platform-windows",
  "rand_core 0.9.5",
  "reqwest",
  "rusqlite",
@@ -1488,6 +1489,7 @@ dependencies = [
  "tokio-tungstenite 0.30.0",
  "tungstenite 0.30.0",
  "url",
+ "windows 0.58.0",
  "windows-sys 0.61.2",
  "zbus",
  "zeroize",
@@ -4125,6 +4127,31 @@ dependencies = [
  "tokio-tungstenite 0.24.0",
  "tracing",
  "uuid",
+ "zeroize",
+]
+
+[[package]]
+name = "platform-windows"
+version = "0.38.0"
+source = "git+https://github.com/trycua/cua?rev=2b7bd1b9046b63079f684810e8729a84f967a128#2b7bd1b9046b63079f684810e8729a84f967a128"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "base64 0.22.1",
+ "clipboard-rs",
+ "cua-driver-contract",
+ "cua-driver-core",
+ "cursor-overlay",
+ "getrandom 0.4.3",
+ "image",
+ "pip-preview",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tiny-skia",
+ "tokio",
+ "tracing",
+ "windows 0.58.0",
  "zeroize",
 ]
 

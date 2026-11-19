@@ -33,7 +33,13 @@ pub(super) fn answer(host: &Host, request: Value) -> Option<Value> {
         None
     };
     let params = request.get("params").cloned().unwrap_or_else(|| json!({}));
-    let result = dispatch_remote_call(name, &params, host, &host.id, &host.generation);
+    let result = dispatch_remote_call(
+        name,
+        &params,
+        host,
+        &host.identity.host_id,
+        &host.identity.host_generation,
+    );
     Some(match result {
         Ok(result) => json!({"jsonrpc":"2.0","id":id,"result":result}),
         Err((code, message)) => {
@@ -65,18 +71,10 @@ fn dispatch_remote_call(
 
     match method {
         "axo.remote.session.create" => {
-            let request = parsed!(TargetParams);
+            let request = parsed!(CreateSessionParams);
             target_ok!(request.target);
             let session = sessions
-                .remote_create_session(&current_timestamp())
-                .map_err(map_operation_error)?;
-            Ok(RemoteResult::Session { session })
-        }
-        "axo.remote.workspace.session.create" => {
-            let request = parsed!(WorkspaceSessionTargetParams);
-            target_ok!(request.target);
-            let session = sessions
-                .remote_create_workspace_session(&request.workspace_id, &current_timestamp())
+                .remote_create_session(request.session, &current_timestamp())
                 .map_err(map_operation_error)?;
             Ok(RemoteResult::Session { session })
         }
@@ -91,12 +89,6 @@ fn dispatch_remote_call(
                 session_id: request.session_id,
                 replacement,
             })
-        }
-        "axo.remote.workspace.list" => {
-            let request = parsed!(TargetParams);
-            target_ok!(request.target);
-            let workspaces = sessions.remote_workspaces().map_err(map_operation_error)?;
-            Ok(RemoteResult::Workspaces { workspaces })
         }
         "axo.remote.session.rename" => {
             let request = parsed!(RenameSessionParams);
@@ -172,7 +164,8 @@ fn dispatch_remote_call(
                 let source = source
                     .as_ref()
                     .ok_or((-32003, "The host is not linked for attachments"))?;
-                axo_relay::assets::fetch_all(source, &request.attachments)
+                tokio::runtime::Handle::current()
+                    .block_on(axo_relay::assets::fetch_all(source, &request.attachments))
                     .map_err(|_| (-32010, "An attachment could not be fetched or verified"))?
             };
             sessions
@@ -228,9 +221,12 @@ fn dispatch_remote_call(
         "axo.remote.session.stop" => {
             let request = parsed!(StopParams);
             target_ok!(request.target);
-            let stop =
-                axo_relay::StopTarget::new(request.turn_id, request.seen, request.command_ids)
-                    .map_err(|_| (-32602, "Invalid params"))?;
+            let stop = axo_protocol::commands::StopTarget::new(
+                request.turn_id,
+                request.seen,
+                request.command_ids,
+            )
+            .map_err(|_| (-32602, "Invalid params"))?;
             let stopped = sessions
                 .remote_stop_pi_turn(request.session_id, &stop)
                 .map_err(map_operation_error)?;
@@ -302,9 +298,6 @@ pub(super) enum RemoteResult {
     Saved {
         saved: bool,
     },
-    Workspaces {
-        workspaces: Vec<axo_protocol::RemoteWorkspace>,
-    },
     InputAccepted {
         accepted: bool,
         sequence: u64,
@@ -350,7 +343,7 @@ pub(super) struct PromptParams {
     pub(super) session_id: SessionId,
     pub(super) text: String,
     #[serde(default)]
-    pub(super) command_id: Option<axo_relay::CommandId>,
+    pub(super) command_id: Option<axo_protocol::commands::CommandId>,
     #[serde(default)]
     pub(super) attachments: axo_protocol::asset::Attachments,
     /// When a working Pi takes it (RFD0033); a follow-up when absent.
@@ -375,11 +368,11 @@ pub(super) struct StopParams {
     pub(super) target: HostRef,
     pub(super) session_id: SessionId,
     #[serde(default)]
-    pub(super) turn_id: Option<axo_relay::TurnId>,
+    pub(super) turn_id: Option<axo_protocol::commands::EntryId>,
     #[serde(default)]
-    pub(super) seen: Option<axo_relay::TurnId>,
+    pub(super) seen: Option<axo_protocol::commands::EntryId>,
     #[serde(default)]
-    pub(super) command_ids: Vec<axo_relay::CommandId>,
+    pub(super) command_ids: Vec<axo_protocol::commands::CommandId>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -387,12 +380,6 @@ pub(super) struct StopParams {
 pub(super) struct HostRef {
     pub(super) host_id: String,
     pub(super) host_generation: String,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(super) struct TargetParams {
-    pub(super) target: HostRef,
 }
 
 #[derive(Debug, Deserialize)]
@@ -412,9 +399,11 @@ pub(super) struct RenameSessionParams {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(super) struct WorkspaceSessionTargetParams {
-    pub(super) target: HostRef,
-    pub(super) workspace_id: String,
+struct CreateSessionParams {
+    target: HostRef,
+    // The shared parser owns location/name/agent; the outer parser rejects leftover fields.
+    #[serde(flatten)]
+    session: axo_protocol::rpc::CreateSession,
 }
 
 #[derive(Debug, Deserialize)]
@@ -459,11 +448,13 @@ mod tests {
     fn host() -> Host {
         Host {
             backend: std::sync::Weak::new(),
-            id: "fixture".into(),
-            generation: "current".into(),
-            prompt_lock: std::sync::Mutex::new(()),
-            prompts: AtomicUsize::new(0),
-            assets: std::sync::Mutex::new(None),
+            identity: axo_relay::HostIdentity {
+                host_id: "fixture".into(),
+                host_generation: "current".into(),
+            },
+            prompt_lock: std::sync::Arc::new(std::sync::Mutex::new(())),
+            prompts: std::sync::Arc::new(AtomicUsize::new(0)),
+            assets: std::sync::Arc::new(std::sync::Mutex::new(None)),
         }
     }
     #[test]
@@ -475,11 +466,30 @@ mod tests {
         )
         .unwrap();
         assert_eq!(local["error"]["code"], -32601);
-        let stale=answer(&host,json!({"id":2,"method":"axo.remote.workspace.list","params":{"target":{"hostId":"fixture","hostGeneration":"old"}}})).unwrap();
+        let stale=answer(&host,json!({"id":2,"method":"axo.remote.session.create","params":{"target":{"hostId":"fixture","hostGeneration":"old"},"agent":"codex"}})).unwrap();
         assert_eq!(stale["error"]["code"], -32002);
-        let unknown=answer(&host,json!({"id":3,"method":"axo.remote.workspace.list","params":{"target":{"hostId":"fixture","hostGeneration":"current"},"extra":true}})).unwrap();
+        let unknown=answer(&host,json!({"id":3,"method":"axo.remote.session.create","params":{"target":{"hostId":"fixture","hostGeneration":"current"},"extra":true}})).unwrap();
         assert_eq!(unknown["error"]["code"], -32602);
     }
+    #[test]
+    fn remote_creation_reuses_the_shared_location_and_agent_parser() {
+        let folder = std::env::temp_dir();
+        let request = json!({"target":{"hostId":"fixture","hostGeneration":"current"},
+            "folder":folder,"name":"Remote fixture","agent":"codex"});
+        let parsed: CreateSessionParams = serde_json::from_value(request.clone()).unwrap();
+        assert_eq!(parsed.session.agent, axo_protocol::agent::AgentKind::Codex);
+        assert_eq!(
+            parsed.session.location,
+            axo_protocol::rpc::SessionLocation::InFolder(folder)
+        );
+        let mut unknown = request.clone();
+        unknown["extra"] = json!(true);
+        assert!(serde_json::from_value::<CreateSessionParams>(unknown).is_err());
+        let mut both = request;
+        both["like"] = json!(SessionId::new_v4().unwrap());
+        assert!(serde_json::from_value::<CreateSessionParams>(both).is_err());
+    }
+
     #[test]
     fn notifications_do_not_run_and_prompt_capacity_is_owned_by_the_host() {
         let host = host();

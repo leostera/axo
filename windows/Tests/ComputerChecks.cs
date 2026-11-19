@@ -78,18 +78,21 @@ static class ComputerChecks
             for (var n = 0; n < 100 && !File.Exists(ready); n++) { if (fixture.HasExited) throw new Exception("Computer fixture exited"); await Task.Delay(50); }
             using var document = JsonDocument.Parse(await File.ReadAllTextAsync(ready));
             int pid = document.RootElement.GetProperty("pid").GetInt32(); long window = document.RootElement.GetProperty("window_id").GetInt64();
-            async Task<JsonElement> Read(bool screenshot = false) => await mcp.Tool("computer", new { tool = "get_window_state", args = new { pid, window_id = window, include_screenshot = screenshot } });
+            async Task<JsonElement> Read(bool screenshot = false) => await mcp.Tool("computer", new { tool = "get_window_state", args = new { pid, window_id = window, include_screenshot = screenshot, tree_format = "both" } });
             var state = await Read();
             assert(!IsError(state) && state.ToString().Contains("Fixture input"), "real UI Automation reads only the owned WPF fixture's window");
             var image = await Read(true);
             assert(!IsError(image) && image.GetProperty("content").EnumerateArray().Any(c => c.GetProperty("type").GetString() == "image" && c.GetProperty("data").GetString()!.Length > 100), "native Windows window capture returns an inline MCP image");
 
             var token = FindToken(image, "Fixture input");
+            assert(token.Length != 0, "an explicit structured read returns observed element tokens");
             var set = await mcp.Tool("computer", new { tool = "set_value", args = new { pid, window_id = window, session = "agent-supplied-label", element_token = token, value = "Axo Windows UIA verified" } });
             if (IsError(set) || token.Length == 0) { Console.WriteLine("Window structure: " + image.GetProperty("structuredContent")); Console.WriteLine("Set result: " + set); }
             assert(!IsError(set) && (await Read()).ToString().Contains("Axo Windows UIA verified"), "native set_value changes an observed fixture field and a fresh read verifies it");
-            var stale = await mcp.Tool("computer", new { tool = "set_value", args = new { pid, window_id = window, element_token = "missing-snapshot:99999", value = "must not be written" } });
-            assert(IsError(stale) && !(await Read()).ToString().Contains("must not be written"), "unknown element tokens fail without changing the fixture");
+            var staleCall = mcp.Tool("computer", new { tool = "set_value", args = new { pid, window_id = window, element_token = "missing-snapshot:99999", value = "must not be written" } });
+            var unobserved = await Question(client);
+            await client.CallAsync("axo.elicitation.resolve", new { elicitationId = unobserved.GetProperty("id").GetString(), action = "decline" });
+            assert(IsError(await staleCall) && !(await Read()).ToString().Contains("must not be written"), "unobserved targets require person verification and a decline leaves the fixture untouched");
             state = await Read();
             var clicked = await mcp.Tool("computer", new { tool = "click", args = new { pid, window_id = window, element_token = FindToken(state, "Increment fixture") } });
             assert(!IsError(clicked) && (await Read()).ToString().Contains("Fixture count: 1"), "native element click invokes the owned fixture button and a fresh read verifies the result");
@@ -146,7 +149,7 @@ static class ComputerChecks
             await ParityChecks.SecureInput(client,relay,target,session,pid,window,ready,assert);
             remote=await relay.CallAsync("axo.remote.windows.settings.save",new{target,computerUseEnabled=false,codexFullAccess=true});
             assert(remote.TryGetProperty("error",out var permissionError)&&permissionError.GetProperty("code").GetInt32()==-32601&&(await client.CallAsync("axo.computer.status")).GetProperty("available").GetBoolean(),"account forwarding cannot reach local permission settings");
-            remote=await relay.CallAsync("axo.remote.workspace.list",new{target=new{hostId=relay.Registration.GetProperty("hostId").GetString(),hostGeneration="stale"}});
+            remote=await relay.CallAsync("axo.remote.session.create",new{target=new{hostId=relay.Registration.GetProperty("hostId").GetString(),hostGeneration="stale"},agent="codex"});
             assert(remote.TryGetProperty("error",out var staleHost)&&staleHost.GetProperty("code").GetInt32()==-32002,"host-owned dispatch rejects a stale relay generation before operating");
         }
         finally { if (!fixture.HasExited) { fixture.Kill(entireProcessTree: true); await fixture.WaitForExitAsync(); } }

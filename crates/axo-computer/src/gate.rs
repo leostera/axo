@@ -126,13 +126,13 @@ pub enum Verdict {
 /// this Mac's agents (through `axod mcp`, a proxy) and other Macs' scripts alike (RFD0028).
 /// `socket` is axod's, beside which Clef's runs. Blocks on the filesystem the first time: call
 /// it off the runtime.
-pub fn for_socket(socket: &Path) -> &'static Gate {
+pub fn for_socket(_socket: &Path) -> &'static Gate {
     static GATE: OnceLock<Gate> = OnceLock::new();
     GATE.get_or_init(|| {
         // Until the model files are downloaded, its answers are "unavailable" and the word list
         // alone decides; the first process to find them missing starts the download.
         #[cfg(not(windows))]
-        let judge = socket
+        let judge = _socket
             .parent()
             .and_then(Infer::beside_current_exe)
             .filter(|infer| infer.helper.exists())

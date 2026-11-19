@@ -2,23 +2,25 @@
 //! pi/3 is the relay's existing conversation interchange format. These files are
 //! projections of completed Codex messages, never a second agent or source of truth.
 use super::*;
-use axo_protocol::{
-    Event, LayoutNode, RemoteSessionSnapshot, RemoteWorkspace, SessionRecord, ShellId,
-};
+mod adapters;
+mod remote;
+use axo_protocol::commands::{CommandId, StopTarget};
+use axo_protocol::{Event, LayoutNode, RemoteSessionSnapshot, SessionRecord, ShellId};
 use axo_relay::{
-    AccountLink, ClientDelivery, CommandId, HostLink, HostLinkStore, ModelChoice,
-    PendingRedemption, PiKey, RelayHost, SessionMetadata, StopTarget, StoredSyncState, SyncSession,
+    AccountLink, ClientDelivery, Eviction, HostFuture, HostIdentity, HostLink, HostLinkStore,
+    ModelChoice, PendingRedemption, PiKey, RelayHost, RemoteAnswer, SessionMetadata,
+    StoredMetadata, SyncCursor, SyncSession, SyncStore,
 };
 use std::sync::Weak;
 use std::time::Duration;
 
+#[derive(Clone)]
 pub(super) struct Host {
     backend: Weak<Backend>,
-    id: String,
-    generation: String,
-    prompt_lock: Mutex<()>,
-    prompts: std::sync::atomic::AtomicUsize,
-    assets: Mutex<Option<axo_relay::assets::AssetSource>>,
+    identity: HostIdentity,
+    prompt_lock: Arc<Mutex<()>>,
+    prompts: Arc<std::sync::atomic::AtomicUsize>,
+    assets: Arc<Mutex<Option<axo_relay::assets::AssetSource>>>,
 }
 pub(super) struct Relay {
     pub host: Arc<Host>,
@@ -29,6 +31,19 @@ pub(super) struct Relay {
     pub link_lock: Mutex<()>,
 }
 impl Host {
+    /// Win32 and SQLite work never blocks the relay's async workers.
+    fn run_blocking<T: Send + 'static>(
+        &self,
+        work: impl FnOnce(Self) -> io::Result<T> + Send + 'static,
+    ) -> HostFuture<'static, io::Result<T>> {
+        let host = self.clone();
+        Box::pin(async move {
+            tokio::task::spawn_blocking(move || work(host))
+                .await
+                .map_err(io::Error::other)?
+        })
+    }
+
     fn backend(&self) -> io::Result<Arc<Backend>> {
         self.backend
             .upgrade()
@@ -41,7 +56,7 @@ impl Host {
     }
     fn snapshot(&self, value: Value, at: &str) -> io::Result<RemoteSessionSnapshot> {
         let record: SessionRecord = serde_json::from_value(value)?;
-        let mut result = RemoteSessionSnapshot::from_record(&record, &self.id, at);
+        let mut result = RemoteSessionSnapshot::from_record(&record, &self.identity.host_id, at);
         result.has_agent = true;
         Ok(result)
     }
@@ -51,11 +66,13 @@ impl Relay {
         let id = axo_store::load_or_create_host_id(&backend.database.lock().unwrap())?;
         let host = Arc::new(Host {
             backend: Arc::downgrade(backend),
-            id,
-            generation: axo_protocol::new_uuid_v4()?,
-            prompt_lock: Mutex::new(()),
-            prompts: std::sync::atomic::AtomicUsize::new(0),
-            assets: Mutex::new(None),
+            identity: HostIdentity {
+                host_id: id,
+                host_generation: axo_protocol::new_uuid_v4()?,
+            },
+            prompt_lock: Arc::new(Mutex::new(())),
+            prompts: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            assets: Arc::new(Mutex::new(None)),
         });
         let credentials = Arc::new(super::credentials::Credentials(
             backend.directory.join("credentials"),
@@ -63,6 +80,7 @@ impl Relay {
         let worker = axo_relay::RelayWorker::start(
             axo_relay::RelayDependencies {
                 host: host.clone(),
+                sync: host.clone(),
                 endpoint: endpoint.clone(),
                 links: host.clone(),
                 credentials: credentials.clone(),
@@ -82,14 +100,15 @@ impl Relay {
             link_lock: Mutex::new(()),
         })
     }
-    pub fn shutdown(&self) {
-        if let Some(mut worker) = self.worker.lock().unwrap().take() {
-            worker.shutdown();
+    pub async fn shutdown(&self) {
+        let worker = self.worker.lock().unwrap().take();
+        if let Some(mut worker) = worker {
+            worker.shutdown().await;
         }
     }
 }
-impl HostLinkStore for Host {
-    fn load_link(&self) -> io::Result<HostLink> {
+impl Host {
+    fn read_link(&self) -> io::Result<HostLink> {
         let b = self.backend()?;
         let stored = axo_store::load_host_link(&b.database.lock().unwrap())?;
         HostLink::new(
@@ -102,8 +121,16 @@ impl HostLinkStore for Host {
                 .map(|s| PendingRedemption::parse(s.credential_id, s.host_generation))
                 .transpose()?,
         )
+        .and_then(|link| {
+            let retired = stored
+                .retired
+                .into_iter()
+                .map(|item| AccountLink::parse(item.account_id, item.credential_id))
+                .collect::<io::Result<Vec<_>>>()?;
+            Ok(link.with_retired(retired))
+        })
     }
-    fn save_link(&self, link: &HostLink) -> io::Result<()> {
+    fn persist_link(&self, link: &HostLink) -> io::Result<()> {
         let b = self.backend()?;
         axo_store::store_host_link(
             &b.database.lock().unwrap(),
@@ -116,19 +143,21 @@ impl HostLinkStore for Host {
                     credential_id: s.credential_id().into(),
                     host_generation: s.host_generation().into(),
                 }),
+                retired: link
+                    .retired()
+                    .iter()
+                    .map(|s| axo_store::StoredAccountLink {
+                        account_id: s.account_id().into(),
+                        credential_id: s.credential_id().into(),
+                    })
+                    .collect(),
             },
         )
     }
 }
-impl RelayHost for Host {
+impl Host {
     fn set_asset_source(&self, source: Option<axo_relay::assets::AssetSource>) {
         *self.assets.lock().unwrap() = source;
-    }
-    fn host_id(&self) -> &str {
-        &self.id
-    }
-    fn host_generation(&self) -> &str {
-        &self.generation
     }
     fn publish_relay_status(&self, status: &axo_protocol::RelayStatus) {
         if let Ok(b) = self.backend() {
@@ -184,16 +213,7 @@ impl RelayHost for Host {
                 "Answers must be signed by your device.".into(),
             )
         })?;
-        let signed = axo_seal::answer_message(
-            id,
-            match answer {
-                axo_protocol::elicitation::ElicitationAnswer::Accept => "accept",
-                _ => "decline",
-            },
-            sealed
-                .as_ref()
-                .map(|s| (s.enc.as_str(), s.ciphertext.as_str())),
-        );
+        let signed = axo_seal::answer_message(id, answer, sealed.as_ref());
         if !axo_seal::verify_answer(&proof.key, &proof.signature, &signed) {
             return Err((
                 axo_protocol::elicitation::BAD_SIGNATURE,
@@ -249,6 +269,7 @@ impl RelayHost for Host {
     fn remote_computer(
         &self,
         request: &axo_relay::computer::ComputerParams,
+        cancelled: &std::sync::atomic::AtomicBool,
     ) -> Result<Value, (i64, String)> {
         let b = self.backend().map_err(|e| (-32000, e.to_string()))?;
         let result = b.computer.call(
@@ -264,12 +285,12 @@ impl RelayHost for Host {
                 confirm: request.confirm,
                 timeout_ms: request.timeout_ms,
             },
-            &std::sync::atomic::AtomicBool::new(false),
+            cancelled,
         );
         // The shared relay worker uploads inline images and projects attachments.
         Ok(result)
     }
-    fn sync_catalog(&self) -> io::Result<Vec<SyncSession>> {
+    fn read_sync_catalog(&self) -> io::Result<Vec<SyncSession>> {
         let b = self.backend()?;
         let db = b.database.lock().unwrap();
         let rows = axo_store::coding::catalog(&db)?;
@@ -279,11 +300,11 @@ impl RelayHost for Host {
         for row in rows {
             let id: SessionId = serde_json::from_value(row["id"].clone())?;
             let metadata: SessionMetadata = serde_json::from_value(json!({
-                "name":row["name"],"emoji":row["emoji"],"workspaceId":row["workspaceId"],"workspaceName":row["workspaceName"],
+                "name":row["name"],"emoji":row["emoji"],"folderName":axo_protocol::folder_name(Path::new(row["folder"].as_str().unwrap_or(""))),
                 "hasAgent":true,"createdAt":row["createdAt"],"lastMessageAt":row["lastMessageAt"],"archived":row["archived"]
             }))?;
             let created = row["createdAt"].as_i64().unwrap_or(0);
-            let mut lines = vec![json!({"type":"session","version":3,"id":id,"timestamp":axo_relay::utc_timestamp(created * 1000),"cwd":row["initialPwd"],"agent":"codex"}).to_string()];
+            let mut lines = vec![json!({"type":"session","version":3,"id":id,"timestamp":axo_relay::utc_timestamp(created * 1000),"cwd":row["folder"],"agent":"codex"}).to_string()];
             let mut cursor = 0;
             let mut parent = Value::Null;
             loop {
@@ -331,47 +352,33 @@ impl RelayHost for Host {
         }
         Ok(result)
     }
-    fn sync_states(&self) -> io::Result<Vec<StoredSyncState>> {
+    fn read_stored_metadata(&self) -> io::Result<Vec<StoredMetadata>> {
         let b = self.backend()?;
         Ok(axo_store::load_sync_states(&b.database.lock().unwrap())?
             .into_iter()
-            .map(|s| StoredSyncState {
+            .map(|s| StoredMetadata {
                 session_id: s.session_id,
-                position: s.position,
-                chain: s.chain,
-                metadata_json: s.metadata_json,
-                metadata_version: s.metadata_version,
-                in_cloud: s.in_cloud,
+                json: s.metadata_json,
+                version: s.metadata_version,
             })
             .collect())
     }
     fn store_sync_cursor(&self, id: SessionId, position: u64, chain: &str) -> io::Result<()> {
         let b = self.backend()?;
-        axo_store::store_sync_cursor(
-            &b.database.lock().unwrap(),
-            &id.to_string(),
-            position,
-            chain,
-        )
+        axo_store::store_sync_cursor(&b.database.lock().unwrap(), id, position, chain)
     }
     fn store_sync_metadata(&self, id: SessionId, metadata: &str, version: u64) -> io::Result<()> {
         let b = self.backend()?;
-        axo_store::store_sync_metadata(
-            &b.database.lock().unwrap(),
-            &id.to_string(),
-            metadata,
-            version,
-        )
-    }
-    fn evict_transcript(&self, _: SessionId, _: u64, _: &str, _: u64) -> io::Result<bool> {
-        Ok(false)
+        axo_store::store_sync_metadata(&b.database.lock().unwrap(), id, metadata, version)
     }
     fn next_sync_round(&self) -> io::Result<u64> {
         let b = self.backend()?;
         axo_store::next_sync_round(&b.database.lock().unwrap())
     }
     fn subscribe_remote_events(&self) -> io::Result<String> {
-        self.backend()?.subscribe(None, true)
+        self.backend()?
+            .events
+            .subscribe(events::Subscriber::Relay, None, true, || Vec::new())
     }
     fn next_remote_events<'a>(
         &'a self,
@@ -381,36 +388,23 @@ impl RelayHost for Host {
     {
         Box::pin(async move {
             let b = self.backend()?;
-            let queue = b.queue(id)?;
-            queue.wait(timeout, 128).await
+            let events = b.events.next(id, timeout, 128).await?;
+            Ok(events.into_iter().map(|event| (*event).clone()).collect())
         })
     }
     fn unsubscribe_remote_events(&self, id: &str) -> io::Result<()> {
         self.backend()?.unsubscribe(id)
     }
-    fn remote_workspaces(&self) -> io::Result<Vec<RemoteWorkspace>> {
-        let b = self.backend()?;
-        Ok(
-            axo_store::list_open_workspaces(&b.database.lock().unwrap())?
-                .iter()
-                .map(RemoteWorkspace::from)
-                .collect(),
-        )
-    }
-    fn remote_create_session(&self, at: &str) -> io::Result<RemoteSessionSnapshot> {
-        let workspaces = self.remote_workspaces()?;
-        let w = workspaces
-            .first()
-            .ok_or_else(|| invalid("Open a workspace on this PC first"))?;
-        self.remote_create_workspace_session(&w.workspace_id, at)
-    }
-    fn remote_create_workspace_session(
+}
+
+impl Host {
+    fn remote_create_session(
         &self,
-        workspace: &str,
+        request: rpc::CreateSession,
         at: &str,
     ) -> io::Result<RemoteSessionSnapshot> {
         let b = self.backend()?;
-        let value = b.create_session(workspace)?;
+        let value = b.create_session(request)?;
         let id: SessionId = serde_json::from_value(value["id"].clone())?;
         b.publish_snapshot(id);
         self.snapshot(value, at)
@@ -537,12 +531,12 @@ impl RelayHost for Host {
         let (agent, turn) = {
             let r = s.runtime.lock().unwrap();
             let matches = stop
-                .turn_id
-                .iter()
-                .chain(stop.seen.iter())
+                .turn_id()
+                .into_iter()
+                .chain(stop.seen())
                 .any(|t| r.turn_entries.contains(&t.as_str().to_owned()))
                 || stop
-                    .command_ids
+                    .command_ids()
                     .iter()
                     .any(|c| r.remote_command.as_deref() == Some(c.as_str()));
             if !matches || r.turn.is_none() {
