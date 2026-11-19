@@ -12,9 +12,21 @@ use std::process::{Command, Stdio};
 /// The environment variable that tells Pi which descriptor its lifeline is.
 pub const LIFELINE_FD: &str = "AXO_LIFELINE_FD";
 
+/// Two pipes, both ending with axod: one for programs that watch it themselves (Pi), one only
+/// the guard shell reads. They must not share a pipe: a pipe's blocking mode belongs to the open
+/// file description every inheritor shares, and Node (Pi's `net.Socket` on the descriptor) makes
+/// it non-blocking. The guard's `read` then fails at once with `EAGAIN`, which it cannot tell
+/// from the lifeline's end, and kills the program it guards.
 #[derive(Debug)]
 pub struct Lifeline {
     /// Inherited by each Pi; close-on-exec here, so only launches that ask for it pass it on.
+    watched: Pipe,
+    /// The guard shell's stdin, never handed to anything that could change its mode.
+    guard: Pipe,
+}
+
+#[derive(Debug)]
+struct Pipe {
     read: OwnedFd,
     /// Never written; closing it (axod ending) is the message.
     _write: OwnedFd,
@@ -22,6 +34,20 @@ pub struct Lifeline {
 
 impl Lifeline {
     pub fn new() -> io::Result<Self> {
+        Ok(Self {
+            watched: Pipe::new()?,
+            guard: Pipe::new()?,
+        })
+    }
+
+    /// The descriptor a Pi inherits, at the same number.
+    pub fn reader(&self) -> RawFd {
+        self.watched.read.as_raw_fd()
+    }
+}
+
+impl Pipe {
+    fn new() -> io::Result<Self> {
         let mut ends = [0; 2];
         // SAFETY: `ends` holds two descriptors. Linux marks both CLOEXEC atomically so a
         // concurrent helper spawn cannot inherit a writer between pipe and fcntl.
@@ -42,12 +68,9 @@ impl Lifeline {
             _write: write,
         })
     }
+}
 
-    /// The descriptor a Pi inherits, at the same number.
-    pub fn reader(&self) -> RawFd {
-        self.read.as_raw_fd()
-    }
-
+impl Lifeline {
     /// A command that runs `program` (with the arguments the caller adds) under a shell that
     /// kills it when this lifeline ends, for programs that cannot watch one themselves, such as
     /// llama.cpp's server. stdin belongs to the lifeline; the program gets /dev/null instead.
@@ -65,7 +88,7 @@ impl Lifeline {
             .arg("sh")
             .arg(if lock.is_some() { "locked" } else { "plain" })
             .arg(program)
-            .stdin(Stdio::from(self.read.try_clone()?))
+            .stdin(Stdio::from(self.guard.read.try_clone()?))
             .process_group(0);
         if let Some(lock) = lock {
             command.stdout(Stdio::from(lock.try_clone()?));
@@ -112,7 +135,7 @@ mod tests {
         command
             .arg("-c")
             .arg("cat >/dev/null; echo ended")
-            .stdin(Stdio::from(lifeline.read.try_clone().unwrap()))
+            .stdin(Stdio::from(lifeline.watched.read.try_clone().unwrap()))
             .stdout(Stdio::piped());
         let mut child = command.spawn().unwrap();
         drop(lifeline);
@@ -211,6 +234,32 @@ mod tests {
         assert!(output.status.success());
         assert_eq!(output.stdout, b"hello\n");
         std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    /// Pi's Node opens its lifeline as a `net.Socket`, which makes the pipe non-blocking for
+    /// everyone sharing its file description. A guard must not read that as the end.
+    #[test]
+    fn a_guarded_program_survives_a_watcher_making_the_lifeline_non_blocking() {
+        let directory = directory("nonblocking");
+        let lifeline = Lifeline::new().unwrap();
+        let reader = lifeline.reader();
+        // SAFETY: `reader` is the lifeline's open read end; this changes only its status flags.
+        unsafe {
+            let flags = libc::fcntl(reader, libc::F_GETFL);
+            assert_ne!(flags, -1);
+            assert_ne!(
+                libc::fcntl(reader, libc::F_SETFL, flags | libc::O_NONBLOCK),
+                -1
+            );
+        }
+        let (mut guard, pid) = guarded_sleep(&lifeline, &directory);
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        assert!(alive(pid), "the guard killed its program while axod lives");
+        assert!(guard.try_wait().unwrap().is_none());
+        drop(lifeline);
+        guard.wait().unwrap();
+        assert!(!alive(pid), "the program outlived its lifeline");
+        let _ = std::fs::remove_dir_all(directory);
     }
 
     #[test]
