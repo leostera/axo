@@ -357,6 +357,50 @@ impl From<serde_json::Error> for RpcError {
         }
     }
 }
+// A single remote Yes approves this command once. Runner bookkeeping and
+// proposed persistent policy amendments are not part of that decision.
+fn command_approval_message(params: &Value) -> Option<String> {
+    let fields = params.as_object()?;
+    for (key, value) in fields {
+        if !value.is_null()
+            && !matches!(
+                key.as_str(),
+                "kind"
+                    | "threadId"
+                    | "turnId"
+                    | "itemId"
+                    | "startedAtMs"
+                    | "environmentId"
+                    | "reason"
+                    | "command"
+                    | "cwd"
+                    | "commandActions"
+                    | "proposedExecpolicyAmendment"
+                    | "availableDecisions"
+            )
+        {
+            return None;
+        }
+    }
+    let command = params["command"]
+        .as_str()
+        .filter(|v| !v.trim().is_empty())?;
+    let mut lines = vec![
+        String::from("Allow Codex to run this command?"),
+        command.to_owned(),
+    ];
+    for (key, label) in [
+        ("cwd", "Working directory"),
+        ("environmentId", "Environment"),
+        ("reason", "Reason"),
+    ] {
+        if !params[key].is_null() {
+            lines.push(format!("{label}: {}", params[key].as_str()?));
+        }
+    }
+    Some(lines.join("\n\n"))
+}
+
 fn invalid(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, message)
 }
@@ -1165,7 +1209,11 @@ impl Backend {
                 method,
                 "item/commandExecution/requestApproval" | "item/fileChange/requestApproval"
             ) {
-                Some(format!("Codex requests permission:\n{}", event["params"]))
+                if method == "item/commandExecution/requestApproval" {
+                    command_approval_message(&event["params"])
+                } else {
+                    Some(format!("Codex requests permission:\n{}", event["params"]))
+                }
             } else if method == "mcpServer/elicitation/request" {
                 elicitation::confirmation_message(&event["params"])
             } else {
@@ -1300,6 +1348,19 @@ fn canonical_directory(path: &Path) -> io::Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn command_question_shows_the_action_and_omits_transport_metadata() {
+        let mut params = json!({"threadId":"internal","command":"build --test","cwd":"C:\\src","reason":"Verify installation"});
+        assert_eq!(
+            command_approval_message(&params).as_deref(),
+            Some(
+                "Allow Codex to run this command?\n\nbuild --test\n\nWorking directory: C:\\src\n\nReason: Verify installation"
+            )
+        );
+        params["additionalPermissions"] = json!({"network":true});
+        assert!(command_approval_message(&params).is_none());
+    }
+
     fn backend() -> Backend {
         let mut db = axo_store::Connection::open_in_memory().unwrap();
         axo_store::initialize_database(&mut db).unwrap();
