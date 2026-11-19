@@ -150,6 +150,7 @@ fn main() {
                 send(json!({"id":id,"result":{"turn":{"id":active,"status":"inProgress"}}}));
                 match text {
                     "rich-transcript" => {
+                        assert_eq!(p["summary"], "auto", "the host must request public reasoning summaries");
                         event(
                             "item/completed",
                             json!({"threadId":thread,"turnId":active,"item":{"type":"reasoning","id":format!("{active}-reasoning"),"summary":["Checking the owned fixture before editing."]}}),
