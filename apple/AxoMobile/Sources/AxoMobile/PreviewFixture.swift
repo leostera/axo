@@ -172,7 +172,17 @@ enum PreviewFixture {
     }
 
     /// The slash commands the sample chats' Pis take.
-    static let commands = #"{"commands":[{"name":"review","description":"Review the change on this branch","source":"prompt"},{"name":"axo-share","description":"Share this conversation","source":"extension"},{"name":"hivemind","description":"Search the team's shared memory","source":"skill"},{"name":"release","description":"Cut a release","source":"prompt"}]}"#
+    static var commands: String {
+      if ProcessInfo.processInfo.environment["AXO_PHONE_PREVIEW_LONG_COMMANDS"] == "1" {
+        let commands = (0..<40).map { index in
+          ["name": String(format: "command-%02d", index),
+           "description": "A useful command with a longer explanation that stays readable in a compact menu",
+           "source": "skill"]
+        }
+        return String(decoding: try! JSONSerialization.data(withJSONObject: ["commands": commands]), as: UTF8.self)
+      }
+      return #"{"commands":[{"name":"review","description":"Review the change on this branch","source":"prompt"},{"name":"axo-share","description":"Share this conversation","source":"extension"},{"name":"hivemind","description":"Search the team's shared memory","source":"skill"},{"name":"release","description":"Cut a release","source":"prompt"}]}"#
+    }
 
     /// The models the sample chats' Pis could switch to.
     static let models = #"{"models":[{"provider":"anthropic","id":"claude-opus-4-1","name":"Opus 4.1","thinkingLevels":["off","low","medium","high","xhigh"]},{"provider":"anthropic","id":"claude-sonnet-4-5","name":"Sonnet 4.5","thinkingLevels":["off","low","medium","high"]},{"provider":"openai","id":"gpt-5","name":"GPT-5","thinkingLevels":["minimal","low","medium","high"]}]}"#

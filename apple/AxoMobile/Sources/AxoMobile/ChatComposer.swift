@@ -304,6 +304,7 @@ private struct SlashCommandList: View {
   let commands: [PiCommand]?
   let query: String
   let pick: (PiCommand) -> Void
+  @State private var contentHeight: CGFloat = 224
 
   var body: some View {
     let shown = SlashCommands.matching(commands ?? [], query: query)
@@ -326,14 +327,15 @@ private struct SlashCommandList: View {
           LazyVStack(alignment: .leading, spacing: 0) {
             ForEach(shown) { command in
               Button { pick(command) } label: {
-                VStack(alignment: .leading, spacing: 2) {
-                  Text("/\(command.name)").font(.callout.weight(.semibold).monospaced())
-                  if !command.description.isEmpty {
-                    Text(command.description).font(.footnote).foregroundStyle(.secondary).lineLimit(2)
-                  }
+                HStack(alignment: .firstTextBaseline, spacing: 12) {
+                  Text("/\(command.name)").font(.subheadline.weight(.semibold).monospaced())
+                    .lineLimit(1).truncationMode(.middle)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                  Text(command.description).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .padding(.horizontal, 14).padding(.vertical, 9)
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 12).padding(.vertical, 6)
+                .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
                 .contentShape(Rectangle())
               }
               .buttonStyle(.plain)
@@ -341,9 +343,10 @@ private struct SlashCommandList: View {
               .accessibilityIdentifier("slash-\(command.name)")
             }
           }
+          .onGeometryChange(for: CGFloat.self) { min(224, $0.size.height) } action: { contentHeight = $0 }
         }
-        .frame(maxHeight: 240)
-        .fixedSize(horizontal: false, vertical: true)
+        .scrollIndicators(.visible)
+        .frame(height: contentHeight)
       }
     }
     .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 20, style: .continuous))

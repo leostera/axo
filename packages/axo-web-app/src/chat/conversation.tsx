@@ -407,7 +407,12 @@ function Composer({ workbench, wide, voice, placeholder, canCompose, canSend, on
     if (slashOpen && matches.length && !event.nativeEvent.isComposing) {
       if (event.key === "ArrowDown" || event.key === "ArrowUp") {
         event.preventDefault();
-        setHighlighted((highlighted + (event.key === "ArrowDown" ? 1 : -1) + matches.length) % matches.length);
+        setHighlighted(previous => (previous + (event.key === "ArrowDown" ? 1 : -1) + matches.length) % matches.length);
+        return;
+      }
+      if ((event.key === "Home" || event.key === "End") && !event.metaKey && !event.ctrlKey && !event.altKey) {
+        event.preventDefault();
+        setHighlighted(event.key === "Home" ? 0 : matches.length - 1);
         return;
       }
       if ((event.key === "Enter" && !event.shiftKey && !touchTyping()) || event.key === "Tab") {

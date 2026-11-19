@@ -1269,6 +1269,8 @@ test("the / list opens only while a command is being named, and narrows as it is
   assert.deepEqual(matchingCommands(commands, "sh").map(command => command.name), ["axo-share"]);
   assert.deepEqual(matchingCommands(commands, "memory").map(command => command.name), ["hivemind"], "a description matches last");
   assert.deepEqual(matchingCommands(commands, "zzz"), []);
+  const many = Array.from({ length: 60 }, (_, index) => ({ ...commands[0]!, name: `command-${index}` }));
+  assert.equal(matchingCommands(many, "").length, 60, "the menu scrolls instead of silently discarding commands");
   assert.equal(withCommand(commands[0]!), "/review ");
 });
 

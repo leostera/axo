@@ -48,8 +48,6 @@ export function slashQuery(draft: string): string | null {
   return match ? match[1]! : null;
 }
 
-export const MAX_SLASH_ROWS = 8;
-
 /** The commands a query names: those it starts first, then those whose name has it, then by description. */
 export function matchingCommands(commands: readonly PiCommand[], query: string): PiCommand[] {
   const q = query.toLowerCase();
@@ -64,7 +62,6 @@ export function matchingCommands(commands: readonly PiCommand[], query: string):
     .map((command, index) => ({ command, index, rank: rank(command) }))
     .filter(entry => entry.rank < 3)
     .sort((a, b) => a.rank - b.rank || a.index - b.index)
-    .slice(0, MAX_SLASH_ROWS)
     .map(entry => entry.command);
 }
 

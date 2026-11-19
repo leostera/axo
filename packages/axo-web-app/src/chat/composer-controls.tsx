@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { PiCommand } from "@axo/protocol";
 import { Icon } from "./icons.tsx";
 import type { Delivery } from "./transcript.ts";
@@ -21,9 +21,9 @@ function useDismiss(open: boolean, root: React.RefObject<HTMLElement | null>, cl
 }
 
 function LoadableNote({ state, what }: { state: Loadable<unknown> | null; what: string }) {
-  if (!state || state.kind === "loading") return <p className="menu-note"><span className="spinner" aria-hidden="true" /> Asking Pi for its {what}…</p>;
+  if (!state || state.kind === "loading") return <p className="menu-note"><span className="spinner" aria-hidden="true" /> Reading available {what}…</p>;
   if (state.kind === "failed") return <p className="menu-note warning">Could not read the {what}: {state.message}</p>;
-  return state.items.length ? null : <p className="menu-note">Pi has no {what} to offer.</p>;
+  return state.items.length ? null : <p className="menu-note">No {what} available for this agent.</p>;
 }
 
 /**
@@ -38,26 +38,48 @@ export function SlashMenu({ state, matches, highlighted, onPick, onHighlight }: 
   onHighlight: (index: number) => void;
 }) {
   const loaded = state?.kind === "loaded";
+  const list = useRef<HTMLDivElement>(null);
+  const matchNames = JSON.stringify(matches.map(command => command.name));
+  useLayoutEffect(() => {
+    const menu = list.current;
+    if (!menu) return;
+    const place = () => {
+      const viewportTop = window.visualViewport?.offsetTop ?? 0;
+      menu.style.maxHeight = `${Math.max(0, Math.min(320, menu.getBoundingClientRect().bottom - viewportTop - 12))}px`;
+    };
+    place();
+    const observer = new ResizeObserver(place);
+    if (menu.parentElement) observer.observe(menu.parentElement);
+    window.addEventListener("resize", place);
+    window.visualViewport?.addEventListener("resize", place);
+    window.visualViewport?.addEventListener("scroll", place);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", place);
+      window.visualViewport?.removeEventListener("resize", place);
+      window.visualViewport?.removeEventListener("scroll", place);
+    };
+  }, []);
+  useLayoutEffect(() => {
+    list.current?.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }, [highlighted, matchNames]);
   return (
-    <div className="slash-menu" role="listbox" aria-label="Commands" id="slash-menu">
-      {!loaded ? <LoadableNote state={state} what="commands" /> : !matches.length ? <p className="menu-note">No command by that name.</p> : null}
+    <div ref={list} className="slash-menu" role="listbox" aria-label="Commands" id="slash-menu">
+      {!loaded ? <LoadableNote state={state} what="commands" /> : !matches.length ? <p className="menu-note">No matching commands for this agent.</p> : null}
       {matches.map((command, index) => (
         <button key={command.name} type="button" role="option" id={`slash-${index}`} aria-selected={index === highlighted}
           className={index === highlighted ? "slash-row highlighted" : "slash-row"}
           // The box keeps focus, so typing carries on.
           onPointerDown={event => event.preventDefault()}
-          onPointerEnter={() => onHighlight(index)}
+          onPointerMove={event => { if (event.pointerType === "mouse") onHighlight(index); }}
           onClick={() => onPick(command)}>
-          <span className="slash-name">/{command.name}</span>
-          <span className="slash-description">{command.description}</span>
-          <small className="slash-source">{sourceNames[command.source]}</small>
+          <span className="slash-name" title={`/${command.name}`}>/{command.name}</span>
+          <span className="slash-description" title={command.description}>{command.description}</span>
         </button>
       ))}
     </div>
   );
 }
-
-const sourceNames: Record<PiCommand["source"], string> = { extension: "Command", prompt: "Prompt", skill: "Skill" };
 
 const HOLD_MS = 400;
 

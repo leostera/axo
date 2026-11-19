@@ -45,7 +45,7 @@ export async function freePort() {
  * A cloud with one Mac, whose socket the test drives: `transcripts` holds each chat's records, by
  * Session id, and `sessions` what the sidebar lists (see `listed`).
  */
-export async function startCloud(transcripts, sessions, { models = [], hosts } = {}) {
+export async function startCloud(transcripts, sessions, { models = [], commands = [], hosts } = {}) {
   const listedHosts = hosts ?? [{ hostId, hostGeneration: "f9c5761c-3b2d-42a8-bb19-9a8c0b8cf230", label: "Mac", hostKind: "macos", online: true, lastSeenAt: now }];
   const modelSets = [];
   const prompts = [];
@@ -108,6 +108,7 @@ export async function startCloud(transcripts, sessions, { models = [], hosts } =
         return;
       }
       if (call.method === "axo.remote.agents.list") return reply({ agents: ["pi", "codex"] });
+      if (call.method === "axo.remote.session.commands") return reply({ commands });
       if (call.method === "axo.remote.session.models") return reply({ models });
       if (call.method === "axo.remote.session.model.set") {
         modelSets.push(call.params);
