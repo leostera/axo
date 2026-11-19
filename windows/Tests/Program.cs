@@ -95,6 +95,7 @@ try
     {
         TranscriptLog.CheckProtocol(Assert);
         LaunchProfileChecks.Run(root, Assert);
+        CodexWorkflowChecks.Run(Assert);
         Exception? viewError=null;
         var views=new Thread(()=>
         {
@@ -287,6 +288,23 @@ try
     await Status(id,"ready");
     remote=await relay.CallAsync("axo.elicitation.resolve",RelayFixture.AccountAnswer(target,question.GetProperty("id").GetString()!,"accept"));
     Assert(remote.TryGetProperty("error",out _),"resolved remote approval cannot authorize a later request");
+    while(relay.Questions.TryDequeue(out _)){}
+    await client.CallAsync("axo.session.prompt",new{sessionId=id,text="mcp-confirm"});
+    await Status(id,"needsAttention");
+    await relay.WaitAsync(()=>relay.Questions.Any(q=>q.GetProperty("message").GetString()!.Contains("Allow fixture access?")),"MCP permission request did not reach the person");
+    var mcpQuestion=relay.Questions.Single(q=>q.GetProperty("message").GetString()!.Contains("Allow fixture access?"));
+    await relay.CallAsync("axo.elicitation.resolve",RelayFixture.AccountAnswer(target,mcpQuestion.GetProperty("id").GetString()!,"accept"));
+    await Status(id,"ready");
+    Assert((await Messages(id)).Contains("MCP: accept / {}"),"a human account answer resolves an empty MCP confirmation with valid empty form content");
+    await client.CallAsync("axo.session.prompt",new{sessionId=id,text="mcp-form"});
+    var mcpWaiting=await Status(id,"needsAttention");
+    var formRequest=mcpWaiting.GetProperty("pendingRequests")[0].GetProperty("id").GetRawText();
+    bool formRefused=false;
+    try{await client.CallAsync("axo.session.approval.respond",new{sessionId=id,requestId=formRequest,decision="accept"});}
+    catch(IOException error){formRefused=error.Message.Contains("input renderer");}
+    Assert(formRefused,"a nonempty MCP form is not silently accepted with missing private field values");
+    await client.CallAsync("axo.session.approval.respond",new{sessionId=id,requestId=formRequest,decision="decline"});
+    await Status(id,"ready");
     await relay.CallAsync("axo.remote.session.prompt",new{target,sessionId=id,text="stream-reconciliation",commandId=Guid.NewGuid().ToString()});
     await Status(id,"ready");
     await relay.WaitAsync(()=>relay.Messages(id).Contains("Stream fixture: partial and complete"),"Completed streaming fixture was not synced");
