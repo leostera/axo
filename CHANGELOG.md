@@ -4,6 +4,13 @@ What changed in each published version of Axo. Every publish raises the minor ve
 
 ## Unreleased
 
+## 0.77 (Mac app build 349, axod 93)
+
+### Fixed
+
+- Removed terminal-only and untitled placeholder question cards from phone, tablet and web conversations. Real answerable questions and approval requests remain; hidden placeholders are never automatically answered or skipped.
+- Pi’s logo has a proper intrinsic size in native agent menus instead of appearing as a tiny four-pixel mark.
+
 ## 0.76 (Mac app build 348, axod 92)
 
 ### Added
