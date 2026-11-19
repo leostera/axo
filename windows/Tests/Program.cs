@@ -268,6 +268,13 @@ try
     await relay.CallAsync("axo.remote.session.prompt",new{target,sessionId=id,text="relay hello",commandId});
     Assert((await Messages(id)).Count(m=>m=="Echo: relay hello")==1,"retrying a remote command ID never starts a duplicate Codex turn");
     await relay.WaitAsync(()=>relay.Messages(id).Contains("Echo: relay hello"),"Remote Codex reply was not synced");
+    await relay.WaitAsync(()=>relay.HasPromptReceipt(id,commandId,"relay hello"),"Remote prompt identity was not synced before its user message");
+    Assert(true,"the phone can reconcile its pending prompt with the canonical user message by command ID");
+    var repeatedTextCommand=Guid.NewGuid().ToString();
+    await relay.CallAsync("axo.remote.session.prompt",new{target,sessionId=id,text="relay hello",commandId=repeatedTextCommand});
+    await Status(id,"ready");
+    await relay.WaitAsync(()=>relay.HasPromptReceipt(id,repeatedTextCommand,"relay hello"),"Identical prompt text lost its distinct command identity");
+    Assert(relay.HasPromptReceipt(id,commandId,"relay hello"),"repeated text keeps separate immutable receipts rather than deduplicating by content");
     await relay.CallAsync("axo.remote.session.prompt",new{target,sessionId=id,text="approval",commandId=Guid.NewGuid().ToString()});
     await Status(id,"needsAttention");
     await relay.WaitAsync(()=>!relay.Questions.IsEmpty,"Codex approval did not reach the relay");
@@ -317,6 +324,8 @@ try
     daemon = Start(); await Ready();
     recovered = await client.CallAsync("axo.session.open", new { sessionId = id });
     await relay.WaitAsync(()=>relay.Connections>=2,"Relay did not reconnect after daemon restart");
+    await relay.WaitAsync(()=>relay.HasPromptReceipt(id,commandId,"relay hello") && relay.HasPromptReceipt(id,repeatedTextCommand,"relay hello"),"Prompt reconciliation identities did not survive daemon restart");
+    Assert(true,"prompt receipts survive restart without guessing from repeated message text");
     Assert(relay.Registration.GetProperty("hostId").GetString()==target.hostId&&relay.Registration.GetProperty("hostGeneration").GetString()!=target.hostGeneration,"DPAPI credential and stable host identity survive restart with a fresh generation");
     Assert(recovered.GetProperty("threadId").GetString() == threadId, "daemon restart preserves Codex thread identity");
     Assert(recovered.GetProperty("name").GetString() == "Renamed session", "session name survives daemon restart");

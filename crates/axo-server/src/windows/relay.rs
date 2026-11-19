@@ -300,6 +300,15 @@ impl Host {
                 for m in &messages {
                     cursor = m["sequence"].as_i64().unwrap_or(cursor);
                     let at = m["createdAt"].as_i64().unwrap_or(0) * 1000;
+                    if m["role"] == "user" {
+                        if let Some(command) = m["commandId"].as_str() {
+                            let receipt = format!("axo:command:{cursor}");
+                            lines.push(json!({"type":"custom","customType":"axo.command",
+                                "id":receipt,"parentId":parent,"timestamp":axo_relay::utc_timestamp(at),
+                                "data":{"commandId":command}}).to_string());
+                            parent = json!(receipt);
+                        }
+                    }
                     lines.push(json!({"type":"message","id":m["itemId"],"parentId":parent,"timestamp":axo_relay::utc_timestamp(at),
                         "message":{"role":m["role"],"content":[{"type":"text","text":m["text"]}],"timestamp":at}}).to_string());
                     parent = m["itemId"].clone();

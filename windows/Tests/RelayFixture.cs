@@ -113,10 +113,27 @@ sealed class RelayFixture : IAsyncDisposable
     // require a device proof or a per-host enrollment under RFD0079.
     public static object AccountAnswer(object target,string id,string action,JsonElement? sealedValue=null)
         => new {target,elicitationId=id,action,@sealed=sealedValue};
-    public string[] Messages(string id)
+    public JsonElement[] Records(string id)
     {
         if(!records.TryGetValue(id,out var list))return[];
-        lock(list)return list.Select(line=>{using var doc=JsonDocument.Parse(line);return doc.RootElement.GetProperty("message").GetProperty("content")[0].GetProperty("text").GetString()!;}).ToArray();
+        lock(list)return list.Select(line=>{using var doc=JsonDocument.Parse(line);return doc.RootElement.Clone();}).ToArray();
+    }
+    public string[] Messages(string id) => Records(id)
+        .Where(record=>record.GetProperty("type").GetString()=="message")
+        .Select(record=>record.GetProperty("message").GetProperty("content")[0].GetProperty("text").GetString()!).ToArray();
+    public bool HasPromptReceipt(string id,string command,string text)
+    {
+        var entries=Records(id);
+        var matches=entries.Select((record,index)=>(record,index))
+            .Where(pair=>pair.record.GetProperty("type").GetString()=="custom"
+                && pair.record.GetProperty("customType").GetString()=="axo.command"
+                && pair.record.GetProperty("data").GetProperty("commandId").GetString()==command).ToArray();
+        if(matches.Length!=1 || matches[0].index+1>=entries.Length)return false;
+        var message=entries[matches[0].index+1];
+        return message.GetProperty("type").GetString()=="message"
+            && message.GetProperty("parentId").GetString()==matches[0].record.GetProperty("id").GetString()
+            && message.GetProperty("message").GetProperty("role").GetString()=="user"
+            && message.GetProperty("message").GetProperty("content")[0].GetProperty("text").GetString()==text;
     }
     public async Task WaitAsync(Func<bool> condition,string failure)
     {
