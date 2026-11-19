@@ -19,6 +19,8 @@ mod brief;
 mod callers;
 mod catalog;
 mod core;
+#[cfg(target_os = "linux")]
+mod desktop;
 mod event_stream;
 mod events;
 mod handlers;

@@ -756,6 +756,8 @@ pub const EXCLUDED: &[(&str, &str)] = &[
         method::SESSION_PI_RESTART_FORCE,
         "Same unavailable-pane recovery backend; use session recover",
     ),
+    #[cfg(target_os = "linux")]
+    (method::CLIENT_DESKTOP_OPEN, "Native Linux workbench launch/handoff; no caller-provided command"),
     (
         method::CLIENT_VIEWPORT_SET,
         "UI-owned viewport; not a CLI display",

@@ -135,6 +135,8 @@ pub const PARITY: &[Parity] = &[
         method::SESSION_TIMER_CANCEL,
         Remote::LocalOnly("timer cancellation is scoped to a local sending Session"),
     ),
+    #[cfg(target_os = "linux")]
+    row(method::CLIENT_DESKTOP_OPEN, Remote::LocalOnly("opens this host's bundled desktop; grants the caller no authority")),
     row(
         method::CLIENT_VIEWPORT_SET,
         Remote::LocalOnly("window geometry of a client on this Mac"),

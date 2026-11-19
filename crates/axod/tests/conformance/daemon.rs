@@ -75,6 +75,16 @@ fn agents_lists_every_agent_with_its_capabilities() {
 }
 
 #[test]
+#[cfg(target_os = "linux")]
+fn desktop_launch_rejects_caller_supplied_programs_and_identity() {
+    let axod = Axod::start();
+    for params in [json!({"program":"/bin/sh"}), json!({"pid":std::process::id()}), json!({"approved":true})] {
+        let refused = axod.err("axo.client.desktop.open", params);
+        assert_eq!(refused.code, INVALID_PARAMS, "{refused:?}");
+    }
+}
+
+#[test]
 fn health_says_running_and_ready_with_this_build() {
     let axod = Axod::start();
     let health = axod.wait_for("axod to be ready", || {

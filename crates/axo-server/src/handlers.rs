@@ -132,6 +132,14 @@ impl Extension for Sessions {
 
     fn register(&self, handler: &mut IoHandler) {
         let core = &self.0;
+        #[cfg(target_os = "linux")]
+        add(handler, core, method::CLIENT_DESKTOP_OPEN, "expected no parameters",
+            |core, _: rpc::NoParams| async move {
+                if core.is_stopping() { return Err(internal_rpc_error(io::Error::other("axod is stopping"))); }
+                tokio::task::spawn_blocking(move || core.desktop.open(&core.agent_socket)).await
+                    .map_err(|_| internal_rpc_error(io::Error::other("desktop launch worker ended")))?
+                    .map_err(internal_rpc_error)
+            });
         add(
             handler,
             core,

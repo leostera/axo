@@ -55,8 +55,15 @@ pub(crate) fn is_the_person(peer: &Peer) -> bool {
     matches!(peer, Peer::Relay) || peer.is(Signer::AxoApp)
 }
 
-/// Whether `peer` may type into `session`'s panes: the person, or the Session's own processes.
+/// Pane control: the person or the Session's own processes, plus Linux's exact
+/// daemon-managed desktop for open local Sessions (RFD0086), never its descendants.
 pub(crate) fn may_type_into(core: &Core, peer: &Peer, session: SessionId) -> bool {
+    #[cfg(target_os = "linux")]
+    if core.registry.contains(session)
+        && caller_process(peer).is_some_and(|caller| core.desktop.owns(caller))
+    {
+        return true;
+    }
     is_the_person(peer) || session_of(core, peer) == Some(session)
 }
 

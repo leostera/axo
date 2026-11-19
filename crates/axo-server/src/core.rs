@@ -46,6 +46,8 @@ pub(crate) struct Core {
     pub(crate) sessions_directory: PathBuf,
     pub(crate) settings: Mutex<Settings>,
     pub(crate) local_pins: crate::local_pins::LocalPins,
+    #[cfg(target_os = "linux")]
+    pub(crate) desktop: crate::desktop::Desktop,
     /// The latest client's terminal area; panes no client is attached to are sized from it.
     pub(crate) viewport: watch::Sender<Option<Viewport>>,
     /// Every Pi holds its read end, and goes when axod does (RFD0041).
@@ -134,6 +136,8 @@ impl Core {
             sessions_directory: parts.sessions_directory,
             settings: Mutex::new(parts.settings),
             local_pins: crate::local_pins::LocalPins::default(),
+            #[cfg(target_os = "linux")]
+            desktop: crate::desktop::Desktop::default(),
             viewport: watch::channel(parts.viewport).0,
             lifeline: parts.lifeline,
             bridges_changed: Arc::new(Notify::new()),

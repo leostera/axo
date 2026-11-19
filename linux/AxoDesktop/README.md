@@ -20,6 +20,8 @@ bazel run //linux/AxoDesktop:run -- --command '/bin/sh'
 bazel test //linux/AxoDesktop:unit_tests //crates/axo-client:test //crates/axo-pty:axo_pty_tests
 ```
 
+**Workbench ownership:** `--socket` asks that daemon to open its bundled `AxoDesktop` through `axo.client.desktop.open`. The initial launcher exits; only the exact live child retained by axod initializes the workbench and gains local pane control. Install the matching binaries plus `lib/` and `share/ghostty/` together beside one another. Development workbenches need the same isolated runtime layout; a loose Bazel binary is not automatically trusted. No caller-chosen executable, PID, environment token or same-UID allowlist grants access. This does not grant human approval/sign-in authority or authorize the desktop's descendants. See [RFD0086](../../docs/rfds/RFD0086-linux-managed-desktop-pane-access.md).
+
 **Attachment requires snapshot-capable protocol v3**, implemented by the candidate daemon ([RFD0055](../../docs/rfds/RFD0055-terminal-snapshot-grid.md)). An older daemon's refusal is shown; no guessed-grid downgrade or local-shell fallback occurs. The candidate server keeps v2 unchanged for shipped Mac/peer clients. Do not install/restart a paired daemon just to try this UI: use an isolated daemon first; deployment is a separate approved operation.
 
 The `run` target resolves process-local resources/libraries from Bazel runfiles. This is not an installer or service. The prototype uses `dev.leostera.AxoDesktop.Prototype` and does not join a running Ghostty app. Rootless development prefixes can be supplied through `PKG_CONFIG_PATH`, `PATH`, `PYTHONPATH` and `XDG_DATA_DIRS` in repository-rule/build-script environments; project files contain no machine-specific prefix.
@@ -198,6 +200,18 @@ linux/AxoDesktop/tests/smoke.sh bazel-bin/linux/AxoDesktop/AxoDesktop
 ```
 
 The standalone test checks actual terminal-color pixels, PTY input, grid/child SIGWINCH, child exit, clean shutdown, unrealized widget lifetime, no Ghostty config creation and no open/read of an existing config canary (inotify).
+
+The managed-workbench regression uses the production admission rule, no identity proxy:
+
+```sh
+AXO_DESKTOP_SMOKE_DRIVER="$PWD/linux/AxoDesktop/tests/managed_workbench_drive.py" \
+linux/AxoDesktop/tests/smoke.sh /path/to/isolated-runtime/AxoDesktop
+```
+
+That runtime must contain matching `axod`, `AxoDesktop`, `lib/` and `share/ghostty/`.
+The driver owns a private HOME/display/bus/store and checks launcher handoff,
+existing/new Session panes, singleton opens and native Close/reopen. It never
+reads personal terminal contents or uses a permissive attachment hook.
 
 The attached test starts a real **isolated daemon** and an owned PTY fixture. It checks unchanged v2 framing, v3 replay generated before the view exists, copied long-line text surviving initial grid changes, actual pixels before/after reopening, input, matching resize/SIGWINCH, child/output-pump survival while detached, refusal without fallback and pending-handshake cancellation. Shared Rust tests separately simulate a PTY resize between snapshot capture and client receipt.
 

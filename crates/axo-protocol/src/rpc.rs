@@ -96,6 +96,8 @@ pub mod method {
     pub const TERMINAL_RESIZE: &str = "axo.terminal.resize";
     pub const TERMINAL_WRITE: &str = "axo.terminal.write";
     pub const TERMINAL_SCREEN: &str = "axo.terminal.screen";
+    #[cfg(target_os = "linux")]
+    pub const CLIENT_DESKTOP_OPEN: &str = "axo.client.desktop.open";
     pub const CLIENT_VIEWPORT_SET: &str = "axo.client.viewport.set";
     pub const CLIENT_VIEWPORT_SET_V2: &str = "axo.client.viewport.set.v2";
     pub const RELAY_LINK: &str = "axo.relay.link";
@@ -159,6 +161,8 @@ pub mod method {
         SESSION_TIMER_CREATE,
         SESSION_TIMER_LIST,
         SESSION_TIMER_CANCEL,
+        #[cfg(target_os = "linux")]
+        CLIENT_DESKTOP_OPEN,
         CLIENT_VIEWPORT_SET,
         CLIENT_VIEWPORT_SET_V2,
         RELAY_LINK,
@@ -761,6 +765,13 @@ pub enum AutomationPermissionTarget {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RequestAutomationPermission {
     pub target: AutomationPermissionTarget,
+}
+
+/// The retained Linux workbench process; a launch never authorizes its requester.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DesktopOpened {
+    pub process_id: u32,
 }
 
 fn answered_means_ready() -> bool {

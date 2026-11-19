@@ -87,6 +87,11 @@ fn main() -> std::process::ExitCode {
 
 fn run(options: Options) -> Result<(), String> {
     let source = options.source()?;
+    if let WindowSource::Workbench { socket } = &source
+        && !is_managed_workbench(socket)?
+    {
+        return Ok(());
+    }
     let engine = Rc::new(Engine::new()?);
     // Native Ghostty initializes GTK first; this also establishes gtk-rs's main-thread guard.
     gtk4::init().map_err(|error| error.to_string())?;
@@ -133,6 +138,23 @@ fn run(options: Options) -> Result<(), String> {
     }
     eprintln!("AxoDesktop: clean shutdown; terminal widgets released");
     Ok(())
+}
+
+/// An ordinary launcher opens the daemon's retained workbench and exits. Only
+/// that exact child proceeds to initialize GTK and request pane descriptors.
+fn is_managed_workbench(socket: &std::path::Path) -> Result<bool, String> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all().build().map_err(|error| error.to_string())?;
+    let opened: axo_protocol::rpc::DesktopOpened = runtime.block_on(async {
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            let mut client = axo_client::Client::connect(socket).await?;
+            client.negotiate().await?;
+            client.call_typed(axo_protocol::rpc::method::CLIENT_DESKTOP_OPEN, serde_json::json!({})).await
+        }).await
+    }).map_err(|_| "Desktop launch timed out; check whether its window opened before retrying.".to_owned())?
+      .map_err(|error: axo_client::Error| error.to_string())?;
+    if opened.process_id == 0 { return Err("daemon returned an invalid desktop process".into()); }
+    Ok(opened.process_id == std::process::id())
 }
 
 fn create_window(

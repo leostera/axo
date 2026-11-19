@@ -4,6 +4,8 @@
 //! [`Fixture`]: crate::test_support::Fixture
 
 mod attachments;
+#[cfg(target_os = "linux")]
+mod desktop;
 mod claude;
 mod codex;
 mod idle_pis;
