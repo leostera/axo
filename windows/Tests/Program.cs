@@ -2,9 +2,10 @@ using System.Diagnostics;
 using System.Text.Json;
 using Axo;
 
-if (args.Length == 3 && args[0] == "--package-check")
+if (args.Length == 3 && args[0] is "--package-check" or "--install-package")
 {
     string installed = Installer.Install(Path.GetFullPath(args[1]), Path.GetFullPath(args[2]));
+    if (args[0] == "--install-package") Installer.AddStartMenuShortcut(installed);
     Console.WriteLine("Verified and staged package: " + Installer.Verify(Path.GetDirectoryName(installed)!));
     return 0;
 }
@@ -93,6 +94,7 @@ try
     if(!live)
     {
         TranscriptLog.CheckProtocol(Assert);
+        LaunchProfileChecks.Run(root, Assert);
         Exception? viewError=null;
         var views=new Thread(()=>
         {

@@ -76,6 +76,9 @@ public sealed class DaemonClient
             if (File.Exists(candidate)) return candidate;
         }
         var local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        // Explorer may still have its pre-install PATH until the next sign-in.
+        var winget = Path.Combine(local, "Microsoft", "WinGet", "Links", "codex.exe");
+        if (File.Exists(winget)) return winget;
         var bundled = Path.Combine(local, "OpenAI", "Codex", "bin");
         if (Directory.Exists(bundled))
         {

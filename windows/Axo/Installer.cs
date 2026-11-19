@@ -70,12 +70,13 @@ public static class Installer
     }
     public static void AddStartMenuShortcut(string executable)
     {
+        string arguments = LaunchProfile.CurrentShortcutArguments();
         string menu = Environment.GetFolderPath(Environment.SpecialFolder.Programs); string path = Path.Combine(menu, "Axo.lnk");
         var shellType = Type.GetTypeFromProgID("WScript.Shell") ?? throw new IOException("Windows shortcut support is unavailable.");
         dynamic shell = Activator.CreateInstance(shellType)!;
         try
         {
-            dynamic shortcut = shell.CreateShortcut(path); try { shortcut.TargetPath = executable; shortcut.WorkingDirectory = Path.GetDirectoryName(executable); shortcut.IconLocation = executable; shortcut.Description = "Axo"; shortcut.Save(); } finally { System.Runtime.InteropServices.Marshal.FinalReleaseComObject(shortcut); }
+            dynamic shortcut = shell.CreateShortcut(path); try { shortcut.TargetPath = executable; shortcut.Arguments = arguments; shortcut.WorkingDirectory = Path.GetDirectoryName(executable); shortcut.IconLocation = executable; shortcut.Description = "Axo"; shortcut.Save(); } finally { System.Runtime.InteropServices.Marshal.FinalReleaseComObject(shortcut); }
         }
         finally { System.Runtime.InteropServices.Marshal.FinalReleaseComObject(shell); }
     }
