@@ -8,6 +8,7 @@ import Foundation
 struct CommandPalettePerformer {
   let sessions: TerminalSessionsModel
   let toggleSidebar: () -> Void
+  let toggleZenMode: () -> Void
   let chooseFolderForNewSession: () -> Void
   let cloneGitHubRepository: (GitHubRepository) -> Void
   let openSettings: () -> Void
@@ -50,6 +51,8 @@ struct CommandPalettePerformer {
       Task { await sessions.requestCloseSession(sessionID) }
     case .toggleSidebar:
       toggleSidebar()
+    case .toggleZenMode:
+      toggleZenMode()
     case .openSettings:
       openSettings()
     }

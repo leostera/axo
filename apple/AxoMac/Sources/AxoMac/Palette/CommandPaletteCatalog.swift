@@ -25,6 +25,7 @@ enum CommandPaletteCommand: Hashable {
   case closeShell(ShellID)
   case closeSession(SessionID)
   case toggleSidebar
+  case toggleZenMode
   case openSettings
 }
 
@@ -176,6 +177,7 @@ enum CommandPaletteCatalog {
       add(.closeSession(selected.id), "Close Session", subtitle: selected.displayName)
     }
     add(.toggleSidebar, "Toggle Sidebar", shortcut: "⌃⌘S")
+    add(.toggleZenMode, "Toggle Zen Mode", keywords: ["hide", "sidebar", "focus"], shortcut: "⌃⌘Z")
     add(.openSettings, "Settings…", keywords: ["preferences"], shortcut: "⌘,")
     return commands
   }

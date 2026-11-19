@@ -116,14 +116,14 @@ final class CommandPaletteCatalogTests: XCTestCase {
     func commands(_ context: CommandPaletteContext) -> [String] {
       CommandPaletteCatalog.items(context).filter { $0.kind == .command }.map(\.title)
     }
-    let always = ["New Session", "New Session in Folder…", "Toggle Sidebar", "Settings…"]
+    let always = ["New Session", "New Session in Folder…", "Toggle Sidebar", "Toggle Zen Mode", "Settings…"]
     XCTAssertEqual(commands(context(availability: availability(focused: false, selected: false))), always)
 
     let open = context(sessions: [session(1, "a", shells: [shell(10)])], selected: 1, focused: 10)
     XCTAssertEqual(
       commands(open),
       ["New Session", "New Session in Folder…", "Split Right", "Split Down", "Close Focused Shell",
-       "Close Session", "Toggle Sidebar", "Settings…"])
+       "Close Session", "Toggle Sidebar", "Toggle Zen Mode", "Settings…"])
 
     // The menus' availability decides, as for the same commands in the menu bar.
     var unavailable = open
@@ -254,6 +254,7 @@ final class GitHubRepositoryTests: XCTestCase {
 @MainActor
 final class CommandPalettePerformerTests: XCTestCase {
   private var toggled = 0
+  private var zenToggled = 0
   private var foldersChosen = 0
   private var settings = 0
   private var clonedRepository: GitHubRepository?
@@ -274,6 +275,7 @@ final class CommandPalettePerformerTests: XCTestCase {
     CommandPalettePerformer(
       sessions: sessions,
       toggleSidebar: { self.toggled += 1 },
+      toggleZenMode: { self.zenToggled += 1 },
       chooseFolderForNewSession: { self.foldersChosen += 1 },
       cloneGitHubRepository: { self.clonedRepository = $0 },
       openSettings: { self.settings += 1 })
@@ -316,6 +318,8 @@ final class CommandPalettePerformerTests: XCTestCase {
     let perform = performer(sessions)
     let repository = try XCTUnwrap(GitHubRepository.parsePaletteInput("github:axo/app"))
     XCTAssertTrue(perform.perform(.run(.toggleSidebar)))
+    XCTAssertTrue(perform.perform(.run(.toggleZenMode)))
+    XCTAssertEqual(zenToggled, 1)
     XCTAssertTrue(perform.perform(.run(.chooseFolderForNewSession)))
     XCTAssertTrue(perform.perform(.cloneGitHubRepository(repository)))
     XCTAssertTrue(perform.perform(.run(.openSettings)))

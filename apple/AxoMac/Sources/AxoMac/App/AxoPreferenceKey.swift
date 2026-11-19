@@ -4,6 +4,7 @@ import Foundation
 /// Daemon registration keys live in `DaemonPreferenceKey` and must not overlap these.
 enum AxoPreferenceKey {
   static let sidebarIsCollapsed = "terminalSidebarIsCollapsed.v2"
+  static let zenMode = "terminalZenMode.v1"
   static let selectedSession = "terminalSelectedSession.v1"
   static let automaticPiRestart = "agent.autoRestartUnavailablePi.v1"
   static let appearanceTheme = "appearance.theme"
@@ -27,7 +28,7 @@ enum AxoPreferenceKey {
   static let setupAcknowledgedIssues = "setup.acknowledgedIssues.v1"
 
   static let all = [
-    sidebarIsCollapsed, selectedSession, automaticPiRestart, appearanceTheme, scrollSensitivity,
+    sidebarIsCollapsed, zenMode, selectedSession, automaticPiRestart, appearanceTheme, scrollSensitivity,
     preventSystemSleep, sidebarMacs, pinnedSessions, seenSessions, seenSessionsBaseline,
     sidebarGrouping, developerToolsPromptDeclined, cliCommandSetupOffered,
     setupPresented, setupCompleted, setupAcknowledgedIssues,

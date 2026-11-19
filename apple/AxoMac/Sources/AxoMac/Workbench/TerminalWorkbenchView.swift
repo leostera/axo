@@ -11,6 +11,7 @@ struct TerminalWorkbenchView: View {
   @Environment(GhosttyRuntime.self) private var ghostty
   @Environment(\.displayScale) private var displayScale
   @State private var terminalAreaSize: CGSize = .zero
+  @AppStorage(AxoPreferenceKey.zenMode) private var isZenMode = false
 
   private var daemonIsRunning: Bool {
     if let daemonIsRunningOverride { return daemonIsRunningOverride }
@@ -22,9 +23,10 @@ struct TerminalWorkbenchView: View {
     HStack(spacing: 0) {
       // Its own view: Session status and names change on every Pi turn, and only the sidebar
       // presents them. The terminal area reads pane-level projections that those leave alone.
-      WorkbenchSidebar(sessions: sessions, isPresentingNewSessionInFolder: $isPresentingNewSessionInFolder)
-
-      Divider()
+      if !isZenMode {
+        WorkbenchSidebar(sessions: sessions, isPresentingNewSessionInFolder: $isPresentingNewSessionInFolder)
+        Divider()
+      }
 
       terminalContent
         .frame(maxWidth: .infinity, maxHeight: .infinity)

@@ -332,6 +332,7 @@ private struct TerminalAppWindow: View {
   var palette: CommandPaletteModel
   var isDaemonRunningOverride: Bool?
   @AppStorage(AxoPreferenceKey.sidebarIsCollapsed) private var isSidebarCollapsed = false
+  @AppStorage(AxoPreferenceKey.zenMode) private var isZenMode = false
   @State private var isCloningRepository = false
   @State private var repositoryCloneError: String?
 
@@ -376,7 +377,10 @@ private struct TerminalAppWindow: View {
   private func perform(_ action: CommandPaletteAction) {
     CommandPalettePerformer(
       sessions: sessions,
-      toggleSidebar: { isSidebarCollapsed.toggle() },
+      toggleSidebar: {
+        if isZenMode { isZenMode = false } else { isSidebarCollapsed.toggle() }
+      },
+      toggleZenMode: { isZenMode.toggle() },
       chooseFolderForNewSession: { isPresentingNewSessionInFolder = true },
       cloneGitHubRepository: cloneGitHubRepository,
       openSettings: {
@@ -416,6 +420,7 @@ private struct WorkbenchViewCommands: Commands {
   var palette: CommandPaletteModel
   var sessions: TerminalSessionsModel
   @Binding var isSidebarCollapsed: Bool
+  @AppStorage(AxoPreferenceKey.zenMode) private var isZenMode = false
   @Environment(\.openWindow) private var openWindow
 
   var body: some Commands {
@@ -431,9 +436,12 @@ private struct WorkbenchViewCommands: Commands {
       .keyboardShortcut("p", modifiers: [.command, .shift])
 
       Button("Toggle Sidebar") {
-        isSidebarCollapsed.toggle()
+        if isZenMode { isZenMode = false } else { isSidebarCollapsed.toggle() }
       }
       .keyboardShortcut("s", modifiers: [.control, .command])
+
+      Button(isZenMode ? "Exit Zen Mode" : "Enter Zen Mode") { isZenMode.toggle() }
+        .keyboardShortcut("z", modifiers: [.control, .command])
     }
   }
 }

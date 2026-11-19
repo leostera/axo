@@ -4,6 +4,10 @@ What changed in each published version of Axo. Every publish raises the minor ve
 
 ## Unreleased
 
+### Added
+
+- Mac Zen mode hides the sidebar and its divider completely. Toggle it from View, the command palette, or ⌃⌘Z. Leaving Zen restores the previous expanded/collapsed sidebar preference.
+
 ### Fixed
 
 - Unread conversations can remain in Earlier on Mac, iPhone/iPad and web. Reading one or marking all read no longer moves old conversations out of Active. Removed the obsolete keep-unread-active setting without resetting read markers or other preferences.
