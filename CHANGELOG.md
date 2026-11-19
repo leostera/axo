@@ -18,6 +18,7 @@ What changed in each published version of Axo. Every publish raises the minor ve
 
 - Web and iPhone/iPad slash menus use compact command-left, description-right rows. The complete bounded command catalog is scrollable instead of stopping after eight web results; keyboard selection stays visible, with Home/End navigation and retained composer focus.
 - Public Mac archives now require Developer ID Application signatures, Hardened Runtime, secure timestamps, a stapled app ticket and Gatekeeper acceptance. Local development fallback is no longer sufficient to publish.
+- Reusable Apple release gates, signing and in-place installation helpers live under `tools/apple/`, with source-bound build evidence, private run state, explicit approval inputs and one-attempt fences.
 - Organized Watch conversation rows, session selection and voice controls into focused views. Refreshed Watch grouping regressions and documented simulator builds and the explicitly approved account-based companion cutover, retaining legacy data and keys without claiming legacy credential migration.
 
 ## 0.80 (Mac app build 352, axod 96)

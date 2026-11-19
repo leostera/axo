@@ -1,0 +1,45 @@
+load("@aspect_rules_ts//ts:defs.bzl", "ts_config", "ts_project")
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
+load("//bazel/js:defs.bzl", "node_test")
+
+package(default_visibility = ["//visibility:public"])
+
+exports_files(glob(["*.py", "*.ts", "*.json", "*.sh"]))
+
+ts_config(
+    name = "tsconfig",
+    src = "tsconfig.json",
+    deps = ["//:tsconfig_base"],
+)
+
+ts_project(
+    name = "typecheck_project",
+    srcs = ["sign_macos.ts"],
+    no_emit = True,
+    tsconfig = ":tsconfig",
+    deps = ["//:node_modules/@types/node"],
+)
+
+filegroup(
+    name = "typecheck",
+    srcs = [":typecheck_project"],
+    output_group = "typecheck",
+)
+
+sh_test(
+    name = "python_test",
+    srcs = ["test_python.sh"],
+    args = ["$(rootpath :test_tools.py)"],
+    data = ["test_tools.py", "common.py", "install_mac.py", "install_mobile.py", "release_gates.py"],
+)
+
+node_test(
+    name = "signing_test",
+    tests = ["test_signing.mjs"],
+    data = ["sign_macos.ts"],
+)
+
+test_suite(
+    name = "test",
+    tests = [":python_test", ":signing_test"],
+)

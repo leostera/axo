@@ -50,6 +50,8 @@ chmod -R u+w "$work/Axo.app"
 ditto -c -k --keepParent "$work/Axo.app" "$work/archive.zip"
 ditto -x -k "$work/archive.zip" "$work/check"
 codesign --verify --deep --strict "$work/check/Axo.app"
+xcrun stapler validate "$work/check/Axo.app" >/dev/null
+spctl --assess --type execute "$work/check/Axo.app"
 [[ "$(cdhash "$app")" == "$(cdhash "$work/check/Axo.app")" ]] || exit 1
 [[ -z "$(find "$work/check" ! -perm -u+w -print -quit)" ]] || { echo "Archive has read-only files" >&2; exit 1; }
 zip=$work/archive.zip
