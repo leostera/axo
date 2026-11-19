@@ -75,7 +75,7 @@ const paths: Record<IconName, string> = {
 const filled: ReadonlySet<IconName> = new Set(["stopFill", "sparkles", "pinFill"]);
 
 export function Icon({ name, size = 20 }: { name: IconName; size?: number }) {
-  if (name === "linux" || name === "windows") return <span className="icon" data-icon={name}><BrandIcon name={name} size={size} /></span>;
+  if (name === "linux" || name === "windows" || name === "cloud") return <span className="icon" data-icon={name}><BrandIcon name={name} size={size} /></span>;
   const solid = filled.has(name);
   return (
     <svg className="icon" data-icon={name} width={size} height={size} viewBox="0 0 24 24" fill={solid ? "currentColor" : "none"} stroke="currentColor"

@@ -1873,6 +1873,8 @@ test("a Mac is shown by the shape its model's name says, or else its identifier;
   assert.equal(hostIcon({ hostKind: "macos" }), "desktop");
   assert.equal(hostIcon({ hostKind: "linux" }), "linux");
   assert.equal(hostIcon({ hostKind: "windows" }), "windows");
+  assert.equal(hostIcon({ hostKind: "cloud" }), "cloud");
+  assert.equal(hostIcon({ hostKind: "linux", model: { identifier: "Cloud host" } }), "linux", "never infer cloud placement from a name");
   assert.equal(hostIcon({ hostKind: "unknown" }), "desktop");
   assert.equal(hostIcon({ hostKind: "linux", model: { identifier: "MacBookPro18,3" } }), "linux", "platform takes precedence over model");
   assert.equal(hostIcon({ hostKind: "macos", model: { identifier: "MacBookPro18,3" } }), "laptop");

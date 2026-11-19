@@ -16,6 +16,7 @@ public enum HostPresentation {
     switch host.hostKind {
     case "linux": return "host-linux"
     case "windows": return "host-windows"
+    case "cloud": return "host-cloud"
     default: return nil
     }
   }

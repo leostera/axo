@@ -6,5 +6,6 @@ Shared vector assets used by native asset catalogs and the web client. Retrieved
 - Codex: lobehub/lobe-icons, `packages/static-svg/icons/codex.svg` (MIT).
 - OpenCode, Claude and Linux: simple-icons/simple-icons, `icons/{opencode,claude,linux}.svg` (CC0 icon distribution; respective trademarks remain their owners').
 - Windows: four-pane Windows mark, redrawn as simple squares; Microsoft trademark.
+- Cloud: Axo’s generic outline cloud, shared across clients and ready for cloud-host presentation.
 
 Marks identify installed software or host operating systems, not endorsement. Macs retain hardware-specific system symbols. No remote icon loading or tracking.

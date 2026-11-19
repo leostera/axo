@@ -11,6 +11,7 @@ final class HostPresentationTests: XCTestCase {
   func testOSMarksTakePrecedenceAndMacsKeepHardwareSymbols() {
     XCTAssertEqual(HostPresentation.logoName(host(kind: "linux")), "host-linux")
     XCTAssertEqual(HostPresentation.logoName(host(kind: "windows")), "host-windows")
+    XCTAssertEqual(HostPresentation.logoName(host(kind: "cloud")), "host-cloud")
     XCTAssertNil(HostPresentation.logoName(host(model: HostModel(identifier: "Mac13,2"))))
   }
 

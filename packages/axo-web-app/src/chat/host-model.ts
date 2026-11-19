@@ -30,6 +30,7 @@ const icons: Record<HostFamily, IconName> = {
 export function hostIcon(host: { readonly hostKind: string; readonly model?: HostModel }): IconName {
   if (host.hostKind === "linux") return "linux";
   if (host.hostKind === "windows") return "windows";
+  if (host.hostKind === "cloud") return "cloud";
   if (host.hostKind !== "macos") return "desktop";
   const family = hostFamily(host.model);
   return family ? icons[family] : "desktop";
