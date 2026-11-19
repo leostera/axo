@@ -14,6 +14,8 @@ struct Runtime {
 
 fn registry() -> ToolRegistry {
     let mut registry = platform::registry();
+    #[cfg(target_os = "linux")]
+    registry.register(Box::new(crate::input_targets::InputTargets::new()));
     registry.register_script_tool();
     let allowed: Vec<_> = super::TOOLS
         .iter()
@@ -157,12 +159,17 @@ mod tests {
         registry.set_invocation_guard(Arc::new(|_| {
             Box::pin(async { Some("host refused".into()) })
         }));
-        let result = block_on(registry.invoke(
+        for tool in [
             "check_permissions",
-            json!({"approved":true,"_skip_guard":true}),
-        ));
-        let value = serde_json::to_value(result).unwrap();
-        assert_eq!(value["isError"], true);
-        assert!(value.to_string().contains("host refused"));
+            #[cfg(target_os = "linux")]
+            "input_targets",
+        ] {
+            let result = block_on(
+                registry.invoke(tool, json!({"pid":42,"approved":true,"_skip_guard":true})),
+            );
+            let value = serde_json::to_value(result).unwrap();
+            assert_eq!(value["isError"], true);
+            assert!(value.to_string().contains("host refused"));
+        }
     }
 }

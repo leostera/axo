@@ -18,6 +18,8 @@ pub mod form;
 pub mod gate;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 mod scripts;
+#[cfg(target_os = "linux")]
+mod input_targets;
 
 /// Cua tools agents may call. Left out: process killing, updates, extensions, configuration,
 /// recordings and replays, the clipboard, and attaching to the person's logged-in browser.
@@ -46,6 +48,8 @@ pub const TOOLS: &[&str] = &[
     "run_steps",
     "run_script",
     "get_guide",
+    #[cfg(target_os = "linux")]
+    "input_targets",
 ];
 
 /// What Axo calls Cua's tools where Cua's name says less: `screenshot` is `get_desktop_state`.
@@ -69,7 +73,7 @@ fn our_name(tool: &str) -> &str {
 /// fills them in (RFD0029). Never reaches `call`.
 pub const REQUEST_INPUT: &str = "request_input";
 
-/// Secure form binding still uses native macOS AX handles; Linux must not advertise parity.
+/// Native AX on macOS and exact AT-SPI object binding on Linux; delivery still needs confirmation.
 pub const FORM_INPUT_AVAILABLE: bool = cfg!(any(target_os = "macos", target_os = "linux"));
 pub const INPUT_AVAILABLE: bool = cfg!(any(target_os = "macos", target_os = "linux"));
 
@@ -89,7 +93,7 @@ fn request_input_definition() -> Value {
     });
     definition["inputSchema"] = json!({"oneOf":[gui,sudo["inputSchema"]]});
     definition["description"] = json!(
-        "Ask for person-only input into bound Linux AT-SPI GUI fields using pid, 64-bit accessibility window_id, fields and optional submit. Passwords require a verified secure field; changed, unsupported or unconfirmed targets fail without keyboard/clipboard fallback. Browser origins come from document metadata, never the address bar. Plain text is redacted and screenshots are withheld after GUI fills; protection survives daemon restarts. Native compositor window IDs are not AT-SPI handles. Alternatively use target:{kind:\"sudo\",argv:[\"/absolute/program\",...]} for private sudo askpass input. Never pass values or approvals, or retry an uncertain fill automatically."
+        "First use input_targets({pid}) then input_targets({pid,window_id}) to discover and inspect a secure-input target. Ask for person-only input into bound Linux AT-SPI GUI fields using pid, 64-bit accessibility window_id, fields and optional submit. Passwords require a verified secure field; changed, unsupported or unconfirmed targets fail without keyboard/clipboard fallback. Browser origins come from document metadata, never the address bar. Plain text is redacted and screenshots are withheld after GUI fills; protection survives daemon restarts. Native compositor window IDs are not AT-SPI handles. Alternatively use target:{kind:\"sudo\",argv:[\"/absolute/program\",...]} for private sudo askpass input. Never pass values or approvals, or retry an uncertain fill automatically."
     );
     definition
 }

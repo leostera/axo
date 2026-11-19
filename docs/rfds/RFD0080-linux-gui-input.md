@@ -27,6 +27,28 @@ origins, incomplete walks, locked desktops and unsupported field routes. Never
 enable unsafe GNOME helpers: AT-SPI field writes require neither per-window capture
 nor foreground activation. An accessibility window handle is not a compositor ID.
 
+## Target discovery
+
+Expose read-only `input_targets({pid})` to enumerate the kernel-bound application\'s
+AT-SPI top-level handles, and `input_targets({pid,window_id})` to inspect one exact
+form. Return executable/window/document metadata, labels, secure roles and buttons,
+never existing field contents. Keep the ordinary desktop guard and source-level
+privacy filtering, including before nested scripts can transform results. Bound
+window inventory, wall time and concurrent discovery workers; cancellation must
+not release a worker\'s concurrency permit before that worker exits.
+
+Register discovery as an R2 private-observation operation in the canonical Cua
+registry, preserving policy, manifests and the host guard. Standard observation
+is promptless. Permission modes requiring resource grants fail closed until an
+exact AT-SPI grant scope exists; never reinterpret these handles as compositor
+window grants. Runtime session context is not caller approval.
+
+Discovery is not approval or delivery evidence. Handles can become stale;
+`request_input` performs its own reading and binding checks. `binding_available`
+means eligible objects exist in this snapshot, not that an application\'s advertised
+EditableText implementation actually edits its document. Only a confirmed write
+establishes delivery. Do not ask for a secret merely to discover a window handle.
+
 ## Binding and delivery
 
 Read the AT-SPI registry, pin unique bus owners and verify the application's kernel

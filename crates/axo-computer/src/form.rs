@@ -167,6 +167,8 @@ pub fn pick_field(
 }
 
 pub use imp::Form;
+#[cfg(target_os = "linux")]
+pub use imp::{InputWindow, input_windows};
 
 #[cfg(target_os = "macos")]
 mod imp {

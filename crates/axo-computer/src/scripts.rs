@@ -146,6 +146,10 @@ mod tests {
                                 { "element_index": 2, "element_token": "s9:2", "role": "AXButton", "label": "Cancel", "depth": 1 },
                             ],
                         })),
+                    #[cfg(target_os = "linux")]
+                    "input_targets" => ToolResult::text("read only").with_structured(json!({
+                        "kind":"windows", "windows":[{"pid":65536,"window_id":4294967296u64,"window_title":"me@example.com"}]
+                    })),
                     _ => ToolResult::text(format!("{name} done")),
                 }
             })
@@ -155,7 +159,10 @@ mod tests {
     fn scripts() -> (Arc<ToolRegistry>, Calls) {
         let calls: Calls = Arc::default();
         let mut driver = ToolRegistry::new();
-        for name in ["get_window_state", "click", "press_key", "type_text", "list_windows", "list_apps"] {
+        for name in ["get_window_state", "click", "press_key", "type_text", "list_windows", "list_apps",
+            #[cfg(target_os = "linux")]
+            "input_targets",
+        ] {
             driver.register(Box::new(Fake {
                 definition: ToolDef {
                     name: name.into(),
@@ -254,6 +261,21 @@ mod tests {
         );
         assert_eq!(result.is_error, Some(true), "{}", text(&result));
         assert!(calls.lock().unwrap().iter().all(|(name, _)| name != "press_key"));
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn input_discovery_is_redacted_before_a_script_can_transform_it() {
+        crate::filled::remember("me@example.com");
+        let (scripts, calls) = scripts();
+        let result = run(&scripts, r#"const read = await cua.call("input_targets", { pid: 65536 });
+            return JSON.stringify(read).split("").reverse().join("");"#);
+        assert_ne!(result.is_error, Some(true), "{}", text(&result));
+        let returned: String = text(&result).chars().rev().collect();
+        assert!(!returned.contains("me@example.com"), "{returned}");
+        assert!(returned.contains(crate::filled::FILLED), "{returned}");
+        assert!(returned.contains("4294967296"), "{returned}");
+        assert_eq!(calls.lock().unwrap()[0].0, "input_targets");
     }
 
     #[test]

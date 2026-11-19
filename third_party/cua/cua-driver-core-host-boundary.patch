@@ -1,6 +1,15 @@
+diff --git a/src/tool.rs b/src/tool.rs
 --- a/src/tool.rs
 +++ b/src/tool.rs
-@@ -1121,8 +1121,17 @@
+@@ -803,6 +803,7 @@
+         "list_apps" => &["app.list"],
+         "kill_app" => &["app.kill"],
+         "list_windows" => &["window.list"],
++        "input_targets" => &["window.list", "window.read"],
+         "bring_to_front" => &["window.activate"],
+         "set_window_frame" => &["window.frame.set"],
+         "debug_window_info" => &["window.debug_info"],
+@@ -1121,8 +1122,17 @@
      }
  }
  
@@ -18,7 +27,7 @@
      tools: HashMap<String, Box<dyn Tool>>,
      /// Ordered list of tool names for `tools/list`.
      order: Vec<String>,
-@@ -1201,6 +1210,7 @@
+@@ -1201,6 +1211,7 @@
                  })
              }));
          Self {
@@ -26,7 +35,7 @@
              tools: HashMap::new(),
              order: Vec::new(),
              recording,
-@@ -1218,6 +1228,18 @@
+@@ -1218,6 +1229,18 @@
          }
      }
  
@@ -45,7 +54,7 @@
      /// Return the runtime-owned broker for adapter construction.
      ///
      /// This is intentionally not exposed through MCP/CLI arguments. Platform
-@@ -1772,6 +1794,11 @@
+@@ -1772,6 +1795,11 @@
          let Some(tool) = self.tools.get(resolved_name) else {
              return ToolResult::error(format!("Unknown tool: {name}"));
          };
@@ -57,3 +66,51 @@
  
          // MCP types `arguments` as an object and transports substitute `{}`
          // when it is absent, but a client can still send any JSON value.
+diff --git a/src/script_tool.rs b/src/script_tool.rs
+--- a/src/script_tool.rs
++++ b/src/script_tool.rs
+@@ -69,6 +69,9 @@
+     "launch_app",
+     "list_apps",
+     "list_windows",
++    // Axo's host-registered metadata reader; dispatch still uses the host guard.
++    #[cfg(target_os = "linux")]
++    "input_targets",
+     "get_window_state",
+     "verify_state",
+     "zoom",
+diff --git a/src/authorization.rs b/src/authorization.rs
+--- a/src/authorization.rs
++++ b/src/authorization.rs
+@@ -235,6 +235,7 @@
+     "verify_state",
+     "list_apps",
+     "list_windows",
++    "input_targets",
+     "debug_window_info",
+     "get_browser_state",
+     "browser_dialog[action=inspect]",
+@@ -743,6 +744,7 @@
+             | "verify_state"
+             | "list_apps"
+             | "list_windows"
++            | "input_targets"
+             | "debug_window_info"
+             | "get_browser_state"
+             | "escalate_session"
+@@ -915,6 +917,7 @@
+         | "clipboard_read"
+         | "list_apps"
+         | "list_windows"
++        | "input_targets"
+         | "debug_window_info"
+         | "check_permissions"
+         | "get_accessibility_tree"
+@@ -1033,6 +1036,7 @@
+         "get_accessibility_tree"
+         | "list_apps"
+         | "list_windows"
++        | "input_targets"
+         | "debug_window_info"
+         | "get_browser_state"
+         | "escalate_session"

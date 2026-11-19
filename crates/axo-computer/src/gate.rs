@@ -103,6 +103,8 @@ const READ_ONLY: &[&str] = &[
     "get_screen_size",
     "get_cursor_position",
     "get_guide",
+    #[cfg(target_os = "linux")]
+    "input_targets",
 ];
 
 /// Element labels remembered at most; the oldest go first.

@@ -264,6 +264,81 @@ fn usable(state: &[u32]) -> bool {
     // for editable controls; Sensitive attests interaction, not keyboard focus.
     !state_has(state, 6) && state_has(state, 24) && state_has(state, 25)
 }
+async fn application(connection: &Connection, pid: i32) -> Result<Address, FormError> {
+    let registry: Address = (
+        "org.a11y.atspi.Registry".into(),
+        OwnedObjectPath::try_from("/org/a11y/atspi/accessible/root").map_err(fixed)?,
+    );
+    let mut matches = Vec::new();
+    for (name, path) in children(connection, &registry).await? {
+        let bus = owner(connection, &name).await?;
+        if process_id(connection, &bus).await? == pid as u32 {
+            matches.push((bus, path));
+        }
+    }
+    if matches.len() != 1 {
+        return fail(REFUSED);
+    }
+    Ok(matches.remove(0))
+}
+
+#[derive(serde::Serialize)]
+pub struct InputWindow {
+    pid: i32,
+    window_id: u64,
+    app: String,
+    window_title: String,
+}
+
+/// Discover the accessibility handles that secure form reads actually accept.
+/// Compositor window IDs and editable field values never enter this inventory.
+pub fn input_windows(pid: i32) -> Result<Vec<InputWindow>, FormError> {
+    input_windows_with_guard(pid, crate::screen_locked)
+}
+
+fn input_windows_with_guard(pid: i32, guard: fn() -> bool) -> Result<Vec<InputWindow>, FormError> {
+    if guard() {
+        return fail(crate::LOCKED);
+    }
+    let process = identity(pid)?;
+    let windows = bounded(async {
+        let connection = connection().await?;
+        let application = application(&connection, pid).await?;
+        let frames = children(&connection, &application).await?;
+        if frames.len() > 64 {
+            return fail("This application has too many input windows to inspect at once.");
+        }
+        let executable = std::fs::read_link(format!("/proc/{pid}/exe")).map_err(fixed)?;
+        let mut windows = Vec::new();
+        for (ordinal, mut address) in frames.into_iter().enumerate() {
+            address.0 = owner(&connection, &address.0).await?;
+            if address.0 != application.0 {
+                return fail(REFUSED);
+            }
+            let accessible = accessible(&connection, &address).await?;
+            let role: u32 = accessible.call("GetRole", &()).await.map_err(fixed)?;
+            if !matches!(role, 2 | 16 | 23 | 69) {
+                continue;
+            }
+            let window_title: String = accessible.get_property("Name").await.map_err(fixed)?;
+            windows.push(InputWindow {
+                pid,
+                window_id: ((pid as u64) << 16) | ordinal as u64,
+                app: executable.to_string_lossy().into_owned(),
+                window_title,
+            });
+        }
+        Ok(windows)
+    })?;
+    if guard() {
+        return fail(crate::LOCKED);
+    }
+    if identity(pid)? != process {
+        return fail(REFUSED);
+    }
+    Ok(windows)
+}
+
 async fn read(
     connection: Connection,
     pid: i32,
@@ -278,27 +353,14 @@ async fn read(
         );
     }
     let ordinal = (window_id & 0xffff) as usize;
-    let registry: Address = (
-        "org.a11y.atspi.Registry".into(),
-        OwnedObjectPath::try_from("/org/a11y/atspi/accessible/root").map_err(fixed)?,
-    );
-    let mut applications = Vec::new();
-    for (name, path) in children(&connection, &registry).await? {
-        let bus = owner(&connection, &name).await?;
-        if process_id(&connection, &bus).await? == pid as u32 {
-            applications.push((bus, path));
-        }
-    }
-    if applications.len() != 1 {
-        return fail(REFUSED);
-    }
-    let frames = children(&connection, &applications[0]).await?;
+    let application = application(&connection, pid).await?;
+    let frames = children(&connection, &application).await?;
     let mut frame = frames
         .get(ordinal)
         .cloned()
         .ok_or_else(|| fixed("missing window"))?;
     frame.0 = owner(&connection, &frame.0).await?;
-    if frame.0 != applications[0].0 {
+    if frame.0 != application.0 {
         return fail(REFUSED);
     }
     let changes = Changes::watch(&connection, &frame.0).await?;
@@ -461,6 +523,22 @@ async fn read(
 mod tests {
     use super::*;
     #[test]
+    fn discovery_keeps_large_handles_and_refuses_locked_desktops_before_bus_access() {
+        assert_eq!(
+            input_windows_with_guard(0, || true).err().unwrap().0,
+            crate::LOCKED
+        );
+        let window = InputWindow {
+            pid: 100_000,
+            window_id: 100_000u64 << 16,
+            app: "/owned/fixture".into(),
+            window_title: "Sign in".into(),
+        };
+        let value = serde_json::to_value(window).unwrap();
+        assert_eq!(value["window_id"].as_u64(), Some(100_000u64 << 16));
+        assert!(value["window_id"].as_u64().unwrap() > u32::MAX as u64);
+    }
+    #[test]
     #[ignore = "run linux/gui-input-smoke.sh with the isolated GTK fixture"]
     fn real_gui_form_uses_exact_fields_without_focus_or_secret_readback() {
         assert_eq!(
@@ -486,6 +564,17 @@ mod tests {
         }
         let form = form.expect("the owned GTK form should expose two verifiable inputs");
         assert_eq!(form.window_id, window_id);
+        let windows = input_windows_with_guard(pid, || false).unwrap();
+        assert!(windows.iter().any(|window| window.pid == pid
+            && window.window_id == window_id
+            && window.window_title == form.window_title));
+        static LOCK_CHECKS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        assert!(
+            input_windows_with_guard(pid, || LOCK_CHECKS
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                > 0)
+            .is_err()
+        );
         let email = form.fields.iter().position(|f| f.label == "Email").unwrap();
         let password = form
             .fields
@@ -505,6 +594,21 @@ mod tests {
         form.check_unchanged(&[email, password], None).unwrap();
         form.fill(email, "fixture@example.test").unwrap();
         form.fill(password, "synthetic-gui-password").unwrap();
+        static FORM_LOCK_CHECKS: std::sync::atomic::AtomicUsize =
+            std::sync::atomic::AtomicUsize::new(0);
+        assert!(
+            Form::read_with_guard(pid, window_id, || FORM_LOCK_CHECKS
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                > 0)
+            .is_err()
+        );
+        let reading = Form::read_with_guard(pid, window_id, || false).unwrap();
+        let metadata =
+            serde_json::to_value(crate::input_targets::FormReading::from(reading)).unwrap();
+        assert_eq!(metadata["binding_available"], true);
+        assert_eq!(metadata["delivery_confirmation"], "required_per_operation");
+        assert!(!metadata.to_string().contains("synthetic-gui-password"));
+        assert!(!metadata.to_string().contains("fixture@example.test"));
         let verify = form
             .buttons
             .iter()
@@ -624,10 +728,17 @@ mod tests {
 
 impl Form {
     pub fn read(pid: i32, window_id: u64) -> Result<Self, FormError> {
-        if crate::screen_locked() {
+        Self::read_with_guard(pid, window_id, crate::screen_locked)
+    }
+    fn read_with_guard(pid: i32, window_id: u64, guard: fn() -> bool) -> Result<Self, FormError> {
+        if guard() {
             return fail(crate::LOCKED);
         }
-        bounded(async { read(connection().await?, pid, window_id, crate::screen_locked).await })
+        let form = bounded(async { read(connection().await?, pid, window_id, guard).await })?;
+        if guard() {
+            return fail(crate::LOCKED);
+        }
+        Ok(form)
     }
     pub fn check_unchanged(
         &self,
