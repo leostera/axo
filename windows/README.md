@@ -5,6 +5,9 @@ existing Rust `axod` binary. It runs **Codex CLI**, using `codex app-server` ove
 not required. Axo reuses `axo-protocol`, the existing folder-based Session SQLite catalog in
 `axo-store`, and `axo-agent`; it does not replace the daemon with a C# service.
 
+The [Windows parity roadmap](PARITY.md) lists missing and partial macOS capabilities and their
+priorities. Windows support is additive: macOS and Linux behavior must remain supported.
+
 ## Set up
 
 On Windows 11 x64, install:
