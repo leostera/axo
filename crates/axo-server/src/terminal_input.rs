@@ -177,16 +177,21 @@ mod tests {
 
     #[test]
     fn a_write_that_fails_is_not_counted_and_hands_the_turn_on() {
-        let (reader, writer) = pipe();
-        let input = TerminalInput::new(&writer).unwrap();
-        // With no reader the write fails (Rust's runtime ignores SIGPIPE, so it is EPIPE).
-        drop(reader);
-        drop(writer);
-        assert!(input.write_sequenced(0, b"a", WAIT).is_err());
-        assert!(
-            input.write_sequenced(0, b"a", WAIT).is_err(),
-            "not taken as written"
-        );
+        let (reader, _writer) = pipe();
+        let input = TerminalInput::new(&reader).unwrap();
+        // The read-only endpoint always refuses writes. Dropping a pipe reader
+        // does not guarantee EPIPE while parallel tests spawn children that can
+        // briefly inherit that reader before exec.
+        for _ in 0..2 {
+            assert_eq!(
+                input
+                    .write_sequenced(0, b"a", WAIT)
+                    .unwrap_err()
+                    .raw_os_error(),
+                Some(libc::EBADF),
+                "a failed write must release its turn without counting the sequence"
+            );
+        }
     }
 
     #[test]
