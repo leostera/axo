@@ -423,10 +423,11 @@ pub fn open(socket_path: &Path, shell_id: i64) -> io::Result<Attachment> {
 /// refusal is explicit: never downgrade to an inferred grid or a new subprocess.
 pub fn open_snapshot(socket_path: &Path, shell_id: i64) -> io::Result<PreparedAttachment> {
     let opened = open_request(socket_path, shell_id, AttachVersion::V3).map_err(|error| {
-        io::Error::new(
-            error.kind(),
-            format!("snapshot attach v3 (requires updated axod): {error}"),
-        )
+        let context = match error.kind() {
+            io::ErrorKind::PermissionDenied | io::ErrorKind::NotFound | io::ErrorKind::WouldBlock => "snapshot attach v3",
+            _ => "snapshot attach v3 (requires updated axod)",
+        };
+        io::Error::new(error.kind(), format!("{context}: {error}"))
     })?;
     match opened {
         OpenedAttachment::Snapshot { attachment, size } => attachment.prepare_at(size),
@@ -1075,6 +1076,22 @@ mod tests {
             open_snapshot(&path, 1).unwrap_err().kind(),
             io::ErrorKind::InvalidData
         );
+        server.join().unwrap();
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn permission_refusal_does_not_claim_the_daemon_is_outdated() {
+        let (listener, path) = listener();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            read_versioned_request(&mut stream).unwrap();
+            write_rejection(&mut stream, Rejection::NotAllowed).unwrap();
+        });
+        let error = open_snapshot(&path, 1).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        assert!(error.to_string().contains("only the person"));
+        assert!(!error.to_string().contains("requires updated axod"));
         server.join().unwrap();
         std::fs::remove_file(path).unwrap();
     }
