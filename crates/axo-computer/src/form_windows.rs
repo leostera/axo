@@ -19,7 +19,7 @@ impl Drop for Apartment {
 
 pub struct Form {
     pub pid: i32,
-    pub window_id: u32,
+    pub window_id: u64,
     pub app: String,
     pub window_title: String,
     pub origin: Option<String>,
@@ -34,12 +34,14 @@ pub struct Form {
 }
 
 impl Form {
-    pub fn read(pid: i32, window_id: u32) -> Result<Self, FormError> {
+    pub fn read(pid: i32, window_id: u64) -> Result<Self, FormError> {
+        let native_id = u32::try_from(window_id)
+            .map_err(|_| FormError("The Windows window id is out of range.".into()))?;
         if crate::screen_locked() {
             return fail(crate::LOCKED);
         }
         unsafe {
-            let hwnd = HWND(window_id as usize as *mut _);
+            let hwnd = HWND(native_id as usize as *mut _);
             let mut owner = 0;
             GetWindowThreadProcessId(hwnd, Some(&mut owner));
             if owner != pid as u32 || !IsWindow(hwnd).as_bool() {
@@ -238,4 +240,14 @@ impl Form {
                 .map_err(error)
         }
     }
+}
+
+#[test]
+fn a_wider_shared_window_id_cannot_alias_a_windows_handle() {
+    let result = Form::read(1, u64::from(u32::MAX) + 1);
+    assert!(
+        result
+            .err()
+            .is_some_and(|error| error.0.contains("out of range"))
+    );
 }
