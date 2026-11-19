@@ -56,7 +56,7 @@ pub(crate) fn is_the_person(peer: &Peer) -> bool {
 }
 
 /// Pane control: the person or the Session's own processes, plus Linux's exact
-/// daemon-managed desktop for open local Sessions (RFD0086), never its descendants.
+/// daemon-managed desktop for open local Sessions (RFD0088), never its descendants.
 pub(crate) fn may_type_into(core: &Core, peer: &Peer, session: SessionId) -> bool {
     #[cfg(target_os = "linux")]
     if core.registry.contains(session)

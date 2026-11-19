@@ -1,4 +1,4 @@
-# RFD0086 - Axo: daemon-managed Linux desktop pane access
+# RFD0088 - Axo: daemon-managed Linux desktop pane access
 
 - Feature Name: `linux-managed-desktop-pane-access`
 - Status: In progress
