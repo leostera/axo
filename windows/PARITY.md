@@ -42,6 +42,13 @@ flows that current main has retired. Account access follows [RFD0079](../docs/rf
 
 ## Feature inventory
 
+### Open bugs from Windows 0.82.0 build 98
+
+| Area | Evidence | Done when |
+| --- | --- | --- |
+| S05 / R04: Apple client shows the wrong or missing active model | Apple reads runtime model and thinking level from the Session listing. Windows lists available models and saves preferences, but its Session record omits effective runtime model metadata. | A Windows Codex Session reports the effective provider, model and supported reasoning level after default startup, explicit selection, the next turn and reconnect. Verify the serialized listing and the Apple label. Represent unknown runtime state explicitly. |
+| D06: repeat installation can fail during cleanup | Staging the already-running 0.82.0 release raised an access-denied error removing a temporary copy of axod.exe. The installed app remained responsive. The cause of the file lock is unverified. | Exercise installing the same release twice while it is running. Verify the manifest, successful return, cleanup and preservation of the linked profile and live Session. |
+
 ### Sessions and agents
 
 Mac reference: [agent adapters](../crates/axo-agent/src),
@@ -57,7 +64,7 @@ Windows reference: [backend](../crates/axo-server/src/windows.rs),
 | S02 | Shared Session actors, agent interface and AXP operations | Partial: separate stdio/JSON-RPC backend | Bring Windows onto the common Session/agent contracts through Windows process/PTY/IPC adapters; eliminate semantic drift without replacing Unix implementations. | P0 |
 | S03 | Folder-based create, name, rename, archive and restore | Present, with API differences | Conform catalog/reopen/result semantics to the shared contract; Windows polling methods are not a drop-in AXP stream. | P1 |
 | S04 | Agent TUI inside the terminal workbench | Partial: Codex chat/tool presentation | Decide and implement equivalent native agent-pane behavior, including interactive agent UIs; do not claim the WPF chat surface is the existing TUI. | P1 |
-| S05 | Model/reasoning selection, steering, follow-up queue, interrupt and stop | Present for Codex | Extend according to each newly supported agent's capabilities, including unavailable/unsupported states. | P1 |
+| S05 | Model/reasoning selection, steering, follow-up queue, interrupt and stop | Partial: Codex controls work; Apple runtime model reporting is incomplete | Publish effective model/effort on Session listings and updates. Extend controls according to each adapter's capabilities. | P1 |
 | S06 | Agent runtime command/slash-command discovery | Missing equivalent catalog | Expose supported commands; an empty placeholder is not command parity. | P1 |
 | S07 | Durable conversation identity and reconnect | Present for Codex | Retain the same conversation on every adapter's recovery path; expand failure/recovery coverage with additional agents. | P1 |
 | S08 | Canonical transcript/history pipeline and ATXF integration | Present for Codex: shared ATXF native activity, stable chat identities and one desktop/relay projection | Extend to other agent adapters; preserve tool/reasoning history, prompt receipts and reply timestamps across replay, source moves and restart. Only provider-exposed reasoning is displayable. | P1 |
