@@ -423,20 +423,55 @@ impl Gate {
 /// Calls no answer makes safe, and why. Cua already refuses remote debugging; a WebKit inspector
 /// port would hand a logged-in app's pages to whoever connects.
 fn refusal(tool: &str, args: &Value) -> Option<&'static str> {
-    (tool == "launch_app" && !args["webkit_inspector_port"].is_null()).then_some(
-        "Not done: computer use does not open an app's web inspector (webkit_inspector_port).",
-    )
+    if tool != "launch_app" {
+        return None;
+    }
+    if !args["webkit_inspector_port"].is_null() {
+        return Some("Not done: computer use does not open an app's web inspector (webkit_inspector_port).");
+    }
+    #[cfg(target_os = "linux")]
+    if let Some(command) = linux_launch_target(args) {
+        use cua_driver_core::launch_guard::{LaunchCommand, LaunchCommandError};
+        let additional: Vec<String> = args["additional_arguments"].as_array().into_iter().flatten()
+            .filter_map(|value| value.as_str().map(str::to_owned)).collect();
+        if matches!(LaunchCommand::parse(command, &additional), Err(LaunchCommandError::RemoteDebugging)) {
+            return Some(cua_driver_core::launch_guard::REMOTE_DEBUGGING_LAUNCH_REFUSAL);
+        }
+    }
+    None
 }
 
 /// `launch_app`: the app, and everything it is opened with. A URL may run an action (a
 /// Shortcuts link, a deep link), and arguments change what the app does, so either is judged.
+#[cfg(target_os = "linux")]
+fn linux_launch_target(args: &Value) -> Option<&str> {
+    args["launch_path"].as_str().or_else(|| args["name"].as_str()).or_else(|| args["bundle_id"].as_str())
+}
+
 fn describe_launch(args: &Value) -> Action {
+    #[cfg(target_os = "linux")]
+    let app = linux_launch_target(args).unwrap_or("an app");
+    #[cfg(not(target_os = "linux"))]
     let app = args["bundle_id"]
         .as_str()
         .or_else(|| args["name"].as_str())
         .unwrap_or("an app");
     let mut what = format!("launch app {app}");
     let mut judged = false;
+    #[cfg(target_os = "linux")]
+    if let Ok(command) = cua_driver_core::launch_guard::LaunchCommand::parse(app, &[]) {
+        let program = command.program();
+        let displayed = if program.chars().all(|c| c.is_alphanumeric() || matches!(c, '/' | '.' | '_' | '-')) {
+            program.to_owned()
+        } else {
+            serde_json::json!(program).to_string()
+        };
+        what = format!("launch app {displayed}");
+        if !command.arguments().is_empty() {
+            what = format!("{what}, with arguments {}", serde_json::json!(command.arguments()));
+            judged = true;
+        }
+    }
     for url in args["urls"].as_array().into_iter().flatten() {
         let url = url.as_str().unwrap_or_default();
         what = format!("{what}, opening {url:?}");
@@ -562,6 +597,25 @@ fn question(actions: &[Action], why: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn linux_launch_intent_uses_the_effective_path_and_decoded_arguments() {
+        let action = describe_launch(&json!({
+            "name":"benign alias", "bundle_id":"another alias",
+            "launch_path":r#""/opt/real app" "--re""set-all""#
+        }));
+        assert!(action.what.contains("/opt/real app"));
+        assert!(action.what.contains("--reset-all"));
+        assert!(!action.what.contains("benign alias"));
+        assert!(matches!(action.check, Check::Judge));
+        assert!(refusal("launch_app",&json!({
+            "launch_path":r#"chrome "--remote-debugging-"port=0"#
+        })).is_some());
+        assert!(matches!(describe_launch(&json!({
+            "launch_path":r#""/opt/app with spaces""#
+        })).check,Check::Pass));
+    }
+
     fn block<F: Future>(future: F) -> F::Output {
         tokio::runtime::Builder::new_current_thread()
             .enable_all()

@@ -1,4 +1,6 @@
 exports_files([
     "cua-driver-core-skills.patch",
     "cua-driver-core-host-boundary.patch",
+    "cua-driver-core-launch-command.patch",
+    "platform-linux-launch-command.patch",
 ])

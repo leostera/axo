@@ -16,6 +16,8 @@ use serde_json::{Value, json};
 pub mod filled;
 pub mod form;
 pub mod gate;
+#[cfg(all(test, target_os = "linux"))]
+mod linux_launch_tests;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 mod scripts;
 #[cfg(target_os = "linux")]

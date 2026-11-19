@@ -1,0 +1,70 @@
+diff --git a/Cargo.toml b/Cargo.toml
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -18,6 +18,7 @@
+ keyring = ["dep:keyring"]
+ 
+ [dependencies]
++shlex = "=2.0.1"
+ cua-driver-contract = { path = "../cua-driver-contract" }
+ tokio = { workspace = true }
+ serde = { workspace = true }
+diff --git a/src/launch_guard.rs b/src/launch_guard.rs
+--- a/src/launch_guard.rs
++++ b/src/launch_guard.rs
+@@ -9,6 +9,55 @@
+ pub fn contains_remote_debugging_flag(value: &str) -> bool {
+     let lower = value.to_ascii_lowercase();
+     lower.contains("--remote-debugging-port") || lower.contains("--remote-debugging-pipe")
++}
++
++
++#[derive(Debug, PartialEq, Eq)]
++pub enum LaunchCommandError {
++    Malformed,
++    EmptyExecutable,
++    ContainsNul,
++    RemoteDebugging,
++}
++impl std::fmt::Display for LaunchCommandError {
++    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        f.write_str(match self {
++            Self::Malformed => "launcher command contains incomplete quotes or escapes",
++            Self::EmptyExecutable => "launcher command needs a nonempty executable",
++            Self::ContainsNul => "launcher command contains a NUL byte",
++            Self::RemoteDebugging => REMOTE_DEBUGGING_LAUNCH_REFUSAL,
++        })
++    }
++}
++impl std::error::Error for LaunchCommandError {}
++
++/// A command parsed into literal argv, with no shell, substitutions or globbing.
++/// Private fields retain nonempty-program/NUL/debugging guarantees through spawn.
++#[derive(Debug)]
++pub struct LaunchCommand {
++    program: String,
++    arguments: Vec<String>,
++}
++impl LaunchCommand {
++    pub fn parse(command: &str, additional: &[String]) -> Result<Self, LaunchCommandError> {
++        let mut words = shlex::split(command).ok_or(LaunchCommandError::Malformed)?;
++        if words.first().is_none_or(String::is_empty) {
++            return Err(LaunchCommandError::EmptyExecutable);
++        }
++        words.extend_from_slice(additional);
++        if words.iter().any(|word| word.contains('\0')) {
++            return Err(LaunchCommandError::ContainsNul);
++        }
++        // Check decoded argv too: quoting/escaping must not hide protected flags,
++        // including when an installed desktop entry supplied the command.
++        if words.iter().any(|word| contains_remote_debugging_flag(word)) {
++            return Err(LaunchCommandError::RemoteDebugging);
++        }
++        let program = words.remove(0);
++        Ok(Self { program, arguments: words })
++    }
++    pub fn program(&self) -> &str { &self.program }
++    pub fn arguments(&self) -> &[String] { &self.arguments }
+ }
+ 
+ #[cfg(test)]

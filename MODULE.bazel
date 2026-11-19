@@ -72,6 +72,7 @@ crate.spec(package = "tokio-native-tls", version = "0.3.1")
 crate.spec(package = "tokio-tungstenite", version = "0.30.0", features = ["native-tls", "url"])
 crate.spec(package = "tungstenite", version = "0.30.0", features = ["native-tls", "url"])
 crate.spec(package = "url", version = "2.5.8")
+crate.spec(package = "shlex", version = "=2.0.1")
 crate.spec(package = "zeroize", version = "1")
 # Linux desktop lock state is observed from logind, not guessed from display variables.
 crate.spec(package = "zbus", version = "5", default_features = False, features = ["tokio"])
@@ -90,7 +91,15 @@ crate.annotation(
     patches = [
         "//third_party/cua:cua-driver-core-skills.patch",
         "//third_party/cua:cua-driver-core-host-boundary.patch",
+        "//third_party/cua:cua-driver-core-launch-command.patch",
     ],
+    deps = ["@crates//:shlex"],
+    repositories = ["crates"],
+)
+crate.annotation(
+    crate = "platform-linux",
+    patch_args = ["-p1"],
+    patches = ["//third_party/cua:platform-linux-launch-command.patch"],
     repositories = ["crates"],
 )
 crate.from_specs(

@@ -1,0 +1,129 @@
+diff --git a/src/tools/impl_.rs b/src/tools/impl_.rs
+--- a/src/tools/impl_.rs
++++ b/src/tools/impl_.rs
+@@ -521,9 +521,12 @@
+ /// leading shell-wrapper words and quoting. `env FOO=1 /usr/bin/firefox %U`
+ /// → `firefox`. `firefox %u` → `firefox`.
+ fn exec_basename(s: &str) -> String {
+-    // Take the first whitespace-separated token that looks like a binary,
++    // Take the first decoded token that looks like a binary,
+     // skipping `env`-style prefixes and `K=V` assignments.
+-    for tok in s.split_whitespace() {
++    let Ok(command) = cua_driver_core::launch_guard::LaunchCommand::parse(s, &[]) else {
++        return String::new();
++    };
++    for tok in std::iter::once(command.program()).chain(command.arguments().iter().map(String::as_str)) {
+         if tok == "env" {
+             continue;
+         }
+@@ -531,11 +534,10 @@
+             // `FOO=bar` env-var assignment — skip.
+             continue;
+         }
+-        let cleaned = tok.trim_matches(|c| c == '"' || c == '\'');
+-        let basename = std::path::Path::new(cleaned)
++        let basename = std::path::Path::new(tok)
+             .file_name()
+             .and_then(|n| n.to_str())
+-            .unwrap_or(cleaned);
++            .unwrap_or(tok);
+         return basename.to_ascii_lowercase();
+     }
+     String::new()
+@@ -1908,13 +1910,20 @@
+ /// `Exec=` value with field codes stripped) in the background and return the
+ /// child pid.
+ fn spawn_launch_command(cmd: &str, additional_arguments: &[String]) -> std::io::Result<u32> {
+-    let mut parts = cmd.split_whitespace();
+-    let prog = parts.next().unwrap_or(cmd);
+-    let mut rest: Vec<String> = parts.map(str::to_owned).collect();
+-    rest.extend(additional_arguments.iter().cloned());
++    use cua_driver_core::launch_guard::{LaunchCommand, LaunchCommandError};
++    let parsed = LaunchCommand::parse(cmd, additional_arguments).map_err(|error| {
++        let kind = if error == LaunchCommandError::RemoteDebugging {
++            std::io::ErrorKind::PermissionDenied
++        } else {
++            std::io::ErrorKind::InvalidInput
++        };
++        std::io::Error::new(kind, error)
++    })?;
++    let prog = parsed.program();
++    let rest = parsed.arguments();
+     let mut launch = std::process::Command::new(prog);
+     launch
+-        .args(&rest)
++        .args(rest)
+         // The child must not inherit the driver's stdio: in private-worker mode
+         // stdout is the JSON-RPC stream to the SDK, and a chatty app (Chromium's
+         // zygote logs, GTK warnings) writing there corrupts a response and shuts
+@@ -2039,7 +2048,7 @@
+                 URLs to open). Resolution precedence: launch_path > name > bundle_id. Errors \
+                 when the name resolves to nothing launchable.".into(),
+             input_schema: json!({"type":"object","properties":{
+-                "launch_path":{"type":"string","description":"Round-trip the `launch_path` returned by `list_apps` — the Exec= command from the .desktop file with XDG field codes already stripped. Highest precedence on Linux; spawned directly via the system shell."},
++                "launch_path":{"type":"string","description":"Round-trip the `launch_path` returned by `list_apps` — the Exec= command from the .desktop file with XDG field codes already stripped. Highest precedence on Linux; parsed into literal argv without shell expansion."},
+                 "name":{"type":"string","description":"App name or command to launch. Tried as a direct command first, then matched against installed .desktop applications (exact display name, desktop-file id, or Exec basename; else an unambiguous display-name substring)."},
+                 "bundle_id":{"type":"string","description":"Ignored on Linux (macOS/Windows concept)."},
+                 "urls":{"type":"array","items":{"type":"string"},"description":"URLs to open via xdg-open."},
+@@ -2119,6 +2128,11 @@
+                                 Some(pid),
+                                 cmd.to_owned(),
+                             ));
++                        }
++                        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied
++                            || (launch_path_opt.is_some() && error.kind() == std::io::ErrorKind::InvalidInput) =>
++                        {
++                            return Err(error.into());
+                         }
+                         Err(_) => {
+                             // Not an executable on PATH. Resolve the name against
+diff --git a/src/installed_apps.rs b/src/installed_apps.rs
+--- a/src/installed_apps.rs
++++ b/src/installed_apps.rs
+@@ -19,8 +19,8 @@
+     /// E.g. `org.gnome.Calculator.desktop` → `org.gnome.Calculator`;
+     /// `kde4/konqbrowser.desktop` → `kde4-konqbrowser`.
+     pub bundle_id: String,
+-    /// Path the launcher would run — the unexpanded first token of `Exec=`
+-    /// (field codes like `%U`, `%f` stripped). Pass to `launch_app(launch_path=...)`.
++    /// Literal launcher command from `Exec=`, preserving quotes/arguments with
++    /// field codes like `%U` stripped. Round-trip to `launch_app(launch_path=...)`.
+     pub launch_path: String,
+     /// RFC3339 timestamp from the `.desktop` file's filesystem mtime, or
+     /// `None` if the metadata could not be read.
+@@ -41,17 +41,15 @@
+             return false;
+         }
+         let id_stem = self.bundle_id.rsplit('.').next().unwrap_or(&self.bundle_id);
+-        let exec = self
+-            .launch_path
+-            .split_whitespace()
+-            .next()
+-            .and_then(|token| token.rsplit('/').next())
+-            .unwrap_or("");
+-        self.startup_wm_class
++        let command = cua_driver_core::launch_guard::LaunchCommand::parse(&self.launch_path, &[]).ok();
++        let exec = command.as_ref().map(|command| command.program())
++            .and_then(|program| program.rsplit('/').next()).unwrap_or("");
++        let matches = self.startup_wm_class
+             .as_deref()
+             .into_iter()
+             .chain([self.bundle_id.as_str(), id_stem, exec])
+-            .any(|key| !key.is_empty() && key.eq_ignore_ascii_case(wm_class))
++            .any(|key| !key.is_empty() && key.eq_ignore_ascii_case(wm_class));
++        matches
+     }
+ }
+ 
+@@ -245,9 +243,8 @@
+ }
+ 
+ /// Strip XDG `Exec=` field codes (`%f`, `%F`, `%u`, `%U`, `%i`, `%c`, `%k`)
+-/// and return only the program token. We deliberately don't try to honor
+-/// quoted argv reconstruction — the caller passes the result to
+-/// `launch_app(launch_path=...)`, which spawns it through `sh -c`.
++/// while preserving quoting for launch_app's literal-argv parser.
++/// No shell executes this value; paths and arguments with spaces must round-trip.
+ fn strip_exec_field_codes(exec: &str) -> String {
+     let mut out = String::with_capacity(exec.len());
+     let mut chars = exec.chars().peekable();
