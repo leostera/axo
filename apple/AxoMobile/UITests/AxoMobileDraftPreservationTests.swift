@@ -13,11 +13,21 @@ final class AxoMobileDraftPreservationTests: XCTestCase {
 
   @MainActor
   private func changeHostAndAgent(_ app: XCUIApplication) {
-    app.buttons["host-picker"].tapWhereItIs()
-    let other = app.buttons["Old iMac"].firstMatch
-    XCTAssertTrue(other.waitForExistence(timeout: 5))
+    let host = app.buttons["host-picker"]
+    let previous = host.label
+    let target = previous.contains("Old iMac") ? "Studio" : "Old iMac"
+    host.tapWhereItIs()
+    let candidates = app.buttons.matching(identifier: target)
+    let visible = NSPredicate { _, _ in candidates.allElementsBoundByIndex.contains { $0.isHittable } }
+    XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: visible, object: app)], timeout: 5), .completed)
+    // Hidden account layers also contain host buttons; only the visible menu item is a choice.
+    guard let other = candidates.allElementsBoundByIndex.first(where: { $0.isHittable }) else { return XCTFail("No visible host choice") }
+    Snapshots.save(app.screenshot().pngRepresentation, named: "draft-host-menu")
     other.tapWhereItIs()
-    XCTAssertTrue(app.buttons["Start on Old iMac"].waitForExistence(timeout: 5))
+    let changed = NSPredicate { _, _ in host.label.contains(target) }
+    XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: changed, object: host)], timeout: 5), .completed,
+      "Host choice: before=\(previous), target=\(target), after=\(host.label)")
+    XCTAssertNotEqual(host.label, previous, "The test must actually change the host")
     let agent = app.buttons["agent-picker"]
     XCTAssertTrue(agent.waitForExistence(timeout: 5))
     agent.tapWhereItIs()

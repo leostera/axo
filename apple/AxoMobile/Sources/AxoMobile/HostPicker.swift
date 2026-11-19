@@ -24,6 +24,7 @@ struct HostPicker: View {
                   HostIcon(host: candidate).frame(width: 16, height: 16)
                 }
               }
+              .accessibilityLabel("\(candidate.label)\(candidate.status == .online ? "" : ", offline")")
               .disabled(candidate.status != .online)
             }
           } label: {
