@@ -453,9 +453,11 @@ button:disabled { cursor: default; }
   min-height: 30px; width: 100%; box-sizing: border-box; padding: 4px 8px 6px; resize: none; border: 0; outline: none;
   background: transparent; font-size: 16px; line-height: 22px;
 }
-.composer-toolbar { display: flex; align-items: center; gap: 6px; min-height: 36px; }
-.composer-toolbar .spacer { flex: 1 1 0; min-width: 0; }
-.composer-toolbar > .add-menu-anchor, .composer-toolbar > .composer-mic { flex: none; }
+.composer-toolbar { position: relative; display: flex; align-items: center; gap: 6px; min-height: 36px; }
+.composer-toolbar > .add-menu-anchor { flex: none; margin-inline-end: auto; }
+.composer-toolbar > .composer-mic { flex: none; }
+.composer-toolbar > .host-picker, .composer-toolbar > .agent-picker { position: static; }
+.composer-toolbar > .host-picker > .host-menu, .composer-toolbar > .agent-picker > [role="menu"] { left: auto; right: 0; }
 .composer-toolbar .host-picker, .composer-toolbar .agent-picker { flex: 0 1 auto; min-width: 0; }
 .composer-toolbar .host-picker-button, .composer-toolbar .agent-picker summary { max-width: 100%; min-width: 0; }
 .composer-toolbar svg { flex: none; }
@@ -478,7 +480,7 @@ button:disabled { cursor: default; }
 .add-menu-item:hover, .add-menu-item:focus-visible { background: var(--fill); outline: none; }
 .add-menu-well { display: grid; width: 40px; height: 40px; flex: none; place-items: center; border-radius: 50%; background: var(--fill-strong); }
 /* What the chat's Pi runs, dimmed beside Send, and its menu (RFD0033). */
-.model-picker { position: relative; display: flex; gap: 4px; flex: 1 1 auto; min-width: 0; }
+.model-picker { position: relative; display: flex; gap: 4px; flex: 0 1 auto; min-width: 0; }
 .model-picker > .model-picker-button:first-child { flex: 1 1 auto; }
 .thinking-short { display: none; }
 .model-picker-button {
@@ -490,11 +492,11 @@ button:disabled { cursor: default; }
 .thinking-picker-button { flex: none; }
 @media (max-width: 600px) {
   .composer-toolbar { gap: 3px; }
-  .composer-toolbar .host-picker-button, .composer-toolbar .agent-picker summary { padding: 0 6px; gap: 3px; }
+  .composer-toolbar .host-picker, .composer-toolbar .agent-picker { flex: none; }
+  .composer-toolbar .host-picker-button, .composer-toolbar .agent-picker summary, .composer-toolbar .agent-badge { padding: 0 6px; gap: 3px; }
   .composer-toolbar .host-picker-button > .host-picker-label, .composer-toolbar .agent-picker-label { display: none; }
-  .composer-toolbar .mac-dot, .composer-toolbar .host-picker-button > svg:last-child, .composer-toolbar .agent-picker summary > svg:last-child { display: none; }
+  .composer-toolbar .mac-dot, .composer-toolbar button.host-picker-button > svg:last-child, .composer-toolbar .agent-picker summary > svg:last-child { display: none; }
   .composer-toolbar .model-picker-button { padding: 0 6px; font-size: 11px; }
-  .composer-toolbar .model-picker { flex: 1; }
   .composer-toolbar .model-picker-button > svg, .thinking-full { display: none; }
   .thinking-short { display: inline; }
 }
@@ -547,19 +549,17 @@ button:disabled { cursor: default; }
 .info-actions { margin: 18px 10px 0; border-radius: 16px; }
 button.grouped-row:disabled { color: var(--tertiary); background: transparent; }
 .composer textarea::placeholder { color: var(--tertiary); }
-/* The Mac a chat is on: in the box on a wide screen, a chip above it on a narrow one. */
+/* Destination badges show the current Session's host and agent; only drafts have menus. */
 .host-picker { position: relative; flex: none; align-self: flex-end; }
-.host-picker.floating { align-self: flex-start; }
 .host-picker-button {
   display: inline-flex; height: 36px; max-width: 190px; align-items: center; gap: 6px; padding: 0 10px 0 12px;
   border: 0; border-radius: 18px; color: var(--secondary); background: var(--fill); font-size: 13px; white-space: nowrap;
 }
-.host-picker-button:not(.static):hover { background: var(--fill-strong); color: var(--text); }
-.host-picker-button.static { background: transparent; padding-right: 4px; }
-.host-picker.floating .host-picker-button { height: 28px; background: color-mix(in srgb, var(--surface) 85%, transparent); backdrop-filter: blur(30px) saturate(1.6); border: 0.5px solid color-mix(in srgb, var(--text) 6%, transparent); }
+button.host-picker-button:hover { background: var(--fill-strong); color: var(--text); }
 .host-picker-label { overflow: hidden; text-overflow: ellipsis; }
 .agent-picker { flex: none; align-self: center; position: relative; font-size: 13px; }
-.agent-picker summary { display: flex; align-items: center; gap: 6px; height: 36px; padding: 0 10px; border-radius: 18px; color: var(--secondary); background: var(--fill); cursor: pointer; list-style: none; }
+.agent-picker summary, .agent-badge { display: flex; align-items: center; gap: 6px; height: 36px; padding: 0 10px; border-radius: 18px; color: var(--secondary); background: var(--fill); }
+.agent-picker summary { cursor: pointer; list-style: none; }
 .agent-picker summary::-webkit-details-marker { display: none; }
 .agent-picker summary:hover { background: var(--fill-strong); color: var(--text); }
 .agent-picker [role="menu"] { position: absolute; bottom: calc(100% + 8px); left: 0; z-index: 25; min-width: 175px; padding: 5px; border-radius: 12px; background: var(--surface); box-shadow: 0 12px 32px rgb(0 0 0 / 0.18); }

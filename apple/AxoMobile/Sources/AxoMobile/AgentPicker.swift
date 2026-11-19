@@ -2,7 +2,7 @@ import AxoMobileModel
 import AxoProtocol
 import SwiftUI
 
-/// Discovery determines draft choices. A live Session keeps its agent and offers a new chat.
+/// Discovery determines draft choices. An existing Session shows its agent without a menu.
 struct AgentPicker: View {
   @Bindable var phone: PhoneWorkbench
   var voice: VoicePrompt?
@@ -16,26 +16,11 @@ struct AgentPicker: View {
           online: phone.current?.status == .online, credential: phone.agentDiscoveryRevision)) {
           await phone.refreshAvailableCodingAgents(voice: voice)
         }
-    } else if let selection = phone.selection {
-      Menu {
-        Button("New chat to choose another agent") {
-          voice?.destinationOptionsChanged()
-          phone.select(host: selection.host, session: nil)
-        }
-        .disabled(phone.isSending)
-      } label: {
-        HStack(spacing: 4) {
-          if let currentAgent { Image(currentAgent.logoName).resizable().scaledToFit().frame(width: 14, height: 14) }
-          else { Image(systemName: "person.crop.square") }
-          if sizeClass == .regular { Text(currentAgent?.displayName ?? "Agent") }
-        }
-          .font(.caption).foregroundStyle(.secondary)
-          .padding(.horizontal, 8).frame(height: ComposerMetrics.control)
-          .background(Color.primary.opacity(0.05), in: Capsule())
-      }
-      .accessibilityLabel("Agent: \(currentAgent?.displayName ?? "Unknown")")
-      .accessibilityHint("This Session keeps its agent. Start a new chat to choose another.")
-      .accessibilityIdentifier("agent-picker")
+    } else if phone.selection != nil {
+      badge(currentAgent, selectable: false)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Agent: \(currentAgent?.displayName ?? "Unknown")")
+        .accessibilityIdentifier("agent-badge")
     }
   }
 
@@ -49,16 +34,7 @@ struct AgentPicker: View {
             }
           }
         } label: {
-          HStack(spacing: 4) {
-            Image(phone.newChatAgent.logoName).resizable().scaledToFit().frame(width: 14, height: 14)
-            if sizeClass == .regular {
-              Text(phone.newChatAgent.displayName).lineLimit(1)
-              Image(systemName: "chevron.down").font(.system(size: 8, weight: .bold))
-            }
-          }
-          .font(.caption).foregroundStyle(.secondary)
-          .padding(.horizontal, 8).frame(height: ComposerMetrics.control)
-          .background(Color.primary.opacity(0.05), in: Capsule())
+          badge(phone.newChatAgent, selectable: true)
         }
         .accessibilityLabel("Agent: \(phone.newChatAgent.displayName)")
         .accessibilityIdentifier("agent-picker")
@@ -66,6 +42,25 @@ struct AgentPicker: View {
         Text(status).font(.caption).foregroundStyle(.secondary)
       }
     }
+  }
+
+  private func badge(_ agent: CodingAgent?, selectable: Bool) -> some View {
+    HStack(spacing: 4) {
+      if let agent {
+        Image(agent.logoName).resizable().scaledToFit().frame(width: 14, height: 14)
+      } else {
+        Image(systemName: "person.crop.square")
+      }
+      if sizeClass == .regular {
+        Text(agent?.displayName ?? "Agent").lineLimit(1)
+        if selectable {
+          Image(systemName: "chevron.down").font(.system(size: 8, weight: .bold))
+        }
+      }
+    }
+    .font(.caption).foregroundStyle(.secondary)
+    .padding(.horizontal, 8).frame(height: ComposerMetrics.control)
+    .background(Color.primary.opacity(0.05), in: Capsule())
   }
 
   private var status: String {

@@ -58,7 +58,9 @@ final class AxoMobileSessionControlsTests: XCTestCase {
   func testComposerSelectorsShareOneRowAndDoNotSendTheDraft() {
     let app = launch(chat: 2)
     let composer = type("Keep this unsent", in: app)
-    let selectors = ["host-picker", "agent-picker", "model-picker", "thinking-picker"].map { element(app, $0) }
+    let selectors = ["host-badge", "agent-badge", "model-picker", "thinking-picker"].map { element(app, $0) }
+    XCTAssertFalse(app.buttons["host-picker"].exists)
+    XCTAssertFalse(app.buttons["agent-picker"].exists)
     for item in selectors {
       XCTAssertTrue(item.waitForExistence(timeout: 5))
       XCTAssertTrue(item.isHittable)
@@ -67,6 +69,10 @@ final class AxoMobileSessionControlsTests: XCTestCase {
       XCTAssertGreaterThanOrEqual(selectors[index].frame.minX, selectors[index - 1].frame.maxX - 1)
       XCTAssertEqual(selectors[index].frame.midY, selectors[0].frame.midY, accuracy: 2)
     }
+    let add = app.buttons["attach"]
+    let mic = app.buttons["voice-start"]
+    XCTAssertGreaterThan(selectors[0].frame.minX, add.frame.maxX + 12, "Only Add belongs on the left")
+    XCTAssertEqual(selectors[3].frame.maxX, mic.frame.minX - 8, accuracy: 2, "Thinking is next to Mic, not floating on the left")
     selectors[3].tap()
     XCTAssertTrue(element(app, "thinking-medium").waitForExistence(timeout: 5))
     element(app, "thinking-medium").tap()
@@ -182,7 +188,7 @@ final class AxoMobileSessionControlsTests: XCTestCase {
       let app = launch(chat: 2, appearance: appearance)
       let composer = type("Check the Send button", in: app)
       XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
-      let selectors = ["host-picker", "agent-picker", "model-picker", "thinking-picker"].map { element(app, $0) }
+      let selectors = ["host-badge", "agent-badge", "model-picker", "thinking-picker"].map { element(app, $0) }
       for selector in selectors { XCTAssertTrue(selector.isHittable) }
       XCTAssertEqual(composer.value as? String, "Check the Send button")
       let suffix = UIDevice.current.userInterfaceIdiom == .pad ? "-ipad" : ""

@@ -24,12 +24,16 @@ test("composer: host, actual agent, model and thinking stay separate on one tool
     const field = page.getByRole("textbox", { name: "Message", exact: true });
     await field.waitFor({ timeout: 10_000 }).catch(async error => { throw new Error(`${error.message}; page errors: ${JSON.stringify(errors)}; body: ${(await page.locator("body").innerText()).slice(0, 1200)}`); });
     await field.fill("Keep this unsent");
+    const hostBadge = page.getByRole("img", { name: "Host: Mac", exact: true });
+    const agentBadge = page.getByRole("img", { name: "Agent: Codex", exact: true });
+    assert.equal(await hostBadge.locator("svg[data-icon]").count(), 1, "the host badge keeps its machine icon");
+    assert.equal(await page.getByRole("button", { name: /^(Host|Agent):/ }).count(), 0);
     for (const width of [1100, 768, 390, 320]) {
       await page.setViewportSize({ width, height: 844 });
       const controls = [
         page.locator(".composer-toolbar .add-button"),
-        page.getByRole("button", { name: "Host: Mac", exact: true }),
-        page.getByLabel("Agent: Codex", { exact: true }),
+        hostBadge,
+        agentBadge,
         page.getByRole("button", { name: "Model: A deliberately long model name", exact: true }),
         page.getByRole("button", { name: "Thinking: Medium", exact: true }),
         page.locator(".composer-mic"),
@@ -44,6 +48,11 @@ test("composer: host, actual agent, model and thinking stay separate on one tool
           assert.ok(Math.abs(boxes[i].y + boxes[i].height / 2 - boxes[0].y - boxes[0].height / 2) < 2, "one line");
         }
       }
+      const toolbar = await page.locator(".composer-toolbar").boundingBox();
+      assert.ok(Math.abs(boxes[0].x - toolbar.x) <= 1, "Add hugs the left edge");
+      assert.ok(Math.abs(boxes.at(-1).x + boxes.at(-1).width - toolbar.x - toolbar.width) <= 1, "Send hugs the right edge");
+      if (width >= 768) assert.ok(boxes[1].x - (boxes[0].x + boxes[0].width) > 12, "spare space belongs between Add and Host");
+      assert.ok(boxes[5].x - (boxes[4].x + boxes[4].width) <= 6, "Thinking stays beside Mic");
       const modelText = await page.locator(".model-picker > button:first-child .model-picker-label").boundingBox();
       assert.ok(modelText.width >= 20, "the model label must remain readable, not a zero-width pill");
       assert.equal(await page.locator(".host-picker.floating").count(), 0);
@@ -56,17 +65,13 @@ test("composer: host, actual agent, model and thinking stay separate on one tool
     assert.equal(cloud.prompts.length, 0);
     assert.equal(cloud.modelSets[0].thinkingLevel, "high");
     await page.keyboard.press("Escape");
-    await page.getByRole("button", { name: "Host: Mac", exact: true }).click();
-    await page.getByRole("menuitemradio", { name: /New chat on Mac/ }).click();
-    assert.equal(cloud.prompts.length, 0, "changing destination never sends");
-    await page.setViewportSize({ width: 1100, height: 844 });
-    await page.getByText("Composer controls", { exact: true }).click();
-    assert.equal(await field.inputValue(), "Keep this unsent", "the original Session retains its own draft");
-    await page.getByLabel("Agent: Codex", { exact: true }).click();
-    await page.getByRole("menuitem", { name: "New chat to choose another agent", exact: true }).click();
+    await hostBadge.click();
+    await agentBadge.click();
+    assert.equal(await page.getByRole("menu", { name: /Start on|Session agent|Coding agents/ }).count(), 0);
+    await hostBadge.waitFor();
+    await agentBadge.waitFor();
     assert.equal(cloud.prompts.length, 0);
-    await page.getByText("Composer controls", { exact: true }).click();
-    assert.equal(await field.inputValue(), "Keep this unsent");
+    assert.equal(await field.inputValue(), "Keep this unsent", "badges do not move or send the draft");
   } finally {
     await app?.close();
   }

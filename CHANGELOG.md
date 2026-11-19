@@ -4,6 +4,8 @@ What changed in each published version of Axo. Every publish raises the minor ve
 
 ## Unreleased
 
+- Keep Add on the left of the composer toolbar and group the other controls on the right, including on iPad. Existing Sessions show read-only Host and Agent badges; the Host badge includes the machine icon. Both remain selectable when starting a new Session.
+
 ## 0.82 (Mac app build 354, axod 98)
 
 ### Changed

@@ -126,8 +126,9 @@ struct ChatComposer: View {
             }
           }
         }
+        .defaultScrollAnchor(.trailing, for: .alignment)
         .scrollIndicators(.hidden)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(maxWidth: .infinity)
         .accessibilityIdentifier("composer-selectors")
         if isExpanded, isLong { expandButton }
         if let voice { VoiceButton(voice: voice, enabled: canSend, destination: voiceDestination) }
