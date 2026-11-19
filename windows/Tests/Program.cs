@@ -208,8 +208,17 @@ try
     var commandSequence=input++;
     await client.CallAsync("axo.terminal.input",new{sessionId=id,shellId,sequence=commandSequence,data=command});
     await client.CallAsync("axo.terminal.input",new{sessionId=id,shellId,sequence=commandSequence,data=command});
-    for(int i=0;i<80&&!File.Exists(Path.Combine(workspace,"conpty-smoke.txt"));i++){await PumpTerminal();await Task.Delay(100);}
-    Assert(File.Exists(Path.Combine(workspace,"conpty-smoke.txt"))&&File.ReadAllText(Path.Combine(workspace,"conpty-smoke.txt")).Trim()=="AXO_CONPTY_OK","embedded ConPTY runs PowerShell in the Unicode workspace");
+    bool commandWritten = false;
+    for (int i=0; i<80 && !commandWritten; i++)
+    {
+        await PumpTerminal();
+        // Creation precedes Set-Content closing its writer. Observe completed readable
+        // contents, not merely the directory entry, and never replay the command.
+        try { commandWritten = File.ReadAllText(Path.Combine(workspace,"conpty-smoke.txt")).Trim()=="AXO_CONPTY_OK"; }
+        catch (IOException) { }
+        if (!commandWritten) await Task.Delay(100);
+    }
+    Assert(commandWritten,"embedded ConPTY runs PowerShell in the Unicode workspace");
     var reattached=await new DaemonClient(pipe).CallAsync("axo.terminal.create",new{sessionId=id});
     Assert(reattached.GetProperty("processId").GetInt32()==ptyPid&&reattached.GetProperty("chunks").GetArrayLength()>0,"terminal reattachment replays output and preserves its process");
     var terminalOutput=string.Concat(reattached.GetProperty("chunks").EnumerateArray().Select(c=>System.Text.Encoding.UTF8.GetString(Convert.FromBase64String(c.GetProperty("data").GetString()!))));
