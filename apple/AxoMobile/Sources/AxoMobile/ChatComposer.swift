@@ -40,6 +40,7 @@ struct ChatComposer: View {
 
   @State private var editorHeight: CGFloat = 0
   @State private var editorFocused = false
+  @State private var focusRequest = 0
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @State private var showingExpandedEditor = false
   @State private var pickedPhotos: [PhotosPickerItem] = []
@@ -108,7 +109,7 @@ struct ChatComposer: View {
       addButton
       // One persistent UIKit editor: changing the layout must not replace focus or marked text.
       ComposerTextView(text: $draft, placeholder: placeholder, enabled: canSend,
-        focusChanged: { editorFocused = $0 }) { items in
+        focusChanged: { editorFocused = $0 }, focusRequest: focusRequest) { items in
           attach(AttachmentImport.pasted(items))
         }
         .padding(.horizontal, 6).padding(.top, 4).padding(.bottom, 2)
@@ -132,6 +133,9 @@ struct ChatComposer: View {
       }
     }
     .composerCard(compact: !isExpanded)
+    // Empty card space starts typing; buttons inside the card keep their own taps.
+    .contentShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
+    .onTapGesture { if canSend { focusRequest += 1 } }
     .background {
       GeometryReader { proxy in
         Color.clear.preference(key: ComposerBounds.self, value: [proxy.frame(in: .global)])
@@ -208,7 +212,7 @@ struct ChatComposer: View {
         .font(.caption)
         .foregroundStyle(.secondary)
         .lineLimit(1)
-        .frame(maxWidth: 100)
+        .composerLabelWidth(100)
         .padding(.horizontal, 8)
         .composerPill()
         .contentShape(Rectangle())
@@ -614,6 +618,11 @@ extension View {
         RoundedRectangle(cornerRadius: radius, style: .continuous).stroke(Color.primary.opacity(0.08), lineWidth: 0.5)
       )
       .padding(.horizontal, compact ? 24 : 12)
+  }
+
+  /// The label's own width, truncating only past `limit`; a flexible frame would always grow to it.
+  func composerLabelWidth(_ limit: CGFloat) -> some View {
+    ComposerLabelWidth(limit: limit) { self }
   }
 
   /// Inset the visible capsule without shrinking the control's hit area.

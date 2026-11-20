@@ -45,7 +45,7 @@ struct HostPicker: View {
     HStack(spacing: 4) {
       HostIcon(host: host).frame(width: 14, height: 14)
       if showName || sizeClass == .regular {
-        Text(host.label).lineLimit(1).frame(maxWidth: 100)
+        Text(host.label).lineLimit(1).composerLabelWidth(100)
         if selectable {
           Image(systemName: "chevron.down").font(.system(size: 8, weight: .bold))
         }

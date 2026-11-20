@@ -1,5 +1,22 @@
 import SwiftUI
 
+/// Content-sized text with a maximum width.
+struct ComposerLabelWidth: Layout {
+  let limit: CGFloat
+
+  private func width(_ proposal: ProposedViewSize, _ subviews: Subviews) -> CGFloat {
+    min(subviews[0].sizeThatFits(.unspecified).width, limit, proposal.width ?? .infinity)
+  }
+
+  func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+    subviews[0].sizeThatFits(ProposedViewSize(width: width(proposal, subviews), height: proposal.height))
+  }
+
+  func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+    subviews[0].place(at: bounds.origin, proposal: ProposedViewSize(width: bounds.width, height: bounds.height))
+  }
+}
+
 /// Reposition the same editor and controls instead of swapping view trees during focus changes.
 struct ComposerIslandLayout: Layout {
   let expanded: Bool

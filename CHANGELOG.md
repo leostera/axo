@@ -4,6 +4,11 @@ What changed in each published version of Axo. Every publish raises the minor ve
 
 ## Unreleased
 
+## 0.85 (Mac app build 357, axod 101)
+
+- Tapping anywhere on the iPhone or iPad message box starts typing; its buttons still do their own thing.
+- Host, Agent and Model pills are as wide as their contents, truncating only very long names.
+
 ## 0.84 (Mac app build 356, axod 100)
 
 - Keep the mobile composer controls fixed. On iPhone, a running chat shows its read-only host and agent above the conversation; iPad keeps them in the composer.

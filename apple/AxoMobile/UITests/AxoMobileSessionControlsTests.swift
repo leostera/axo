@@ -85,6 +85,29 @@ final class AxoMobileSessionControlsTests: XCTestCase {
     capture(app, named: "composer-four-selectors")
   }
 
+  @MainActor
+  func testTappingEmptyComposerSpaceStartsTypingAndPillsFitTheirContent() {
+    let app = launch(chat: 2)
+    let composer = app.textViews["composer"]
+    XCTAssertTrue(composer.waitForExistence(timeout: 5))
+    XCTAssertFalse(app.keyboards.firstMatch.exists)
+    let model = element(app, "model-picker")
+    XCTAssertTrue(model.waitForExistence(timeout: 5))
+    // Empty space in the controls row, between Add and the selectors.
+    let add = app.buttons["attach"]
+    let gapX = (add.frame.maxX + model.frame.minX) / 2
+    app.coordinate(withNormalizedOffset: .zero)
+      .withOffset(CGVector(dx: gapX, dy: model.frame.midY)).tap()
+    XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5), "the whole card starts typing")
+    composer.typeText("x")
+    XCTAssertEqual(composer.value as? String, "x")
+    if UIDevice.current.userInterfaceIdiom == .pad {
+      let host = element(app, "host-badge")
+      XCTAssertLessThan(host.frame.width, 100, "Studio's pill fits its icon and name")
+    }
+    capture(app, named: "composer-tap-anywhere")
+  }
+
   // MARK: - The model
 
   @MainActor

@@ -55,7 +55,7 @@ struct AgentPicker: View {
         Image(systemName: "person.crop.square")
       }
       if showName || sizeClass == .regular {
-        Text(agent?.displayName ?? "Agent").lineLimit(1)
+        Text(agent?.displayName ?? "Agent").lineLimit(1).composerLabelWidth(100)
         if selectable {
           Image(systemName: "chevron.down").font(.system(size: 8, weight: .bold))
         }

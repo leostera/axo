@@ -10,6 +10,8 @@ struct ComposerTextView: UIViewRepresentable {
   var enabled = true
   var maxLines = 8
   var focusChanged: (Bool) -> Void = { _ in }
+  /// Incremented when a tap elsewhere on the composer card asks to start typing.
+  var focusRequest = 0
   /// The pictures on the clipboard, when Paste is chosen and there are any; the words on it are
   /// left out, as on the web.
   let pastePictures: ([[String: Any]]) -> Void
@@ -37,6 +39,10 @@ struct ComposerTextView: UIViewRepresentable {
     view.placeholder.isHidden = !text.isEmpty
     view.isEditable = enabled
     view.pastePictures = pastePictures
+    if context.coordinator.focusRequest != focusRequest {
+      context.coordinator.focusRequest = focusRequest
+      if enabled, !view.isFirstResponder { view.becomeFirstResponder() }
+    }
   }
 
   func sizeThatFits(_ proposal: ProposedViewSize, uiView view: PastingTextView, context: Context) -> CGSize? {
@@ -57,7 +63,11 @@ struct ComposerTextView: UIViewRepresentable {
 
   final class Coordinator: NSObject, UITextViewDelegate {
     var parent: ComposerTextView
-    init(_ parent: ComposerTextView) { self.parent = parent }
+    var focusRequest: Int
+    init(_ parent: ComposerTextView) {
+      self.parent = parent
+      focusRequest = parent.focusRequest
+    }
 
     func textViewDidBeginEditing(_ view: UITextView) { parent.focusChanged(true) }
 
