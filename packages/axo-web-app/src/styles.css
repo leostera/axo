@@ -456,8 +456,8 @@ button:disabled { cursor: default; }
 .composer-toolbar { position: relative; display: flex; align-items: center; gap: 6px; min-height: 36px; }
 .composer-toolbar > .add-menu-anchor { flex: none; margin-inline-end: auto; }
 .composer-toolbar > .composer-mic { flex: none; }
-.composer-toolbar > .host-picker, .composer-toolbar > .agent-picker { position: static; }
-.composer-toolbar > .host-picker > .host-menu, .composer-toolbar > .agent-picker > [role="menu"] { left: auto; right: 0; }
+.composer-toolbar > .host-picker { position: static; }
+.composer-toolbar > .host-picker > .host-menu { left: auto; right: 0; }
 .composer-toolbar .host-picker, .composer-toolbar .agent-picker { flex: 0 1 auto; min-width: 0; }
 .composer-toolbar .host-picker-button, .composer-toolbar .agent-picker summary { max-width: 100%; min-width: 0; }
 .composer-toolbar svg { flex: none; }
