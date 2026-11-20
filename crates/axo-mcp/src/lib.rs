@@ -365,7 +365,7 @@ const TOOLS: &[Tool] = &[
     Tool {
         name: "elicitation_request",
         method: Some(method::ELICITATION_REQUEST),
-        description: "Asks the person a yes-or-no question and waits for their answer, up to 5 minutes. It shows on their phone, in the browser, and on every client they have open; only they can answer. Returns { action }: \"accept\" (yes), \"decline\" (no), or \"cancel\" (nobody answered in time). Ask before anything that sends, posts, pays or deletes, and act only on \"accept\".",
+        description: "Asks the person a yes-or-no question and waits for their answer, up to 5 minutes. It shows on their phone, in the browser, and on every client they have open; only they can answer. Returns { action }: \"accept\" (yes), \"decline\" (no), or \"cancel\" (nobody answered in time). When a tool or plugin requires confirmation, proceed only on \"accept\".",
         properties: || {
             json!({
                 "title": { "type": "string", "minLength": 1, "maxLength": 60, "description": "A short notification heading, e.g. Release approval. Not the request itself. Put the complete question and every material approval restriction in message." },
