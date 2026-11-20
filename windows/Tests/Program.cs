@@ -357,8 +357,28 @@ try
     Assert(transcriptText.Contains("RICH_TOOL_OUTPUT"),"tool activity survives eviction from the bounded live event journal");
     await client.CallAsync("axo.session.rename", new { sessionId = id, name = "Renamed session" });
     await client.CallAsync("axo.session.prompt", new { sessionId = id, text = "crash" }); await Status(id, "unavailable");
+    var refuseResume = Path.Combine(workspace, "fixture-refuse-resume");
+    File.WriteAllText(refuseResume, "");
+    try
+    {
+        Assert(await Fails("axo.session.open", new { sessionId = id }), "Codex resume rejection is reported");
+        var unavailable = await Status(id, "unavailable");
+        Assert(unavailable.GetProperty("error").GetString()!.Contains("Fixture resume refused"), "a rejected resume leaves the Session unavailable, not stuck starting");
+    }
+    finally { File.Delete(refuseResume); }
     var recovered = await client.CallAsync("axo.session.open", new { sessionId = id });
     Assert(recovered.GetProperty("threadId").GetString() == threadId, "crashed Codex process resumes the existing thread");
+    await client.CallAsync("axo.session.prompt", new { sessionId = id, text = "wait" });
+    await Status(id, "working");
+    var rejected = await client.CallAsync("axo.session.prompt", new { sessionId = id, text = "reject-start", delivery = "followUp" });
+    await client.CallAsync("axo.session.prompt", new { sessionId = id, text = "queue after rejection", delivery = "followUp" });
+    await client.CallAsync("axo.session.interrupt", new { sessionId = id });
+    for (int attempt = 0; attempt < 150 && !(await Messages(id)).Contains("Echo: queue after rejection"); attempt++) await Task.Delay(50);
+    Assert((await Messages(id)).Count(m => m == "Echo: queue after rejection") == 1, "a rejected queued start cannot strand the next follow-up");
+    var failedQueue = await client.CallAsync("axo.session.queue", new { sessionId = id });
+    Assert(failedQueue.GetProperty("messages").EnumerateArray().Any(m => m.GetProperty("commandId").GetString() == rejected.GetProperty("commandId").GetString() &&
+        m.GetProperty("state").GetString() == "failed"), "the rejected queue entry stays visible as failed");
+    await Status(id, "ready");
     var agentPid = recovered.GetProperty("agentProcessId").GetInt32();
     await client.CallAsync("axo.session.prompt",new{sessionId=id,text="wait"});await Status(id,"working");
     await client.CallAsync("axo.session.prompt",new{sessionId=id,text="restart queue marker",delivery="followUp"});

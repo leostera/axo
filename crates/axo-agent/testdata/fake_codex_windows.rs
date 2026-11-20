@@ -116,6 +116,12 @@ fn main() {
                 send(json!({"id":id,"result":{"thread":{"id":thread,"path":source(&thread)}}}))
             }
             Some("thread/resume") => {
+                if std::path::Path::new("fixture-refuse-resume").is_file() {
+                    send(
+                        json!({"id":id,"error":{"code":-32602,"message":"Fixture resume refused"}}),
+                    );
+                    continue;
+                }
                 thread = p["threadId"].as_str().unwrap().into();
                 send(json!({"id":id,"result":{"thread":{"id":thread,"path":source(&thread)}}}));
             }
@@ -139,6 +145,12 @@ fn main() {
                 count += 1;
                 active = format!("turn-{}-{count}", std::process::id());
                 let text = p["input"][0]["text"].as_str().unwrap_or_default();
+                if text == "reject-start" {
+                    send(
+                        json!({"id":id,"error":{"code":-32602,"message":"Fixture start refused"}}),
+                    );
+                    continue;
+                }
                 event(
                     "turn/started",
                     json!({"threadId":thread,"turn":{"id":active,"status":"inProgress"}}),
@@ -150,7 +162,10 @@ fn main() {
                 send(json!({"id":id,"result":{"turn":{"id":active,"status":"inProgress"}}}));
                 match text {
                     "rich-transcript" => {
-                        assert_eq!(p["summary"], "auto", "the host must request public reasoning summaries");
+                        assert_eq!(
+                            p["summary"], "auto",
+                            "the host must request public reasoning summaries"
+                        );
                         event(
                             "item/completed",
                             json!({"threadId":thread,"turnId":active,"item":{"type":"reasoning","id":format!("{active}-reasoning"),"summary":["Checking the owned fixture before editing."]}}),
