@@ -18,14 +18,17 @@ final class AxoMobileDraftModelTests: XCTestCase {
     let model = app.buttons["model-gpt-5"]
     XCTAssertTrue(model.waitForExistence(timeout: 5))
     model.tapWhereItIs()
-    XCTAssertEqual(picker.label, "Model: GPT-5 · Minimal")
+    XCTAssertEqual(picker.label, "Model: GPT-5")
+    let thinking = app.buttons["thinking-picker"]
+    XCTAssertEqual(thinking.label, "Thinking: Minimal")
     editor.tapWhereItIs()
-    picker.tapWhereItIs()
+    thinking.tapWhereItIs()
     let high = app.buttons["thinking-high"]
     XCTAssertTrue(high.waitForExistence(timeout: 5))
     XCTAssertFalse(app.buttons["thinking-xhigh"].exists)
     high.tapWhereItIs()
-    XCTAssertEqual(picker.label, "Model: GPT-5 · High")
+    XCTAssertEqual(picker.label, "Model: GPT-5")
+    XCTAssertEqual(thinking.label, "Thinking: High")
     editor.tapWhereItIs()
     editor.typeText("Keep this first message")
     XCTAssertEqual(editor.value as? String, "Keep this first message")

@@ -70,6 +70,8 @@ def main(argv=None):
         # Use one valid XCTest class filter, not a regex/pipe (which silently selects zero tests).
         bazel("test", "//apple/AxoMobile:AxoMobileRegressionUITests", "//apple/AxoMobile:AxoMobileTabletUITests",
               "--test_filter=AxoMobileSlashMenuTests", "--local_test_jobs=1", "--test_output=errors")
+        bazel("test", "//apple/AxoMobile:AxoMobileRegressionUITests", "//apple/AxoMobile:AxoMobileTabletUITests",
+              "--test_filter=AxoMobileDraftModelTests", "--local_test_jobs=1", "--test_output=errors")
         bazel("run", "//apple:xcodeproj")
         unchanged()
         mac = artifact(repository, "//apple/AxoMac:Axo_zip")
