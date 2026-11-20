@@ -1,6 +1,7 @@
 import { Hono, type Context } from "hono";
 import { registerPush, notificationRequest, notificationHistory } from "./push";
 import { uuid } from "@axo/protocol";
+import { BUILD } from "../build";
 import { authExports } from "../auth/account-access";
 import { completeLogin, currentAccount, exchangeLoginCode, logout, startLogin } from "../auth/login";
 import { createHostPairing, redeemHostPairing } from "../auth/pairing";
@@ -57,6 +58,9 @@ const corsMiddleware = async (context: Context<Api>, next: () => Promise<void>) 
 };
 
 app.use("/api/v1/*", corsMiddleware);
+
+// What is live, for continuous delivery's check after a deploy (tools/cd). No account, no storage.
+app.get("/api/health", () => Response.json({ ok: true, build: BUILD }, { headers: { "Cache-Control": "no-store" } }));
 
 app.all("/api/auth/cloudflare/start", context =>
   startLogin(

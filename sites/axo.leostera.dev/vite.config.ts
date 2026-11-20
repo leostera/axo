@@ -15,11 +15,25 @@ function webBuild(): string {
   }
 }
 
+/**
+ * The exact source this build is from, for /api/health and continuous delivery (tools/cd): the
+ * full commit, with "+" when anything tracked in the repository differs from it.
+ */
+function exactBuild(): string {
+  try {
+    const commit = execSync("git rev-parse HEAD", { encoding: "utf8" }).trim();
+    const dirty = execSync("git status --porcelain --untracked-files=no -- ../..", { encoding: "utf8" }).trim();
+    return dirty ? `${commit}+` : commit;
+  } catch {
+    return "dev";
+  }
+}
+
 export default defineConfig(({ command }) => ({
   // WhatsApp's Baileys, bundled for Workers (packages/axo-apps/bundling.mjs).
   // `cf types` owns Bazel's read-only generated declaration; only dev may rewrite it.
   plugins: [whatsappVite(), react(), cloudflare({ types: { generate: command !== "build" } })],
-  define: { __AXO_WEB_BUILD__: JSON.stringify(webBuild()) },
+  define: { __AXO_WEB_BUILD__: JSON.stringify(webBuild()), __AXO_BUILD__: JSON.stringify(exactBuild()) },
   build: {
     target: "es2022",
   },
