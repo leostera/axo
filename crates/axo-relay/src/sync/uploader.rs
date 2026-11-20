@@ -53,6 +53,24 @@ const MAX_HEADS: usize = 1024;
 struct Cloud {
     epoch: u64,
     count: u64,
+    /// Records R2 gave back byte for byte (RFD0044). `None` from a cloud that does not say, or
+    /// after a cut until it says again: never evict on it.
+    stored: Option<u64>,
+}
+
+impl Cloud {
+    fn new(epoch: u64, count: u64) -> Self {
+        Cloud {
+            epoch,
+            count,
+            stored: None,
+        }
+    }
+
+    /// The cloud holds all `count` local records and R2 attested every one of them.
+    fn attests(&self, count: u64) -> bool {
+        self.count == count && self.stored == Some(count)
+    }
 }
 
 struct SessionSync {
@@ -348,11 +366,12 @@ impl Uploader {
                 epoch,
                 count,
                 chain,
+                stored,
                 ..
             } = state
             else {
                 unknown += 1;
-                self.adopt(session_id, Cloud { epoch: 1, count: 0 }).await?;
+                self.adopt(session_id, Cloud::new(1, 0)).await?;
                 continue;
             };
             let prefix = local.is_none_or(|local| {
@@ -364,7 +383,11 @@ impl Uploader {
                 if local.is_some_and(|local| count < local.count()) {
                     behind += 1;
                 }
-                Cloud { epoch, count }
+                Cloud {
+                    epoch,
+                    count,
+                    stored,
+                }
             } else {
                 diverged += 1;
                 match self.realign(session_id, count).await? {
@@ -477,7 +500,7 @@ impl Uploader {
         );
         match reply.outcome {
             TruncateOutcome::Truncated { epoch } if reply.round == self.round => {
-                Ok(Some(Cloud { epoch, count: keep }))
+                Ok(Some(Cloud::new(epoch, keep)))
             }
             _ => {
                 self.handshake_due = true;
@@ -551,7 +574,7 @@ impl Uploader {
         );
         let committed_chain = transcript.chain_at(result.count).map(str::to_owned);
         match result.outcome {
-            AppendOutcome::Committed { epoch } => {
+            AppendOutcome::Committed { epoch, stored } => {
                 if let Some(chain) = committed_chain {
                     let cursor = SyncCursor {
                         position: result.count,
@@ -563,6 +586,7 @@ impl Uploader {
                     session.cloud = Some(Cloud {
                         epoch,
                         count: result.count,
+                        stored,
                     });
                 }
             }
@@ -588,7 +612,7 @@ impl Uploader {
             (session.metadata.archived
                 && !session.eviction_refused
                 && count > 0
-                && session.cloud.is_some_and(|cloud| cloud.count == count))
+                && session.cloud.is_some_and(|cloud| cloud.attests(count)))
             .then_some(*id)
         });
         let Some(session_id) = candidate else {
@@ -612,7 +636,7 @@ impl Uploader {
             session.eviction_refused = true;
             return Ok(true);
         };
-        if session.cloud.is_none_or(|cloud| cloud.count != count) {
+        if !session.cloud.is_some_and(|cloud| cloud.attests(count)) {
             session.eviction_refused = true;
             return Ok(true);
         }
@@ -677,7 +701,7 @@ impl Uploader {
                     Ok(_) => {
                         session.metadata_sent = session.metadata_version;
                         // A Session the cloud just learned of starts empty.
-                        session.cloud.get_or_insert(Cloud { epoch: 1, count: 0 });
+                        session.cloud.get_or_insert(Cloud::new(1, 0));
                     }
                     Err(error) => {
                         log::warn!("event=sync.meta outcome=failed reason={error}");
@@ -746,6 +770,8 @@ enum CloudState {
         epoch: u64,
         count: u64,
         chain: String,
+        #[serde(default)]
+        stored: Option<u64>,
     },
     #[serde(rename_all = "camelCase")]
     Unknown { session_id: SessionId },
@@ -808,6 +834,8 @@ struct AppendReply {
 enum AppendOutcome {
     Committed {
         epoch: u64,
+        #[serde(default)]
+        stored: Option<u64>,
     },
     Invalid,
     #[serde(other)]
@@ -916,6 +944,21 @@ mod reply_tests {
         assert!(
             matches!(known, CloudState::Known { epoch: 2, count: 7, ref chain, .. } if chain == "sha256:ab")
         );
+        assert!(
+            matches!(known, CloudState::Known { stored: None, .. }),
+            "older clouds omit it"
+        );
+        let attested: CloudState = serde_json::from_value(json!({
+            "sessionId": SESSION, "state": "known", "epoch": 2, "count": 7, "chain": "sha256:ab", "heads": [], "stored": 5,
+        }))
+        .unwrap();
+        assert!(matches!(
+            attested,
+            CloudState::Known {
+                stored: Some(5),
+                ..
+            }
+        ));
         let unknown: CloudState =
             serde_json::from_value(json!({ "sessionId": SESSION, "state": "unknown" })).unwrap();
         assert_eq!(unknown.session_id().to_string(), SESSION);
@@ -934,9 +977,23 @@ mod reply_tests {
         .unwrap();
         assert!(matches!(
             committed.outcome,
-            AppendOutcome::Committed { epoch: 3 }
+            AppendOutcome::Committed {
+                epoch: 3,
+                stored: None
+            }
         ));
         assert_eq!(committed.count, 9);
+        let attested: AppendReply = serde_json::from_value(
+            json!({ "outcome": "committed", "epoch": 3, "count": 9, "chain": "sha256:cd", "stored": 9 }),
+        )
+        .unwrap();
+        assert!(matches!(
+            attested.outcome,
+            AppendOutcome::Committed {
+                epoch: 3,
+                stored: Some(9)
+            }
+        ));
         for outcome in ["gap", "conflict", "epoch"] {
             let other: AppendReply = serde_json::from_value(
                 json!({ "outcome": outcome, "epoch": null, "count": 0, "chain": null }),
@@ -949,6 +1006,24 @@ mod reply_tests {
         )
         .unwrap();
         assert!(matches!(invalid.outcome, AppendOutcome::Invalid));
+    }
+
+    #[test]
+    fn only_a_cloud_that_stored_every_local_record_attests_an_archive() {
+        assert!(!Cloud::new(1, 7).attests(7), "an older cloud never attests");
+        let partial = Cloud {
+            epoch: 1,
+            count: 7,
+            stored: Some(6),
+        };
+        assert!(!partial.attests(7));
+        let whole = Cloud {
+            epoch: 2,
+            count: 7,
+            stored: Some(7),
+        };
+        assert!(whole.attests(7));
+        assert!(!whole.attests(8), "a line written since is not stored");
     }
 
     #[test]

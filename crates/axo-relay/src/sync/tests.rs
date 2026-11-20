@@ -202,7 +202,10 @@ fn answer(message: &Value, received: &Mutex<Received>) -> Option<Value> {
         "axo.host.session.append" => {
             let count = params["from"].as_u64()? + params["records"].as_array()?.len() as u64 - 1;
             received.appended = received.appended.max(count);
-            Some(json!({ "outcome": "committed", "epoch": 1, "count": count, "chain": null }))
+            // R2 attests every record: eviction stays off anyway (AUTOMATIC_TRANSCRIPT_EVICTION).
+            Some(
+                json!({ "outcome": "committed", "epoch": 1, "count": count, "chain": null, "stored": count }),
+            )
         }
         _ => message.get("id").map(|_| json!({})),
     }
