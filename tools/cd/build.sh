@@ -54,9 +54,10 @@ case "$service" in
     ;;
   axp)
     site=sites/axp.leostera.dev
-    step "site check" pnpm --dir "$site" run check
     exact_source
     step "build" pnpm --dir "$site" run build
+    # Every schema is served at its $id, every example at /examples/, and every link resolves.
+    step "site tests" bash -c "cd $site && node --test tests/site.test.mjs"
     ;;
   *)
     fail "unknown service $service"
