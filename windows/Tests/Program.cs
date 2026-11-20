@@ -197,6 +197,10 @@ try
     Assert(await Fails("axo.session.create", new { folder = workspace, agent = "pi" }), "unsupported agents fail explicitly rather than silently becoming Codex");
     var opened = await client.CallAsync("axo.session.open", new { sessionId = id });
     var threadId = opened.GetProperty("threadId").GetString();
+    var runtimeModel = opened.GetProperty("pi");
+    Assert(runtimeModel.GetProperty("model").GetProperty("id").GetString() == "fixture" &&
+        runtimeModel.GetProperty("thinkingLevel").GetString() == "low",
+        "Session reports the runtime model before anyone selects a preference");
     Assert(!string.IsNullOrEmpty(threadId), "session opens a real child process and records its thread ID");
     var pty=await client.CallAsync("axo.terminal.create",new{sessionId=id});
     int shellId=pty.GetProperty("shellId").GetInt32(),ptyPid=pty.GetProperty("processId").GetInt32();ulong input=0,output=0;

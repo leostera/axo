@@ -110,7 +110,7 @@ fn main() {
             ),
             Some("initialized") => {}
             Some("thread/start") => {
-                send(json!({"id":id,"result":{"thread":{"id":thread,"path":source(&thread)}}}))
+                send(json!({"id":id,"result":{"thread":{"id":thread,"path":source(&thread)},"model":"fixture","reasoningEffort":"low"}}))
             }
             Some("thread/read") => {
                 send(json!({"id":id,"result":{"thread":{"id":thread,"path":source(&thread)}}}))
@@ -123,7 +123,7 @@ fn main() {
                     continue;
                 }
                 thread = p["threadId"].as_str().unwrap().into();
-                send(json!({"id":id,"result":{"thread":{"id":thread,"path":source(&thread)}}}));
+                send(json!({"id":id,"result":{"thread":{"id":thread,"path":source(&thread)},"model":"fixture","reasoningEffort":"low"}}));
             }
             Some("model/list") => send(
                 json!({"id":id,"result":{"data":[{"id":"fixture","model":"fixture","displayName":"Fixture model","supportedReasoningEfforts":[{"reasoningEffort":"low"},{"reasoningEffort":"high"}],"defaultReasoningEffort":"low","inputModalities":["text","image"],"isDefault":true}],"nextCursor":null}}),
