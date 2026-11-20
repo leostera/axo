@@ -18,6 +18,7 @@ bazel test \
   //crates/axo-computer-use:axo_computer_use_tests \
   //crates/axo-sudo:test \
   //specs:linux_sudo_input \
+  //specs:recovery_test \
   //third_party/llama.cpp:repository_test \
   //crates/axod-infer:axod_infer_tests \
   //crates/axod:conformance_daemon \

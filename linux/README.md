@@ -28,6 +28,12 @@ from a relocated candidate directory. It neither registers a service nor touches
 the installed runtime. Relocation of the same build is not cross-version migration,
 signed-update or rollback acceptance. No native terminal or display server is needed.
 
+`bazel test //specs:recovery_test` checks the shared restart/pinned-process
+admission models with the pinned Node checker on Linux or Mac. It requires
+exhaustive exploration of the bounded models, not just passing sampled walks,
+and has unsafe-model negative controls. This is not an exactly-once delivery
+claim across process or network crashes.
+
 After extraction, `./axo --socket /absolute/path/to/axod.sock daemon status` checks
 a running host. `./axo cli install` adds a non-overwriting link in `~/.local/bin`;
 it does not install/update a daemon service. An existing different command/link
