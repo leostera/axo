@@ -28,6 +28,7 @@ struct LayerStack: View {
   @GestureState private var touching = false
   /// The stack is still springing to where a swipe left it.
   @State private var settling = false
+  @State private var composerBounds: [CGRect] = []
   /// Code blocks and tables that scroll sideways say so here; a drag on one is theirs.
   @Environment(SidewaysScrolling.self) private var sidewaysScrolling
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -68,6 +69,7 @@ struct LayerStack: View {
       }
       .frame(width: geometry.size.width, height: geometry.size.height, alignment: .topLeading)
       .background(ChatColors.background.ignoresSafeArea())
+      .onPreferenceChange(ComposerBounds.self) { composerBounds = $0 }
       .simultaneousGesture(swipe(stack))
       #if DEBUG && targetEnvironment(simulator)
         .overlay(alignment: .topLeading) {
@@ -147,10 +149,11 @@ struct LayerStack: View {
   }
 
   private func swipe(_ stack: LayerStackGeometry) -> some Gesture {
-    DragGesture(minimumDistance: 12)
+    DragGesture(minimumDistance: 12, coordinateSpace: .global)
       .updating($touching) { _, touching, _ in touching = true }
       .onChanged { value in
-        drag = drag.next(value, sidewaysScrolling: sidewaysScrolling.isActive)
+        let beganInComposer = composerBounds.contains { $0.contains(value.startLocation) }
+        drag = drag.next(value, sidewaysScrolling: sidewaysScrolling.isActive || beganInComposer)
       }
       .onEnded { value in
         let swiped = drag.start == value.startLocation && drag.kind == .swipe
@@ -186,6 +189,14 @@ struct LayerStack: View {
     } completion: {
       settling = false
     }
+  }
+}
+
+/// An edit or drag in the composer is never navigation to a neighboring layer.
+struct ComposerBounds: PreferenceKey {
+  static let defaultValue: [CGRect] = []
+  static func reduce(value: inout [CGRect], nextValue: () -> [CGRect]) {
+    value += nextValue()
   }
 }
 

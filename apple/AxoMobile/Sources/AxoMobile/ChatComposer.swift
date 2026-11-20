@@ -132,6 +132,11 @@ struct ChatComposer: View {
       }
     }
     .composerCard(compact: !isExpanded)
+    .background {
+      GeometryReader { proxy in
+        Color.clear.preference(key: ComposerBounds.self, value: [proxy.frame(in: .global)])
+      }
+    }
     .animation(reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 0.88), value: isExpanded)
     .fullScreenCover(isPresented: $showingExpandedEditor) {
       ExpandedComposerEditor(draft: $draft, placeholder: placeholder)
@@ -208,7 +213,7 @@ struct ChatComposer: View {
         .composerPill()
         .contentShape(Rectangle())
     }
-    .buttonStyle(.plain)
+    .buttonStyle(.layerRow)
     .disabled(!canSend)
     .accessibilityLabel("Model: \(label)")
     .accessibilityIdentifier("model-picker")
@@ -233,7 +238,7 @@ struct ChatComposer: View {
       .composerPill()
       .contentShape(Rectangle())
     }
-    .buttonStyle(.plain)
+    .buttonStyle(.layerRow)
     .disabled(!canSend)
     .accessibilityLabel("Thinking: \(label)")
     .accessibilityIdentifier("thinking-picker")
