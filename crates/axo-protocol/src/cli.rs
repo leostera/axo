@@ -251,6 +251,15 @@ pub static OPERATIONS: &[Operation] = &[
         ]
     ),
     op!(
+        &["session", "fork"],
+        method::SESSION_FORK,
+        "Fork an open local Pi session into its own conversation",
+        Write,
+        Session,
+        Identity,
+        [SID]
+    ),
+    op!(
         &["session", "close"],
         method::SESSION_CLOSE,
         "Close panes and archive a Session; preserve its transcript",

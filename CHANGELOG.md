@@ -10,6 +10,10 @@ What changed in each published version of Axo. Every publish raises the minor ve
 
 ## Unreleased
 
+## 0.88 (Mac app build 360, axod 104)
+
+- Fork an open local Pi session into an independent conversation in the same folder with `session_fork({})` or `axo session fork --sid <session-id>`.
+
 ## 0.87 (Mac app build 359, axod 103)
 
 - Tools and plugins define which operations request confirmation instead of the session prompt requiring it for every send.
