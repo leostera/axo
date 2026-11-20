@@ -4,6 +4,10 @@ What changed in each published version of Axo. Every publish raises the minor ve
 
 ## Unreleased
 
+## 0.86 (Mac app build 358, axod 102)
+
+- Archived sessions now keep their transcript on the Mac after the relay acknowledges the upload.
+
 ## 0.85 (Mac app build 357, axod 101)
 
 - Tapping anywhere on the iPhone or iPad message box starts typing; its buttons still do their own thing.
