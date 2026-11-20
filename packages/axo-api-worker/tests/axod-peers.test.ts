@@ -135,7 +135,7 @@ test("a paired Mac keeps a copy of another Mac's Session, as Pi wrote it, while 
   await waitFor("the copy to go with the pane", 20_000, async () => (existsSync(copy) ? undefined : true), daemon);
 });
 
-test("this Mac's archived Session is deleted once the cloud holds it whole, and reopening it fetches it back (RFD0027)", async (t) => {
+test("this Mac retains an acknowledged archive before reopen and resumes uploading afterwards", async (t) => {
   const { api, socketPath, daemon } = await startAxod(t);
   const account = await signIn(api);
   await link(api, account, socketPath);
@@ -157,12 +157,18 @@ test("this Mac's archived Session is deleted once the cloud holds it whole, and 
   };
   await waitFor("the upload", 20_000, async () => ((await cloudCount()) === records ? true : undefined), daemon);
 
-  // Archived, and held by the cloud whole: the file goes.
+  // Wait for the cloud to observe the close, not just the local close RPC.
   await localCall(socketPath, "axo.session.close", { sessionId: created.id });
-  await waitFor("the archived transcript to go", 20_000, async () => (existsSync(file) ? undefined : true), daemon);
+  await waitFor("cloud acknowledgement of the archived session", 20_000, async () => {
+    const { client, hello } = await connectClient(api, account);
+    client.close();
+    const row = hello.sessions.find((session) => session.sessionId === created.id);
+    return row?.metadata?.archived && row.head === records ? true : undefined;
+  }, daemon);
+  assert.equal(await readFile(file, "utf8"), original, "retained before any reopen can restore it");
   assert.equal(await cloudCount(), records, "the cloud keeps it all");
 
-  // Reopening it puts it back as it was, before Pi starts.
+  // Reopening preserves the transcript.
   const reopened = (await localCall(socketPath, "axo.session.reopen")) as { id: string };
   assert.equal(reopened.id, created.id);
   assert.equal(await readFile(file, "utf8"), original);
