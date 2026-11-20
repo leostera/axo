@@ -10,6 +10,10 @@ What changed in each published version of Axo. Every publish raises the minor ve
 
 ## Unreleased
 
+## 0.87 (Mac app build 359, axod 103)
+
+- Tools and plugins define which operations request confirmation instead of the session prompt requiring it for every send.
+
 ## 0.86 (Mac app build 358, axod 102)
 
 - Archived sessions now keep their transcript on the Mac after the relay acknowledges the upload.
