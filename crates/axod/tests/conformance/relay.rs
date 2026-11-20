@@ -214,6 +214,65 @@ fn a_linked_mac_connects_with_its_credential_and_registers() {
 }
 
 #[test]
+fn a_host_restart_keeps_pairing_and_sessions_but_retires_the_old_generation() {
+    let hub = FakeHub::start();
+    let (mut axod, target) = linked(&hub, Pi::Fake);
+    let created = hub.ok(
+        "axo.remote.session.create",
+        json!({"target":target,"name":"Before restart"}),
+    );
+    let session = created["session"]["sessionId"].clone();
+    let sockets = hub.sockets();
+    let before = sockets.last().unwrap();
+
+    axod.restart();
+    axod.wait_for("restored host ready", || {
+        (axod.ok("axo.daemon.health", json!({}))["ready"] == true).then_some(())
+    });
+    let registration = axod.wait_for("registration from the restarted host", || {
+        hub.received("axo.host.register")
+            .into_iter()
+            .find(|message| message["params"]["hostGeneration"] != target["hostGeneration"])
+    });
+    let fresh = json!({"hostId":registration["params"]["hostId"],
+        "hostGeneration":registration["params"]["hostGeneration"]});
+    assert_eq!(fresh["hostId"], target["hostId"]);
+    assert_ne!(fresh["hostGeneration"], target["hostGeneration"]);
+    let status = wait_for_status(&axod, "connected");
+    assert_eq!(status["accountId"], ACCOUNT_ID);
+    assert_eq!(status["linked"], true);
+    assert_eq!(
+        hub.redeemed().len(),
+        1,
+        "restart must not redeem another pairing"
+    );
+    assert!(
+        hub.revoked().is_empty(),
+        "restart must not revoke the existing credential"
+    );
+    let sockets = hub.sockets();
+    let after = sockets.last().unwrap();
+    assert_eq!(after.authorization, before.authorization);
+    assert_eq!(after.credential_id, before.credential_id);
+
+    let stale = hub
+        .call("axo.remote.agents.list", json!({"target":target}))
+        .unwrap_err();
+    assert_eq!(stale["code"], STALE_HOST);
+    hub.ok("axo.remote.agents.list", json!({"target":fresh}));
+    hub.ok(
+        "axo.remote.session.rename",
+        json!({"target":fresh,"sessionId":session,"name":"After restart"}),
+    );
+    let restored = axod
+        .sessions()
+        .into_iter()
+        .find(|row| row["id"] == session)
+        .unwrap();
+    assert_eq!(restored["manualName"], "After restart");
+}
+
+#[test]
 fn a_dropped_socket_comes_back_and_registers_again() {
     let hub = FakeHub::start();
     let (axod, target) = linked(&hub, Pi::Fake);
