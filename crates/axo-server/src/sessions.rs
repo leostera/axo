@@ -223,7 +223,7 @@ pub(crate) async fn create(
 async fn create_in(
     core: &Arc<Core>,
     folder: PathBuf,
-    import: Option<PathBuf>,
+    import: Option<(PathBuf, bool)>,
     name: Option<rpc::SessionName>,
     agent: axo_agent::AgentKind,
 ) -> io::Result<SessionRecord> {
@@ -249,11 +249,17 @@ async fn create_in(
         )?),
         _ => None,
     };
-    if let Some(source) = import.clone() {
+    if let Some((source, fork)) = import.clone() {
         let (destination, workspace) = (transcript.clone(), folder.clone());
-        tokio::task::spawn_blocking(move || copy_pi_transcript(&source, &destination, &workspace))
-            .await
-            .map_err(io::Error::other)??;
+        tokio::task::spawn_blocking(move || {
+            if fork {
+                copy_transcript(&source, &destination, &workspace, Some(session_id))
+            } else {
+                copy_pi_transcript(&source, &destination, &workspace)
+            }
+        })
+        .await
+        .map_err(io::Error::other)??;
     }
     let inserted = {
         let (folder, transcript, pane_id) = (folder.clone(), transcript.clone(), pane_id.clone());
@@ -328,11 +334,38 @@ async fn wait_for_start(started: oneshot::Receiver<Result<(), String>>) -> io::R
     }
 }
 
+pub(crate) async fn fork(core: &Arc<Core>, source: SessionId) -> io::Result<SessionRecord> {
+    let parent = core
+        .catalog
+        .record(source)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "source Session not open"))?;
+    if !parent.agent.is_pi() {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "fork currently requires a Pi source",
+        ));
+    }
+    let path = parent
+        .pi_session_file
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "source transcript unavailable"))?;
+    create_in(core, parent.folder, Some((path, true)), None, parent.agent).await
+}
+
 pub(crate) fn copy_pi_transcript(
     source: &Path,
     destination: &Path,
     workspace: &Path,
 ) -> io::Result<()> {
+    copy_transcript(source, destination, workspace, None)
+}
+
+fn copy_transcript(
+    source: &Path,
+    destination: &Path,
+    workspace: &Path,
+    fork_id: Option<SessionId>,
+) -> io::Result<()> {
+    use std::io::Read;
     if !source.is_absolute() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -349,7 +382,8 @@ pub(crate) fn copy_pi_transcript(
             "Import source is not a regular file",
         ));
     }
-    let mut reader = BufReader::new(&mut input);
+    let length = input.metadata()?.len();
+    let mut reader = BufReader::new((&mut input).take(length));
     let mut header = String::new();
     if reader.read_line(&mut header)? == 0 {
         return Err(io::Error::new(
@@ -371,6 +405,9 @@ pub(crate) fn copy_pi_transcript(
     {
         return Err(not_a_session());
     }
+    if let Some(id) = fork_id {
+        header["id"] = id.to_string().into();
+    }
     header["cwd"] = serde_json::Value::String(workspace.to_string_lossy().into_owned());
     let mut output = fs::OpenOptions::new()
         .write(true)
@@ -380,7 +417,19 @@ pub(crate) fn copy_pi_transcript(
     let result = (|| {
         output.write_all(header.to_string().as_bytes())?;
         output.write_all(b"\n")?;
-        io::copy(&mut reader, &mut output)?;
+        if fork_id.is_some() {
+            let mut line = Vec::new();
+            while reader.read_until(b'\n', &mut line)? > 0 {
+                if !line.ends_with(b"\n") {
+                    break;
+                } // Ignore an append still in flight at the snapshot boundary.
+                serde_json::from_slice::<serde_json::Value>(&line).map_err(io::Error::other)?;
+                output.write_all(&line)?;
+                line.clear();
+            }
+        } else {
+            io::copy(&mut reader, &mut output)?;
+        }
         output.sync_all()
     })();
     if result.is_err() {
@@ -436,7 +485,14 @@ async fn import_now(
             "Pi Session is no longer current",
         ));
     }
-    let session = create_in(core, folder, Some(source), None, axo_agent::AgentKind::Pi).await?;
+    let session = create_in(
+        core,
+        folder,
+        Some((source, false)),
+        None,
+        axo_agent::AgentKind::Pi,
+    )
+    .await?;
     core.events.publish(Event::SessionFocus {
         session_id: session.id,
     });

@@ -69,6 +69,10 @@ pub const PARITY: &[Parity] = &[
         Remote::Call("axo.remote.session.create"),
     ),
     row(
+        method::SESSION_FORK,
+        Remote::Planned("axo.remote.session.fork"),
+    ),
+    row(
         method::SESSION_CLOSE,
         Remote::Call("axo.remote.session.close"),
     ),
@@ -136,7 +140,10 @@ pub const PARITY: &[Parity] = &[
         Remote::LocalOnly("timer cancellation is scoped to a local sending Session"),
     ),
     #[cfg(target_os = "linux")]
-    row(method::CLIENT_DESKTOP_OPEN, Remote::LocalOnly("opens this host's bundled desktop; grants the caller no authority")),
+    row(
+        method::CLIENT_DESKTOP_OPEN,
+        Remote::LocalOnly("opens this host's bundled desktop; grants the caller no authority"),
+    ),
     row(
         method::CLIENT_VIEWPORT_SET,
         Remote::LocalOnly("window geometry of a client on this Mac"),

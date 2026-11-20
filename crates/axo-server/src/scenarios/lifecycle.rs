@@ -128,6 +128,24 @@ async fn a_manual_name_is_kept_apart_from_pis() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn fork_has_independent_identity_and_preserves_source_history() {
+    let fixture = Fixture::new().await;
+    let source = fixture.new_session().await;
+    let path = source.pi_session_file.as_ref().unwrap();
+    let bytes = b"{\"type\":\"session\",\"version\":3,\"id\":\"parent\",\"cwd\":\"/tmp\"}\n{\"type\":\"message\",\"id\":\"entry\"}\n";
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(path, bytes).unwrap();
+    let child = sessions::fork(&fixture.core, source.id).await.unwrap();
+    assert_ne!(child.id, source.id);
+    assert_eq!(child.folder, source.folder);
+    let copy = fs::read_to_string(child.pi_session_file.unwrap()).unwrap();
+    let header: serde_json::Value = serde_json::from_str(copy.lines().next().unwrap()).unwrap();
+    assert_eq!(header["id"], child.id.to_string());
+    assert!(copy.contains("\"id\":\"entry\""));
+    assert_eq!(fs::read(path).unwrap(), bytes);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn an_imported_transcript_is_copied_without_touching_the_source_and_through_symlinks() {
     let fixture = Fixture::new().await;
     let directory = &fixture.directory;

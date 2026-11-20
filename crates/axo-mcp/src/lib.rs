@@ -187,6 +187,16 @@ const TOOLS: &[Tool] = &[
         destructive: false,
     },
     Tool {
+        name: "session_fork",
+        method: Some(method::SESSION_FORK),
+        description: "Fork an open local Pi Session transcript into a new Session in the same folder. Defaults to the current Session.",
+        properties: || json!({"sessionId": session_id_schema()}),
+        required: &[],
+        output: None,
+        read_only: false,
+        destructive: false,
+    },
+    Tool {
         name: "session_rename",
         method: Some(method::SESSION_RENAME),
         description: "Renames a Session.",
@@ -696,6 +706,11 @@ impl McpServer {
         if arguments.get("like").and_then(Value::as_str) == Some(SELF) {
             arguments.insert("like".into(), json!(self.session_id));
         }
+        if tool.method == Some(method::SESSION_FORK) {
+            arguments
+                .entry("sessionId")
+                .or_insert_with(|| json!(self.session_id));
+        }
         if tool.method == Some(method::SESSION_TIMER_CREATE) {
             arguments
                 .entry("sessionId")
@@ -852,9 +867,11 @@ impl McpServer {
             Some(summary) => format!("{INSTRUCTIONS}\n\n{summary}"),
             None => INSTRUCTIONS.to_string(),
         };
-        let agent = self.own_session().await.ok().and_then(|session| {
-            session["agent"].as_str().map(str::to_owned)
-        });
+        let agent = self
+            .own_session()
+            .await
+            .ok()
+            .and_then(|session| session["agent"].as_str().map(str::to_owned));
         if agent.as_deref() == Some("opencode") {
             let account = match listed.as_ref().and_then(brief::AccountApps::parse) {
                 Some(apps) => brief::Account::Listed(apps),
