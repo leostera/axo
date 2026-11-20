@@ -52,7 +52,8 @@ test("integrity names every artifact's exact bytes, and only pointers from befor
     { "aarch64-apple-darwin": { ...entry, extra: true } }])
     assert.throws(() => parseRelease({ ...release, integrity }), JSON.stringify(integrity));
 });
-test("the installer reads nothing it downloaded until its size and SHA-256 match", () => {
+// The check runs macOS's stat and shasum, as the installer does on the Mac it installs on.
+test("the installer reads nothing it downloaded until its size and SHA-256 match", { skip: process.platform !== "darwin" && "the installer's archive check runs on macOS" }, () => {
   const root = mkdtempSync(join(tmpdir(), "axo-archive-check-"));
   try {
     const file = join(root, "Axo.app.zip");
