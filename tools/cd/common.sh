@@ -14,8 +14,14 @@ step() {
 exact_source() {
   local commit
   commit="$(git rev-parse HEAD)"
-  if [ -n "${WORKERS_CI_COMMIT_SHA:-}" ] && [ "$WORKERS_CI_COMMIT_SHA" != "$commit" ]; then
-    fail "checked out $commit, but the push was $WORKERS_CI_COMMIT_SHA"
+  # A push names its commit; a build started by hand names only the branch, so its checkout must
+  # be that branch's tip on GitHub.
+  if [[ "${WORKERS_CI_COMMIT_SHA:-}" =~ ^[0-9a-f]{40}$ ]]; then
+    [ "$WORKERS_CI_COMMIT_SHA" = "$commit" ] || fail "checked out $commit, but the push was $WORKERS_CI_COMMIT_SHA"
+  elif [ -n "${WORKERS_CI:-}" ]; then
+    local tip
+    tip="$(main_tip)"
+    [ "$tip" = "$commit" ] || fail "checked out $commit, but main is $tip"
   fi
   if [ -n "${WORKERS_CI_BRANCH:-}" ] && [ "$WORKERS_CI_BRANCH" != "main" ]; then
     fail "branch $WORKERS_CI_BRANCH: only main deploys"
