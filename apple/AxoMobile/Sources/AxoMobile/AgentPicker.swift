@@ -7,6 +7,7 @@ struct AgentPicker: View {
   @Bindable var phone: PhoneWorkbench
   var voice: VoicePrompt?
   var currentAgent: CodingAgent?
+  var showName = false
   @Environment(\.horizontalSizeClass) private var sizeClass
 
   var body: some View {
@@ -39,7 +40,9 @@ struct AgentPicker: View {
         .accessibilityLabel("Agent: \(phone.newChatAgent.displayName)")
         .accessibilityIdentifier("agent-picker")
       } else {
-        Text(status).font(.caption).foregroundStyle(.secondary)
+        Text(status).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+          .frame(maxWidth: sizeClass == .compact ? 70 : 160)
+          .accessibilityLabel(status)
       }
     }
   }
@@ -51,7 +54,7 @@ struct AgentPicker: View {
       } else {
         Image(systemName: "person.crop.square")
       }
-      if sizeClass == .regular {
+      if showName || sizeClass == .regular {
         Text(agent?.displayName ?? "Agent").lineLimit(1)
         if selectable {
           Image(systemName: "chevron.down").font(.system(size: 8, weight: .bold))

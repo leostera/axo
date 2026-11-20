@@ -262,7 +262,18 @@ struct ChatMarkdown: View {
   }
 
   /// Bold, italics, links and `code` within a line, read when the message was parsed.
-  fileprivate static func inlineText(_ text: InlineText) -> Text { Text(text.styled) }
+  fileprivate static func inlineText(_ text: InlineText) -> Text {
+    var styled = text.styled
+    let links = styled.runs.compactMap { run -> Range<AttributedString.Index>? in
+      guard let scheme = run.link?.scheme?.lowercased(), ["https", "http"].contains(scheme) else { return nil }
+      return run.range
+    }
+    for range in links {
+      styled[range].foregroundColor = .blue
+      styled[range].underlineStyle = .single
+    }
+    return Text(styled)
+  }
 
   private func inline(_ text: InlineText) -> some View {
     Self.inlineText(text)

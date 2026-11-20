@@ -33,6 +33,7 @@ struct ChatComposer: View {
   /// Destination selectors share the bottom toolbar; nil only for isolated previews.
   var phone: PhoneWorkbench?
   var agent: CodingAgent?
+  @Environment(\.horizontalSizeClass) private var sizeClass
   /// The chat's Pi: its model, and its commands.
   var pi: ComposerPi?
   let send: (PromptDelivery) -> Void
@@ -114,22 +115,17 @@ struct ChatComposer: View {
         .frame(minHeight: 30)
         .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { editorHeight = $0 }
       HStack(spacing: 8) {
-        ScrollView(.horizontal) {
-          HStack(spacing: 4) {
-            if let phone {
-              HostPicker(phone: phone, voice: voice)
-              AgentPicker(phone: phone, voice: voice, currentAgent: agent)
-            }
-            if let pi {
-              modelButton(pi, label: pi.runtime?.model?.name ?? (pi.useDefault != nil ? "Host default" : "Model"))
-              thinkingButton(pi)
-            }
+        Spacer(minLength: 0)
+        HStack(spacing: 4) {
+          if let phone, phone.isDrafting || sizeClass == .regular {
+            HostPicker(phone: phone, voice: voice).layoutPriority(1)
+            AgentPicker(phone: phone, voice: voice, currentAgent: agent).layoutPriority(1)
+          }
+          if let pi {
+            modelButton(pi, label: pi.runtime?.model?.name ?? (pi.useDefault != nil ? "Host default" : "Model"))
+            thinkingButton(pi).layoutPriority(1)
           }
         }
-        .defaultScrollAnchor(.trailing, for: .alignment)
-        .scrollIndicators(.hidden)
-        .frame(maxWidth: .infinity)
-        .accessibilityIdentifier("composer-selectors")
         if isExpanded, isLong { expandButton }
         if let voice { VoiceButton(voice: voice, enabled: canSend, destination: voiceDestination) }
         sendButton
@@ -225,9 +221,17 @@ struct ChatComposer: View {
   private func thinkingButton(_ pi: ComposerPi) -> some View {
     let label = pi.runtime?.thinkingLevel?.title ?? "Thinking"
     return Button { showingThinking = true } label: {
-      Text(label).font(.caption).foregroundStyle(.secondary)
-        .padding(.horizontal, 9)
-        .composerPill()
+      Group {
+        if sizeClass == .compact, phone?.isDrafting == true {
+          Image(systemName: "brain")
+        } else {
+          Text(label).lineLimit(1)
+        }
+      }
+      .font(.caption).foregroundStyle(.secondary)
+      .padding(.horizontal, 9)
+      .composerPill()
+      .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
     .disabled(!canSend)

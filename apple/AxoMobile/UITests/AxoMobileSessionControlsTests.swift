@@ -65,13 +65,20 @@ final class AxoMobileSessionControlsTests: XCTestCase {
       XCTAssertTrue(item.waitForExistence(timeout: 5))
       XCTAssertTrue(item.isHittable)
     }
-    for index in 1..<selectors.count {
-      XCTAssertGreaterThanOrEqual(selectors[index].frame.minX, selectors[index - 1].frame.maxX - 1)
-      XCTAssertEqual(selectors[index].frame.midY, selectors[0].frame.midY, accuracy: 2)
+    let compact = UIDevice.current.userInterfaceIdiom == .phone
+    XCTAssertEqual(selectors[0].frame.midY, selectors[1].frame.midY, accuracy: 2)
+    if compact {
+      XCTAssertLessThan(selectors[1].frame.maxY, composer.frame.minY, "Session badges live above the transcript")
+    } else {
+      XCTAssertEqual(selectors[1].frame.midY, selectors[2].frame.midY, accuracy: 2)
     }
     let add = app.buttons["attach"]
     let mic = app.buttons["voice-start"]
-    XCTAssertGreaterThan(selectors[0].frame.minX, add.frame.maxX + 12, "Only Add belongs on the left")
+    XCTAssertGreaterThan(selectors[2].frame.minX, add.frame.maxX, "Only Add belongs on the left")
+    XCTAssertEqual(selectors[2].frame.midY, selectors[3].frame.midY, accuracy: 2)
+    let beforeSwipe = selectors[2].frame
+    selectors[2].swipeLeft()
+    XCTAssertEqual(selectors[2].frame.minX, beforeSwipe.minX, accuracy: 2, "The controls do not scroll")
     XCTAssertEqual(selectors[3].frame.maxX, mic.frame.minX - 8, accuracy: 2, "Thinking is next to Mic, not floating on the left")
     selectors[3].tap()
     XCTAssertTrue(element(app, "thinking-medium").waitForExistence(timeout: 5))

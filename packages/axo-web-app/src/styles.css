@@ -230,7 +230,7 @@ button:disabled { cursor: default; }
 .markdown h2 { font-size: 1.35em; font-weight: 600; }
 .markdown h3 { font-size: 1.15em; font-weight: 600; }
 .markdown h4 { font-size: 1.05em; font-weight: 600; }
-.markdown a { color: var(--blue); }
+.markdown a { color: var(--blue); text-decoration: underline; text-underline-offset: 2px; }
 .markdown code { padding: 1px 5px; border-radius: 6px; background: var(--fill); font: 0.85em ui-monospace, SFMono-Regular, Menlo, monospace; }
 .md-list-item { display: flex; gap: 10px; }
 .md-marker { flex: none; color: var(--secondary); font-variant-numeric: tabular-nums; }

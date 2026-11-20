@@ -163,6 +163,14 @@ struct ConversationView: View {
         }
         if let showRequests { RequestsBell(phone: phone, open: showRequests) }
       }
+      if horizontalSizeClass == .compact, session != nil, !phone.isDrafting {
+        HStack(spacing: 4) {
+          HostPicker(phone: phone, showName: true)
+          AgentPicker(phone: phone, currentAgent: session?.agent, showName: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.leading, 8)
+      }
       if let workbench, let trouble = hostTrouble(workbench) {
         Text(trouble)
           .font(.caption.weight(.medium))

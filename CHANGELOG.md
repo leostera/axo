@@ -4,6 +4,12 @@ What changed in each published version of Axo. Every publish raises the minor ve
 
 ## Unreleased
 
+## 0.84 (Mac app build 356, axod 100)
+
+- Keep the mobile composer controls fixed. On iPhone, a running chat shows its read-only host and agent above the conversation; iPad keeps them in the composer.
+- Show the machine or OS icon beside each host in the new-chat picker.
+- Style Markdown links with an underline on iPhone, iPad and web.
+
 ## 0.83 (Mac app build 355, axod 99)
 
 - New-chat model catalogs come from the selected host and agent, even with no chats open. Pi, OpenCode and Codex support model selection; Claude Code’s advertised model aliases are browse-only in Axo. Existing chats still use their live catalogs. Browsing does not send a prompt.

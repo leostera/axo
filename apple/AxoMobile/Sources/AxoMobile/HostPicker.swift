@@ -6,6 +6,7 @@ import SwiftUI
 struct HostPicker: View {
   let phone: PhoneWorkbench
   var voice: VoicePrompt?
+  var showName = false
   @Environment(\.horizontalSizeClass) private var sizeClass
 
   var body: some View {
@@ -16,7 +17,12 @@ struct HostPicker: View {
             Button {
               phone.chooseHost(candidate.hostId, voice: voice)
             } label: {
-              Text("\(candidate.label)\(candidate.status == .online ? "" : ", offline")")
+              let name = "\(candidate.label)\(candidate.status == .online ? "" : ", offline")"
+              if let logo = HostPresentation.logoName(candidate) {
+                Label(name, image: logo)
+              } else {
+                Label(name, systemImage: HostPresentation.symbol(candidate))
+              }
             }
             .disabled(candidate.status != .online || phone.isSending)
           }
@@ -38,7 +44,7 @@ struct HostPicker: View {
   private func badge(_ host: RemoteHost, selectable: Bool) -> some View {
     HStack(spacing: 4) {
       HostIcon(host: host).frame(width: 14, height: 14)
-      if sizeClass == .regular {
+      if showName || sizeClass == .regular {
         Text(host.label).lineLimit(1).frame(maxWidth: 100)
         if selectable {
           Image(systemName: "chevron.down").font(.system(size: 8, weight: .bold))
