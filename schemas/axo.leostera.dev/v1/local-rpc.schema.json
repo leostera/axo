@@ -915,7 +915,7 @@
           "maxLength": 128
         },
         "hostKind": {
-          "const": "macos"
+          "enum": ["macos", "linux", "windows"]
         },
         "lastError": {
           "type": ["string", "null"],

@@ -647,7 +647,11 @@ mod tests {
         let folder = Path::new("/w");
         assert_eq!(next_session_ordinal(database, folder).unwrap(), 1);
 
-        let socket = BridgeSocketPath::parse(PathBuf::from("/tmp/axo-store-test.sock")).unwrap();
+        #[cfg(unix)]
+        let fixture_socket = PathBuf::from("/tmp/axo-store-test.sock");
+        #[cfg(windows)]
+        let fixture_socket = PathBuf::from("C:/axo-store-test.sock");
+        let socket = BridgeSocketPath::parse(fixture_socket).unwrap();
         let split = new_uuid_v4().unwrap();
         let preset = axo_protocol::rpc::SessionName::parse("Preset helper".into()).unwrap();
         let inserted = insert_new_session(

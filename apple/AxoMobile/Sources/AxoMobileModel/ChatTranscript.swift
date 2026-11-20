@@ -9,6 +9,16 @@ public struct ToolActivity: Equatable, Sendable {
   /// Pi's id for the call; the result names it.
   public let callID: String?
   public let name: String
+  public var displayName: String {
+    switch name {
+    case "exec", "functions.exec", "codemode": "Run code"
+    case "exec_command", "functions.exec_command", "shell_command", "bash": "Run command"
+    case "wait", "write_stdin": "Wait for running work"
+    case "apply_patch": "Edit files"
+    case "update_plan": "Update plan"
+    default: name
+    }
+  }
   public let kind: Kind
   /// The file or pattern the tool works on.
   public let subtitle: String?
@@ -26,7 +36,7 @@ public struct ToolActivity: Equatable, Sendable {
 
   static func kind(of name: String) -> Kind {
     switch name {
-    case "bash": .shell
+    case "bash", "exec_command", "functions.exec_command", "shell_command": .shell
     case "edit", "write": .edit
     case "read": .file
     case "grep", "find", "ls", "search": .search
@@ -59,8 +69,10 @@ public struct ToolInput: Equatable, Sendable {
   init?(name: String, kind: ToolActivity.Kind, arguments: JSONValue?) {
     guard let arguments, case .object(let fields) = arguments else { return nil }
     if kind == .shell {
-      guard let command = fields["command"]?.stringValue, !command.isEmpty else { return nil }
+      guard let command = (fields["command"] ?? fields["cmd"])?.stringValue, !command.isEmpty else { return nil }
       self.init(kind: .command, text: command)
+    } else if ["exec", "functions.exec", "codemode", "apply_patch"].contains(name), let input = fields["input"]?.stringValue, !input.isEmpty {
+      self.init(kind: name == "apply_patch" ? .diff : .code, text: input)
     } else if let code = fields["code"]?.stringValue, !code.isEmpty {
       self.init(kind: .code, text: code)
     } else if name == "edit" {

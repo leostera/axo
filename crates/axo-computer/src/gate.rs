@@ -23,10 +23,12 @@ use std::path::Path;
 use std::pin::Pin;
 use std::sync::{Mutex, OnceLock};
 
-use axod_infer::{Infer, InferError};
+#[cfg(not(windows))]
+use axod_infer::Infer;
 use serde_json::{Value, json};
 
 /// hand's risk question (acoyfellow/hand `src/steer.ts`), for text instead of a screenshot.
+#[cfg(not(windows))]
 const RISK_QUESTION: &str = "Would doing `action` in `window` do something destructive or hard to undo, such as deleting data, removing a person, discarding work, emptying a trash, sending a message or email, posting publicly, sending money or placing an order?";
 
 /// Clef's probability at or above which the person is asked about a flagged action.
@@ -124,12 +126,13 @@ pub enum Verdict {
 /// this Mac's agents (through `axod mcp`, a proxy) and other Macs' scripts alike (RFD0028).
 /// `socket` is axod's, beside which Clef's runs. Blocks on the filesystem the first time: call
 /// it off the runtime.
-pub fn for_socket(socket: &Path) -> &'static Gate {
+pub fn for_socket(_socket: &Path) -> &'static Gate {
     static GATE: OnceLock<Gate> = OnceLock::new();
     GATE.get_or_init(|| {
         // Until the model files are downloaded, its answers are "unavailable" and the word list
         // alone decides; the first process to find them missing starts the download.
-        let judge = socket
+        #[cfg(not(windows))]
+        let judge = _socket
             .parent()
             .and_then(Infer::beside_current_exe)
             .filter(|infer| infer.helper.exists())
@@ -143,6 +146,8 @@ pub fn for_socket(socket: &Path) -> &'static Gate {
                 }
             })
             .map(|infer| Box::new(infer) as Box<dyn Judge>);
+        #[cfg(windows)]
+        let judge = None;
         Gate::new(judge)
     })
 }
@@ -160,8 +165,27 @@ pub trait Judge: Send + Sync {
     fn risky<'a>(&'a self, action: &'a str, window: &'a str) -> JudgeFuture<'a>;
 }
 
-pub type JudgeFuture<'a> = Pin<Box<dyn Future<Output = Result<f64, InferError>> + Send + 'a>>;
+/// The gate's classifier failure, independent of any platform's model runtime.
+#[derive(Debug)]
+pub enum JudgeError {
+    Unavailable,
+    Failed(String),
+}
 
+impl std::fmt::Display for JudgeError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unavailable => formatter.write_str("no local model"),
+            Self::Failed(message) => formatter.write_str(message),
+        }
+    }
+}
+
+impl std::error::Error for JudgeError {}
+
+pub type JudgeFuture<'a> = Pin<Box<dyn Future<Output = Result<f64, JudgeError>> + Send + 'a>>;
+
+#[cfg(not(windows))]
 impl Judge for Infer {
     fn risky<'a>(&'a self, action: &'a str, window: &'a str) -> JudgeFuture<'a> {
         Box::pin(async move {
@@ -170,10 +194,11 @@ impl Judge for Infer {
                     "state": { "action": action, "window": window },
                     "questions": { "risky": { "type": "noul", "instructions": RISK_QUESTION } },
                 }))
-                .await?;
+                .await
+                .map_err(|error| JudgeError::Failed(error.to_string()))?;
             answers["risky"]["noul"]
                 .as_f64()
-                .ok_or_else(|| InferError::Failed(format!("no probability in {answers}")))
+                .ok_or_else(|| JudgeError::Failed(format!("no probability in {answers}")))
         })
     }
 }
@@ -290,7 +315,7 @@ impl Gate {
                 Check::Judge => {
                     let judged = match &self.judge {
                         Some(judge) => judge.risky(&action.what, &action.place).await,
-                        None => Err(InferError::Unavailable("no local model".into())),
+                        None => Err(JudgeError::Unavailable),
                     };
                     match judged {
                         Ok(p) if p < RISKY_AT => {

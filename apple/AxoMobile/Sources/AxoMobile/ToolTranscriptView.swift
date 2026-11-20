@@ -86,7 +86,7 @@ struct ToolTranscriptView: View {
     } label: {
       HStack(spacing: 8) {
         Image(systemName: symbol).font(.footnote).foregroundStyle(.secondary).frame(width: 18)
-        Text(tool.name).font(.subheadline.weight(.semibold))
+        Text(tool.displayName).font(.subheadline.weight(.semibold))
           .foregroundStyle(tool.status == .failed ? Color.red : Color.primary)
         Text(tool.preview)
           .font(.caption.monospaced()).foregroundStyle(.secondary)
@@ -99,7 +99,7 @@ struct ToolTranscriptView: View {
       .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
-    .accessibilityLabel("\(tool.name)\(tool.preview.isEmpty ? "" : " \(tool.preview)")\(isRunning ? ", running" : "")")
+    .accessibilityLabel("\(tool.displayName)\(tool.preview.isEmpty ? "" : " \(tool.preview)")\(isRunning ? ", running" : "")")
     .accessibilityValue(open ? "Open" : "Folded")
     .accessibilityIdentifier("toolRow")
   }
@@ -235,12 +235,12 @@ private struct ToolOutputSheet: View {
       }
       .defaultScrollAnchor(.bottom, for: .sizeChanges)
       .defaultScrollAnchor(.bottom, for: .initialOffset)
-      .navigationTitle("\(tool.name) output")
+      .navigationTitle("\(tool.displayName) output")
       .navigationBarTitleDisplayMode(.inline)
       .toolbar {
         ToolbarItem(placement: .principal) {
           VStack(spacing: 0) {
-            Text("\(tool.name) output").font(.headline)
+            Text("\(tool.displayName) output").font(.headline)
             Text(subtitle).font(.caption).foregroundStyle(.secondary).accessibilityIdentifier("fullOutputLines")
           }
         }

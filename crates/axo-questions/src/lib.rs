@@ -16,8 +16,11 @@ use std::io;
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+#[cfg(unix)]
 use axo_ipc::Extension;
+#[cfg(unix)]
 use axo_ipc::peer::{Caller, Signer};
+#[cfg(unix)]
 use axo_ipc::{Only, TypedMethods};
 use axo_protocol::elicitation::{
     Asker, BAD_INPUT, Elicitation, ElicitationAction, ElicitationAnswer, ElicitationKind,
@@ -25,9 +28,14 @@ use axo_protocol::elicitation::{
     NOT_A_PERSON, NOT_A_TOOL, NOT_PENDING, Pending as Listed, Reply, RequestElicitation,
     ResolveElicitation, Resolved, TIMEOUT_MS,
 };
-use axo_protocol::rpc::{MethodError, method};
+use axo_protocol::rpc::MethodError;
+#[cfg(unix)]
+use axo_protocol::rpc::method;
 use axo_protocol::{Event, SessionId, new_uuid_v4};
-use jsonrpc_core::{Error as RpcError, ErrorCode, IoHandler};
+#[cfg(unix)]
+use jsonrpc_core::IoHandler;
+use jsonrpc_core::{Error as RpcError, ErrorCode};
+#[cfg(unix)]
 use serde_json::Value;
 use std::sync::Arc;
 use tokio::sync::oneshot;
@@ -378,6 +386,16 @@ impl Questions {
         Ok(())
     }
 
+    /// Withdraws a daemon-owned request after shutdown or permission revocation. This can
+    /// only cancel, never approve, and is not exposed as an agent-controlled RPC.
+    pub fn cancel(&self, host: &dyn QuestionsHost, id: &str) -> bool {
+        let Some(elicitation) = self.pending.settle(id, ElicitationAction::Cancel) else {
+            return false;
+        };
+        publish_resolved(host, &elicitation, ElicitationAction::Cancel);
+        true
+    }
+
     /// The questions waiting, oldest first.
     pub fn pending(&self) -> Vec<Elicitation> {
         self.pending.pending()
@@ -478,17 +496,20 @@ fn publish_resolved(
 }
 
 /// `axo.elicitation.request`, `.list`, and `.resolve` for Axo.app alone.
+#[cfg(unix)]
 pub struct QuestionsExtension {
     questions: Arc<Questions>,
     host: Arc<dyn QuestionsHost>,
 }
 
+#[cfg(unix)]
 impl QuestionsExtension {
     pub fn new(questions: Arc<Questions>, host: Arc<dyn QuestionsHost>) -> Self {
         Self { questions, host }
     }
 }
 
+#[cfg(unix)]
 impl Extension for QuestionsExtension {
     fn name(&self) -> &'static str {
         "questions"
@@ -689,6 +710,55 @@ mod tests {
         };
         assert_eq!(settled.action, ElicitationAction::Decline);
         assert!(elicitations.pending().is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn daemon_cancellation_wakes_the_asker_once_and_cannot_be_reused() {
+        let shared = asking();
+        let owner = shared.clone();
+        let waiting = tokio::spawn(async move {
+            owner
+                .0
+                .ask_with(
+                    &owner.1,
+                    SessionId::from_u128(9),
+                    "Synthetic permission check",
+                    Asker::ComputerUse,
+                    None,
+                    Duration::from_secs(5),
+                )
+                .await
+        });
+        let id = first_pending(&shared.0).await;
+        assert!(shared.0.cancel(&shared.1, &id));
+        assert!(!shared.0.cancel(&shared.1, &id));
+        let answer = tokio::time::timeout(Duration::from_secs(1), waiting)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(answer.outcome.action, ElicitationAction::Cancel);
+        assert!(answer.values.is_none());
+        assert!(shared.0.pending().is_empty());
+        assert_eq!(
+            shared
+                .0
+                .resolve(&shared.1, &id, ElicitationAnswer::Accept, Reply::Bare)
+                .unwrap_err()
+                .code,
+            NOT_PENDING
+        );
+        assert_eq!(
+            shared
+                .1
+                .events
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|event| matches!(event, Event::ElicitationResolved { .. }))
+                .count(),
+            1
+        );
     }
 
     /// An accepted form's values reach the asker only when they open with this Mac's key, for

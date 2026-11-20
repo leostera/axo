@@ -1,0 +1,884 @@
+diff --git a/src/validate.rs b/src/validate.rs
+--- a/src/validate.rs
++++ b/src/validate.rs
+@@ -14,7 +14,7 @@
+ use crate::transcript::{Record, TREE_TYPES, Transcript};
+ 
+ /// The ATXF v0.1 record schema.
+-pub const SCHEMA: &str = include_str!("../schema/v0.1/atxf.schema.json");
++pub const SCHEMA: &str = include_str!("atxf.schema.json");
+ 
+ #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+ pub enum Severity {
+diff --git a/src/atxf.schema.json b/src/atxf.schema.json
+new file mode 100644
+--- /dev/null
++++ b/src/atxf.schema.json
+@@ -0,0 +1,867 @@
++{
++  "$schema": "https://json-schema.org/draft/2020-12/schema",
++  "$id": "https://atxf.leostera.dev/schema/v0.1/atxf.schema.json",
++  "title": "ATXF v0.1 record",
++  "description": "One line of an Agent Transcript Exchange Format (ATXF) JSONL file. The first line MUST be a `transcript` record. See SPEC.md for semantics that JSON Schema cannot express (references, ordering, context building).",
++  "$ref": "#/$defs/record",
++  "$defs": {
++    "record": {
++      "oneOf": [
++        { "$ref": "#/$defs/transcriptRecord" },
++        { "$ref": "#/$defs/messageRecord" },
++        { "$ref": "#/$defs/contextRecord" },
++        { "$ref": "#/$defs/settingsRecord" },
++        { "$ref": "#/$defs/compactionRecord" },
++        { "$ref": "#/$defs/contextEditRecord" },
++        { "$ref": "#/$defs/branchSummaryRecord" },
++        { "$ref": "#/$defs/turnRecord" },
++        { "$ref": "#/$defs/toolStatusRecord" },
++        { "$ref": "#/$defs/usageRecord" },
++        { "$ref": "#/$defs/checkpointRecord" },
++        { "$ref": "#/$defs/agentLinkRecord" },
++        { "$ref": "#/$defs/customRecord" },
++        { "$ref": "#/$defs/leafRecord" },
++        { "$ref": "#/$defs/labelRecord" },
++        { "$ref": "#/$defs/metadataRecord" },
++        { "$ref": "#/$defs/sealRecord" }
++      ]
++    },
++
++    "id": {
++      "description": "Identifier unique among all records of one transcript. Opaque; no format implied.",
++      "type": "string",
++      "minLength": 1
++    },
++    "timestamp": {
++      "description": "RFC 3339 timestamp, UTC recommended.",
++      "type": "string",
++      "format": "date-time"
++    },
++    "nonNegativeInteger": { "type": "integer", "minimum": 0 },
++    "hash": {
++      "description": "A record hash: `sha256:` followed by 64 lowercase hex digits. See SPEC.md, Integrity.",
++      "type": "string",
++      "pattern": "^sha256:[0-9a-f]{64}$"
++    },
++
++    "ext": {
++      "description": "Namespaced extension data that is not part of the core format. Keys are namespaces (e.g. an agent name); values are opaque.",
++      "type": "object",
++      "propertyNames": { "pattern": "^[a-z0-9][a-z0-9._-]*$" }
++    },
++    "native": {
++      "description": "Verbatim source records this ATXF record was derived from. Enables lossless round-trips back to the source agent. One ATXF record MAY carry several native records (e.g. a Claude Code assistant response split across lines).",
++      "type": "object",
++      "properties": {
++        "source": { "description": "Producing agent, e.g. `pi`, `claude-code`, `codex`, `opencode`, `gemini-cli`.", "type": "string", "minLength": 1 },
++        "format": { "description": "Source format identifier, e.g. `codex/rollout-jsonl`.", "type": "string" },
++        "version": { "description": "Source agent or format version.", "type": "string" },
++        "records": { "description": "Empty only together with `of`.", "type": "array" },
++        "of": {
++          "description": "This record was derived from the same source records as the earlier record `of`, which carries them. One source record that becomes several ATXF records (e.g. a message holding several tool results) carries its records once.",
++          "$ref": "#/$defs/id"
++        },
++        "raw": {
++          "description": "The exact source text of each record, including its line terminator, when re-serializing `records` would not reproduce it byte for byte. Same length as `records`.",
++          "type": "array",
++          "items": { "type": "string" }
++        }
++      },
++      "required": ["source", "records"],
++      "additionalProperties": false
++    },
++    "replay": {
++      "description": "Opaque provider replay data (thinking signatures, encrypted reasoning, thought signatures, provider compaction blobs). Consumers MUST pass it back verbatim only to a matching provider/api and MUST drop it otherwise.",
++      "type": "array",
++      "minItems": 1,
++      "items": {
++        "type": "object",
++        "properties": {
++          "provider": { "type": "string", "minLength": 1 },
++          "api": { "description": "Wire API, e.g. `anthropic-messages`, `openai-responses`, `google-genai`.", "type": "string" },
++          "model": { "type": "string" },
++          "kind": { "description": "What the data is, e.g. `signature`, `encrypted_content`, `thought_signature`.", "type": "string" },
++          "data": {}
++        },
++        "required": ["provider", "data"],
++        "additionalProperties": false
++      }
++    },
++    "modelRef": {
++      "type": "object",
++      "properties": {
++        "provider": { "type": "string", "minLength": 1 },
++        "id": { "type": "string", "minLength": 1 },
++        "api": { "type": "string" },
++        "variant": { "type": "string" }
++      },
++      "required": ["provider", "id"],
++      "additionalProperties": false
++    },
++    "usage": {
++      "description": "Token usage. Buckets are disjoint: `input` excludes cached tokens; `cacheRead` and `cacheWrite` count them separately. `reasoning` is a subset of `output`. `total` = input + cacheRead + cacheWrite + output.",
++      "type": "object",
++      "properties": {
++        "input": { "$ref": "#/$defs/nonNegativeInteger" },
++        "output": { "$ref": "#/$defs/nonNegativeInteger" },
++        "cacheRead": { "$ref": "#/$defs/nonNegativeInteger" },
++        "cacheWrite": { "$ref": "#/$defs/nonNegativeInteger" },
++        "cacheWrite1h": { "description": "Of `cacheWrite`, the tokens written to a cache kept for one hour rather than the provider's default lifetime.", "$ref": "#/$defs/nonNegativeInteger" },
++        "reasoning": { "$ref": "#/$defs/nonNegativeInteger" },
++        "total": { "$ref": "#/$defs/nonNegativeInteger" },
++        "cost": { "$ref": "#/$defs/cost" }
++      },
++      "required": ["input", "output"],
++      "additionalProperties": false
++    },
++    "cost": {
++      "type": "object",
++      "properties": {
++        "currency": { "type": "string", "pattern": "^[A-Z]{3}$", "default": "USD" },
++        "input": { "type": "number", "minimum": 0 },
++        "output": { "type": "number", "minimum": 0 },
++        "cacheRead": { "type": "number", "minimum": 0 },
++        "cacheWrite": { "type": "number", "minimum": 0 },
++        "total": { "type": "number", "minimum": 0 }
++      },
++      "required": ["total"],
++      "additionalProperties": false
++    },
++
++    "textBlock": {
++      "type": "object",
++      "properties": {
++        "type": { "const": "text" },
++        "text": { "type": "string" },
++        "replay": { "$ref": "#/$defs/replay" }
++      },
++      "required": ["type", "text"],
++      "additionalProperties": false
++    },
++    "imageBlock": {
++      "type": "object",
++      "properties": {
++        "type": { "const": "image" },
++        "mediaType": { "type": "string", "pattern": "^image/" },
++        "data": { "description": "Base64-encoded bytes.", "type": "string", "contentEncoding": "base64" },
++        "uri": { "type": "string", "format": "uri-reference" }
++      },
++      "required": ["type", "mediaType"],
++      "oneOf": [{ "required": ["data"] }, { "required": ["uri"] }],
++      "additionalProperties": false
++    },
++    "resourceBlock": {
++      "description": "A file, document or other attachment, by reference and optionally inlined as text.",
++      "type": "object",
++      "properties": {
++        "type": { "const": "resource" },
++        "uri": { "type": "string", "format": "uri-reference" },
++        "name": { "type": "string" },
++        "mediaType": { "type": "string" },
++        "text": { "type": "string" }
++      },
++      "required": ["type", "uri"],
++      "additionalProperties": false
++    },
++    "reasoningBlock": {
++      "description": "Model reasoning. Any of raw `text`, provider `summary`, or only opaque `replay` data may be present.",
++      "type": "object",
++      "properties": {
++        "type": { "const": "reasoning" },
++        "text": { "type": "string" },
++        "summary": { "type": "array", "items": { "type": "string" } },
++        "redacted": { "type": "boolean" },
++        "replay": { "$ref": "#/$defs/replay" }
++      },
++      "required": ["type"],
++      "anyOf": [{ "required": ["text"] }, { "required": ["summary"] }, { "required": ["replay"] }],
++      "additionalProperties": false
++    },
++    "toolCallBlock": {
++      "type": "object",
++      "properties": {
++        "type": { "const": "tool_call" },
++        "id": { "$ref": "#/$defs/id" },
++        "name": { "type": "string", "minLength": 1 },
++        "kind": {
++          "description": "`function`: JSON arguments. `custom`: free-form string input. `builtin`: provider-hosted tool (web search, code interpreter, ...).",
++          "enum": ["function", "custom", "builtin"],
++          "default": "function"
++        },
++        "namespace": { "type": "string" },
++        "arguments": { "type": "object" },
++        "input": { "type": "string" },
++        "replay": { "$ref": "#/$defs/replay" }
++      },
++      "required": ["type", "id", "name"],
++      "oneOf": [{ "required": ["arguments"] }, { "required": ["input"] }],
++      "additionalProperties": false
++    },
++
++    "userContent": {
++      "oneOf": [
++        { "type": "string" },
++        {
++          "type": "array",
++          "items": {
++            "oneOf": [{ "$ref": "#/$defs/textBlock" }, { "$ref": "#/$defs/imageBlock" }, { "$ref": "#/$defs/resourceBlock" }]
++          }
++        }
++      ]
++    },
++    "assistantContent": {
++      "type": "array",
++      "items": {
++        "oneOf": [
++          { "$ref": "#/$defs/textBlock" },
++          { "$ref": "#/$defs/reasoningBlock" },
++          { "$ref": "#/$defs/toolCallBlock" },
++          { "$ref": "#/$defs/imageBlock" }
++        ]
++      }
++    },
++
++    "origin": {
++      "description": "Who produced a message. Defaults: `human` for user, `model` for assistant, `tool` for tool results, `agent` for system.",
++      "type": "object",
++      "properties": {
++        "kind": { "enum": ["human", "model", "tool", "agent", "synthetic", "extension", "hook", "command", "subagent"] },
++        "name": { "description": "Producer name, e.g. extension id, hook name, sub-agent name.", "type": "string" }
++      },
++      "required": ["kind"],
++      "additionalProperties": false
++    },
++    "stopReason": {
++      "enum": ["end", "tool_use", "max_tokens", "error", "aborted", "refusal", "other"]
++    },
++    "error": {
++      "type": "object",
++      "properties": {
++        "message": { "type": "string" },
++        "code": { "type": "string" }
++      },
++      "required": ["message"],
++      "additionalProperties": false
++    },
++
++    "messageBody": {
++      "description": "Role-dependent message fields, shared by `message` records and compaction replacements.",
++      "oneOf": [
++        {
++          "properties": {
++            "role": { "const": "system" },
++            "content": { "$ref": "#/$defs/userContent" },
++            "origin": { "$ref": "#/$defs/origin" },
++            "display": { "type": "boolean" },
++            "startTime": { "$ref": "#/$defs/startTime" }
++          },
++          "required": ["role", "content"]
++        },
++        {
++          "properties": {
++            "role": { "const": "user" },
++            "content": { "$ref": "#/$defs/userContent" },
++            "origin": { "$ref": "#/$defs/origin" },
++            "display": { "type": "boolean" },
++            "startTime": { "$ref": "#/$defs/startTime" }
++          },
++          "required": ["role", "content"]
++        },
++        {
++          "properties": {
++            "role": { "const": "assistant" },
++            "content": { "$ref": "#/$defs/assistantContent" },
++            "origin": { "$ref": "#/$defs/origin" },
++            "display": { "type": "boolean" },
++            "model": { "$ref": "#/$defs/modelRef" },
++            "usage": { "$ref": "#/$defs/usage" },
++            "stop": { "$ref": "#/$defs/stopReason" },
++            "rawStop": { "type": "string" },
++            "responseId": { "type": "string" },
++            "responseModel": { "description": "The model the provider says produced the response, when it names it differently from `model.id`.", "type": "string" },
++            "reasoningEffort": { "description": "The reasoning effort the agent asked for, in its own terms (§12.1).", "type": "string" },
++            "providerReasoningEffort": { "description": "The reasoning effort sent to the provider, in the provider's terms (§12.1).", "type": "string" },
++            "error": { "$ref": "#/$defs/error" },
++            "replay": { "$ref": "#/$defs/replay" },
++            "startTime": { "$ref": "#/$defs/startTime" },
++            "durationMs": { "$ref": "#/$defs/durationMs" }
++          },
++          "required": ["role", "content"]
++        },
++        {
++          "properties": {
++            "role": { "const": "tool" },
++            "toolCallId": { "$ref": "#/$defs/id" },
++            "toolName": { "type": "string" },
++            "content": { "$ref": "#/$defs/userContent" },
++            "isError": { "type": "boolean", "default": false },
++            "details": { "description": "Structured result data not sent to the model.", "type": "object" },
++            "nestedCalls": { "$ref": "#/$defs/nestedCalls" },
++            "origin": { "$ref": "#/$defs/origin" },
++            "display": { "type": "boolean" },
++            "startTime": { "$ref": "#/$defs/startTime" },
++            "durationMs": { "$ref": "#/$defs/durationMs" }
++          },
++          "required": ["role", "toolCallId", "content"]
++        }
++      ]
++    },
++
++    "startTime": {
++      "description": "When the message began, when that is not when it was written (the record's `time`): for an assistant message, when the request was sent (§12.1).",
++      "$ref": "#/$defs/timestamp"
++    },
++    "durationMs": {
++      "description": "How long producing the message took, in milliseconds: the model's response, or the tool's run (§12.1).",
++      "type": "number",
++      "minimum": 0
++    },
++    "nestedCalls": {
++      "description": "Calls the tool made to other tools while it ran, as from a script (§8). A record of what happened, never model context. Results are not recorded.",
++      "type": "object",
++      "properties": {
++        "calls": {
++          "type": "array",
++          "items": {
++            "type": "object",
++            "properties": {
++              "id": { "type": "string" },
++              "name": { "type": "string" },
++              "arguments": { "type": "object" },
++              "argumentsBytes": { "description": "UTF-8 size of the arguments as JSON, when `arguments` was left out for its size.", "$ref": "#/$defs/nonNegativeInteger" },
++              "status": { "description": "`unfinished`: still running when the calling tool finished.", "enum": ["ok", "error", "unfinished"] },
++              "durationMs": { "$ref": "#/$defs/durationMs" },
++              "error": { "type": "string" }
++            },
++            "required": ["id", "name", "status"],
++            "additionalProperties": false
++          }
++        },
++        "complete": { "description": "False when calls were dropped, arguments left out, or calls had not finished.", "type": "boolean" }
++      },
++      "required": ["calls", "complete"],
++      "additionalProperties": false
++    },
++
++    "toolDefinition": {
++      "type": "object",
++      "properties": {
++        "name": { "type": "string", "minLength": 1 },
++        "kind": { "enum": ["function", "custom", "builtin"], "default": "function" },
++        "namespace": { "type": "string" },
++        "description": { "type": "string" },
++        "parameters": { "description": "JSON Schema for `function` tool arguments.", "type": "object" }
++      },
++      "required": ["name"],
++      "additionalProperties": false
++    },
++    "instructionSection": {
++      "type": "object",
++      "properties": {
++        "name": { "type": "string", "minLength": 1 },
++        "text": { "description": "`null` removes the section in `patch` mode.", "type": ["string", "null"] }
++      },
++      "required": ["name", "text"],
++      "additionalProperties": false
++    },
++    "contextSnapshot": {
++      "description": "Complete instructions and tool loadout at a point in time.",
++      "type": "object",
++      "properties": {
++        "instructions": { "type": "array", "items": { "$ref": "#/$defs/instructionSection" } },
++        "tools": { "type": "array", "items": { "$ref": "#/$defs/toolDefinition" } }
++      },
++      "additionalProperties": false
++    },
++    "transcriptLink": {
++      "type": "object",
++      "properties": {
++        "transcriptId": { "$ref": "#/$defs/id" },
++        "entryId": { "$ref": "#/$defs/id" },
++        "uri": { "type": "string", "format": "uri-reference" },
++        "relation": { "enum": ["fork", "subagent", "continuation", "import"] }
++      },
++      "required": ["transcriptId", "relation"],
++      "additionalProperties": false
++    },
++    "fileChange": {
++      "type": "object",
++      "properties": {
++        "path": { "type": "string", "minLength": 1 },
++        "status": { "enum": ["added", "modified", "deleted", "renamed"] },
++        "from": { "type": "string" },
++        "additions": { "$ref": "#/$defs/nonNegativeInteger" },
++        "deletions": { "$ref": "#/$defs/nonNegativeInteger" }
++      },
++      "required": ["path", "status"],
++      "additionalProperties": false
++    },
++
++    "node": {
++      "description": "Envelope for tree records. `parentId: null` marks a root.",
++      "properties": {
++        "type": { "type": "string" },
++        "id": { "$ref": "#/$defs/id" },
++        "parentId": { "oneOf": [{ "$ref": "#/$defs/id" }, { "type": "null" }] },
++        "time": { "$ref": "#/$defs/timestamp" },
++        "native": { "$ref": "#/$defs/native" },
++        "ext": { "$ref": "#/$defs/ext" },
++        "hash": { "$ref": "#/$defs/hash" }
++      },
++      "required": ["type", "id", "parentId", "time"]
++    },
++    "annotation": {
++      "description": "Envelope for non-tree records, which apply to the whole transcript regardless of branch.",
++      "properties": {
++        "type": { "type": "string" },
++        "id": { "$ref": "#/$defs/id" },
++        "time": { "$ref": "#/$defs/timestamp" },
++        "native": { "$ref": "#/$defs/native" },
++        "ext": { "$ref": "#/$defs/ext" },
++        "hash": { "$ref": "#/$defs/hash" }
++      },
++      "required": ["type", "id", "time"]
++    },
++
++    "transcriptRecord": {
++      "title": "transcript",
++      "description": "Header. MUST be the first line and MUST appear exactly once.",
++      "type": "object",
++      "properties": {
++        "type": { "const": "transcript" },
++        "atxf": { "const": "0.1" },
++        "id": { "$ref": "#/$defs/id" },
++        "time": { "$ref": "#/$defs/timestamp" },
++        "title": { "type": "string" },
++        "source": {
++          "type": "object",
++          "properties": {
++            "agent": { "type": "string", "minLength": 1 },
++            "version": { "type": "string" },
++            "format": { "type": "string" },
++            "sessionId": { "description": "The session id in the source agent.", "type": "string" }
++          },
++          "required": ["agent"],
++          "additionalProperties": false
++        },
++        "workspace": {
++          "type": "object",
++          "properties": {
++            "cwd": { "type": "string" },
++            "roots": { "type": "array", "items": { "type": "string" } },
++            "vcs": {
++              "type": "object",
++              "properties": {
++                "type": { "type": "string" },
++                "remote": { "type": "string" },
++                "branch": { "type": "string" },
++                "commit": { "type": "string" }
++              },
++              "required": ["type"],
++              "additionalProperties": false
++            }
++          },
++          "additionalProperties": false
++        },
++        "parent": { "$ref": "#/$defs/transcriptLink" },
++        "fidelity": {
++          "description": "What the producer could capture. Lets consumers know what is missing rather than guessing.",
++          "type": "object",
++          "properties": {
++            "topology": { "enum": ["tree", "linear", "linearized"] },
++            "instructions": { "enum": ["full", "partial", "none"] },
++            "tools": { "enum": ["full", "partial", "none"] },
++            "reasoning": { "enum": ["raw", "summary", "encrypted", "mixed", "none"] },
++            "toolLifecycle": { "type": "boolean" },
++            "turns": { "type": "boolean" },
++            "usage": { "enum": ["per-response", "aggregate", "none"] },
++            "native": { "enum": ["all", "partial", "none"] },
++            "ids": {
++              "description": "`stable`: ids come from the source and match across copies of the session. `synthetic`: the converter made them up.",
++              "enum": ["stable", "synthetic"]
++            },
++            "nativeDigest": {
++              "description": "SHA-256 of the native file the transcript was read from. A writer emits native passthrough as the file only while it still prints to this digest. See SPEC.md, Native passthrough.",
++              "$ref": "#/$defs/hash"
++            }
++          },
++          "additionalProperties": false
++        },
++        "integrity": {
++          "description": "Declares that every record carries a `hash`. See SPEC.md, Integrity.",
++          "type": "object",
++          "properties": {
++            "alg": { "const": "sha256" },
++            "canon": { "const": "jcs" }
++          },
++          "required": ["alg", "canon"],
++          "additionalProperties": false
++        },
++        "native": { "$ref": "#/$defs/native" },
++        "ext": { "$ref": "#/$defs/ext" },
++        "hash": { "$ref": "#/$defs/hash" }
++      },
++      "required": ["type", "atxf", "id", "time", "source"],
++      "additionalProperties": false
++    },
++
++    "messageRecord": {
++      "title": "message",
++      "description": "A model-context message.",
++      "type": "object",
++      "allOf": [
++        { "$ref": "#/$defs/node" },
++        { "properties": { "type": { "const": "message" } } },
++        { "$ref": "#/$defs/messageBody" }
++      ],
++      "unevaluatedProperties": false
++    },
++
++    "contextRecord": {
++      "title": "context",
++      "description": "Instructions (system prompt) and tool loadout. `replace` sets the complete state; `patch` updates sections by name and adds/removes tools.",
++      "type": "object",
++      "allOf": [
++        { "$ref": "#/$defs/node" },
++        {
++          "properties": {
++            "type": { "const": "context" },
++            "mode": { "enum": ["replace", "patch"] },
++            "instructions": { "type": "array", "items": { "$ref": "#/$defs/instructionSection" } },
++            "toolsAdded": { "type": "array", "items": { "$ref": "#/$defs/toolDefinition" } },
++            "toolsRemoved": { "type": "array", "items": { "type": "string" } }
++          },
++          "required": ["mode"]
++        }
++      ],
++      "unevaluatedProperties": false
++    },
++
++    "settingsRecord": {
++      "title": "settings",
++      "description": "Changes to session settings. Each present key overrides the previous value on the active path.",
++      "type": "object",
++      "allOf": [
++        { "$ref": "#/$defs/node" },
++        {
++          "properties": {
++            "type": { "const": "settings" },
++            "model": { "$ref": "#/$defs/modelRef" },
++            "reasoningEffort": { "type": "string" },
++            "agent": { "description": "Agent profile or persona, e.g. OpenCode `build`.", "type": "string" },
++            "mode": { "description": "Operating mode, e.g. `plan`.", "type": "string" },
++            "cwd": { "type": "string" },
++            "policy": { "description": "Approval/sandbox/permission policy, source-defined shape.", "type": "object" }
++          },
++          "anyOf": [
++            { "required": ["model"] },
++            { "required": ["reasoningEffort"] },
++            { "required": ["agent"] },
++            { "required": ["mode"] },
++            { "required": ["cwd"] },
++            { "required": ["policy"] }
++          ]
++        }
++      ],
++      "unevaluatedProperties": false
++    },
++
++    "compactionRecord": {
++      "title": "compaction",
++      "description": "Context compaction. `summary`: model context becomes [snapshot] + summary + entries from `firstKeptId` + later entries. `replace`: model context becomes `replacement` + later entries.",
++      "type": "object",
++      "allOf": [
++        { "$ref": "#/$defs/node" },
++        {
++          "properties": {
++            "type": { "const": "compaction" },
++            "strategy": { "enum": ["summary", "replace"] },
++            "summary": { "type": "string" },
++            "firstKeptId": { "oneOf": [{ "$ref": "#/$defs/id" }, { "type": "null" }] },
++            "replacement": {
++              "type": "array",
++              "items": { "type": "object", "allOf": [{ "$ref": "#/$defs/messageBody" }], "unevaluatedProperties": false }
++            },
++            "snapshot": { "$ref": "#/$defs/contextSnapshot" },
++            "reason": { "enum": ["auto", "manual"] },
++            "tokensBefore": { "$ref": "#/$defs/nonNegativeInteger" },
++            "files": {
++              "description": "The files the compacted history read and modified, as the producer tracked them, in its order.",
++              "type": "object",
++              "properties": {
++                "read": { "type": "array", "items": { "type": "string" } },
++                "modified": { "type": "array", "items": { "type": "string" } }
++              },
++              "additionalProperties": false
++            },
++            "model": { "$ref": "#/$defs/modelRef" },
++            "usage": { "$ref": "#/$defs/usage" },
++            "replay": { "$ref": "#/$defs/replay" }
++          },
++          "required": ["strategy"]
++        },
++        {
++          "if": { "properties": { "strategy": { "const": "summary" } } },
++          "then": { "required": ["summary", "firstKeptId"] },
++          "else": { "required": ["replacement"] }
++        }
++      ],
++      "unevaluatedProperties": false
++    },
++
++    "contextEditRecord": {
++      "title": "context_edit",
++      "description": "Non-destructive edit of an earlier message's contribution to future model context. `replacement: null` omits it.",
++      "type": "object",
++      "allOf": [
++        { "$ref": "#/$defs/node" },
++        {
++          "properties": {
++            "type": { "const": "context_edit" },
++            "targetId": { "$ref": "#/$defs/id" },
++            "replacement": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/userContent" }, { "$ref": "#/$defs/assistantContent" }] }
++          },
++          "required": ["targetId", "replacement"]
++        }
++      ],
++      "unevaluatedProperties": false
++    },
++
++    "branchSummaryRecord": {
++      "title": "branch_summary",
++      "description": "Summary of an abandoned branch (from `fromId` back to the common ancestor), carried into the branch that continues from `parentId`.",
++      "type": "object",
++      "allOf": [
++        { "$ref": "#/$defs/node" },
++        {
++          "properties": {
++            "type": { "const": "branch_summary" },
++            "fromId": { "$ref": "#/$defs/id" },
++            "summary": { "type": "string" },
++            "usage": { "$ref": "#/$defs/usage" }
++          },
++          "required": ["fromId", "summary"]
++        }
++      ],
++      "unevaluatedProperties": false
++    },
++
++    "turnRecord": {
++      "title": "turn",
++      "description": "Turn boundary. A turn spans from a user input to the agent going idle.",
++      "type": "object",
++      "allOf": [
++        { "$ref": "#/$defs/node" },
++        {
++          "properties": {
++            "type": { "const": "turn" },
++            "phase": { "enum": ["start", "end"] },
++            "turnId": { "$ref": "#/$defs/id" },
++            "outcome": { "enum": ["succeeded", "failed", "interrupted"] },
++            "error": { "$ref": "#/$defs/error" }
++          },
++          "required": ["phase", "turnId"]
++        },
++        {
++          "if": { "properties": { "phase": { "const": "end" } } },
++          "then": { "required": ["outcome"] },
++          "else": { "not": { "anyOf": [{ "required": ["outcome"] }, { "required": ["error"] }] } }
++        }
++      ],
++      "unevaluatedProperties": false
++    },
++
++    "toolStatusRecord": {
++      "title": "tool_status",
++      "description": "Tool execution lifecycle. Optional: the call is a `tool_call` block and the result a `tool` message regardless.",
++      "type": "object",
++      "allOf": [
++        { "$ref": "#/$defs/node" },
++        {
++          "properties": {
++            "type": { "const": "tool_status" },
++            "toolCallId": { "$ref": "#/$defs/id" },
++            "status": { "enum": ["pending", "approved", "denied", "running", "completed", "error", "cancelled"] },
++            "progress": {},
++            "error": { "$ref": "#/$defs/error" }
++          },
++          "required": ["toolCallId", "status"]
++        }
++      ],
++      "unevaluatedProperties": false
++    },
++
++    "usageRecord": {
++      "title": "usage",
++      "description": "Usage not attributable to an assistant message (cache warming, title generation, aggregate source counters). Not model context.",
++      "type": "object",
++      "allOf": [
++        { "$ref": "#/$defs/node" },
++        {
++          "properties": {
++            "type": { "const": "usage" },
++            "kind": { "type": "string", "minLength": 1 },
++            "model": { "$ref": "#/$defs/modelRef" },
++            "usage": { "$ref": "#/$defs/usage" },
++            "cumulative": { "description": "`usage` is a running total for the transcript rather than an increment.", "type": "boolean", "default": false }
++          },
++          "required": ["kind", "usage"]
++        }
++      ],
++      "unevaluatedProperties": false
++    },
++
++    "checkpointRecord": {
++      "title": "checkpoint",
++      "description": "Workspace file state at this point in the tree.",
++      "type": "object",
++      "allOf": [
++        { "$ref": "#/$defs/node" },
++        {
++          "properties": {
++            "type": { "const": "checkpoint" },
++            "snapshot": { "description": "Opaque source snapshot id.", "type": "string" },
++            "vcs": {
++              "type": "object",
++              "properties": { "commit": { "type": "string" }, "ref": { "type": "string" } },
++              "additionalProperties": false
++            },
++            "files": { "type": "array", "items": { "$ref": "#/$defs/fileChange" } }
++          },
++          "anyOf": [{ "required": ["snapshot"] }, { "required": ["vcs"] }, { "required": ["files"] }]
++        }
++      ],
++      "unevaluatedProperties": false
++    },
++
++    "agentLinkRecord": {
++      "title": "agent_link",
++      "description": "Interaction with another agent's transcript (sub-agent spawn, message, result, close).",
++      "type": "object",
++      "allOf": [
++        { "$ref": "#/$defs/node" },
++        {
++          "properties": {
++            "type": { "const": "agent_link" },
++            "relation": { "enum": ["spawn", "message", "result", "close"] },
++            "transcriptId": { "$ref": "#/$defs/id" },
++            "uri": { "type": "string", "format": "uri-reference" },
++            "agent": {
++              "type": "object",
++              "properties": { "name": { "type": "string" }, "role": { "type": "string" } },
++              "additionalProperties": false
++            },
++            "toolCallId": { "$ref": "#/$defs/id" },
++            "content": { "$ref": "#/$defs/userContent" }
++          },
++          "required": ["relation", "transcriptId"]
++        }
++      ],
++      "unevaluatedProperties": false
++    },
++
++    "customRecord": {
++      "title": "custom",
++      "description": "Namespaced extension state. Never model context; use a `message` with `origin.kind: extension` for injected context.",
++      "type": "object",
++      "allOf": [
++        { "$ref": "#/$defs/node" },
++        {
++          "properties": {
++            "type": { "const": "custom" },
++            "namespace": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]*$" },
++            "name": { "type": "string", "minLength": 1 },
++            "data": {}
++          },
++          "required": ["namespace", "name"]
++        }
++      ],
++      "unevaluatedProperties": false
++    },
++
++    "leafRecord": {
++      "title": "leaf",
++      "description": "Moves the active position in the tree without adding content. Encodes navigation, rewinds, rollbacks and reverts.",
++      "type": "object",
++      "allOf": [
++        { "$ref": "#/$defs/annotation" },
++        {
++          "properties": {
++            "type": { "const": "leaf" },
++            "targetId": { "oneOf": [{ "$ref": "#/$defs/id" }, { "type": "null" }] },
++            "reason": { "enum": ["navigate", "rewind", "rollback", "revert", "reset"] },
++            "restoreCheckpointId": { "description": "A `checkpoint` whose file state was restored with this move.", "$ref": "#/$defs/id" }
++          },
++          "required": ["targetId"]
++        }
++      ],
++      "unevaluatedProperties": false
++    },
++
++    "labelRecord": {
++      "title": "label",
++      "type": "object",
++      "allOf": [
++        { "$ref": "#/$defs/annotation" },
++        {
++          "properties": {
++            "type": { "const": "label" },
++            "targetId": { "$ref": "#/$defs/id" },
++            "label": { "description": "`null` clears the label.", "type": ["string", "null"] }
++          },
++          "required": ["targetId", "label"]
++        }
++      ],
++      "unevaluatedProperties": false
++    },
++
++    "metadataRecord": {
++      "title": "metadata",
++      "description": "Transcript-level metadata updates. Each present key overrides its previous value.",
++      "type": "object",
++      "allOf": [
++        { "$ref": "#/$defs/annotation" },
++        {
++          "properties": {
++            "type": { "const": "metadata" },
++            "title": { "type": "string" },
++            "archived": { "type": "boolean" },
++            "tags": { "type": "array", "items": { "type": "string" } }
++          },
++          "anyOf": [{ "required": ["title"] }, { "required": ["archived"] }, { "required": ["tags"] }]
++        }
++      ],
++      "unevaluatedProperties": false
++    },
++
++    "sealRecord": {
++      "title": "seal",
++      "description": "Commits to every record before it: how many there are, their hashes in file order, and the hashes that no other record references. Requires `integrity` in the header.",
++      "type": "object",
++      "allOf": [
++        { "$ref": "#/$defs/annotation" },
++        {
++          "properties": {
++            "type": { "const": "seal" },
++            "count": {
++              "description": "Number of records before the seal, excluding the header.",
++              "$ref": "#/$defs/nonNegativeInteger"
++            },
++            "chain": {
++              "description": "Hash chain over the hashes of those records, in file order.",
++              "$ref": "#/$defs/hash"
++            },
++            "heads": {
++              "description": "Hashes of the records before the seal that no other record references, sorted.",
++              "type": "array",
++              "items": { "$ref": "#/$defs/hash" },
++              "uniqueItems": true
++            }
++          },
++          "required": ["count", "chain", "heads"]
++        }
++      ],
++      "unevaluatedProperties": false
++    }
++  }
++}

@@ -17,7 +17,10 @@
 //! Mac and the folder never outgrows the account's quota (RFD0074).
 
 use std::io;
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
+#[cfg(windows)]
+mod windows;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -104,6 +107,9 @@ pub async fn fetch_all(
     source: &AssetSource,
     attachments: &Attachments,
 ) -> Result<Vec<FetchedAttachment>, FetchError> {
+    if attachments.iter().next().is_some() {
+        private_folder(&source.directory).await?;
+    }
     let mut fetched = Vec::new();
     for attachment in attachments.iter() {
         let started = Instant::now();
@@ -219,35 +225,53 @@ async fn copy_into_place(from: &Path, to: &Path) -> io::Result<()> {
     let temporary = to.with_file_name(format!(".download-{}", axo_protocol::new_uuid_v4()?));
     let _cleanup = DownloadFile(temporary.clone());
     fs::copy(from, &temporary).await?;
-    fs::set_permissions(&temporary, std::fs::Permissions::from_mode(PRIVATE_FILE)).await?;
+    set_private(&temporary, PRIVATE_FILE).await?;
     fs::rename(&temporary, to).await
 }
 
 /// Creates `folder` (and what it is in) for the person's user alone.
 async fn private_folder(folder: &Path) -> io::Result<()> {
-    fs::DirBuilder::new()
-        .recursive(true)
-        .mode(PRIVATE_FOLDER)
-        .create(folder)
-        .await?;
-    fs::set_permissions(folder, std::fs::Permissions::from_mode(PRIVATE_FOLDER)).await
+    let mut builder = fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    builder.mode(PRIVATE_FOLDER);
+    builder.create(folder).await?;
+    set_private(folder, PRIVATE_FOLDER).await
+}
+
+async fn set_private(path: &Path, mode: u32) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).await
+    }
+    #[cfg(windows)]
+    {
+        let path = path.to_path_buf();
+        tokio::task::spawn_blocking(move || windows::protect(&path, mode == PRIVATE_FOLDER))
+            .await
+            .map_err(io::Error::other)?
+    }
 }
 
 /// A new file only the person's user may read.
 async fn private_file(path: &Path) -> io::Result<fs::File> {
-    fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(PRIVATE_FILE)
-        .open(path)
-        .await
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    options.mode(PRIVATE_FILE);
+    let file = options.open(path).await?;
+    set_private(path, PRIVATE_FILE).await?;
+    Ok(file)
 }
 
 /// Closes what an older Axo left readable by others: `directory` and its asset folders `0700`,
 /// their files `0600`. Links are left alone, never followed. Blocking; run it off the runtime.
 pub fn make_private(directory: &Path) -> io::Result<()> {
     use std::fs;
+    #[cfg(unix)]
     let set = |path: &Path, mode: u32| fs::set_permissions(path, fs::Permissions::from_mode(mode));
+    #[cfg(windows)]
+    let set = |path: &Path, mode: u32| windows::protect(path, mode == PRIVATE_FOLDER);
     match fs::symlink_metadata(directory) {
         Ok(meta) if meta.is_dir() => set(directory, PRIVATE_FOLDER)?,
         Ok(_) => return Ok(()),
@@ -404,6 +428,7 @@ async fn keep_copy(
     bytes: &[u8],
 ) -> io::Result<()> {
     let _using = CACHE.read().await;
+    private_folder(directory).await?;
     let folder = directory.join(asset.hex());
     private_folder(&folder).await?;
     let temporary = folder.join(format!(".download-{}", axo_protocol::new_uuid_v4()?));
@@ -807,13 +832,32 @@ mod tests {
                 let (mut stream, _) = listener.accept().unwrap();
                 let mut request = Vec::new();
                 let mut buffer = [0_u8; 4096];
-                // Up to the end of the headers; an upload's body may come in the same read.
+                // Drain the request body before closing. Windows resets a TCP connection
+                // closed with unread data, which can hide the canned HTTP error from clients.
                 while !request.windows(4).any(|window| window == b"\r\n\r\n") {
                     let read = stream.read(&mut buffer).unwrap();
                     if read == 0 {
                         break;
                     }
                     request.extend_from_slice(&buffer[..read]);
+                }
+                if let Some(end) = request.windows(4).position(|w| w == b"\r\n\r\n") {
+                    let length = String::from_utf8_lossy(&request[..end])
+                        .lines()
+                        .find_map(|line| {
+                            let (name, value) = line.split_once(':')?;
+                            name.eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse::<usize>().ok())
+                                .flatten()
+                        })
+                        .unwrap_or(0);
+                    while request.len() < end + 4 + length {
+                        let read = stream.read(&mut buffer).unwrap();
+                        if read == 0 {
+                            break;
+                        }
+                        request.extend_from_slice(&buffer[..read]);
+                    }
                 }
                 record
                     .lock()
@@ -1177,8 +1221,24 @@ mod tests {
         assert_eq!(seen.lock().unwrap().len(), 1);
     }
 
+    #[cfg(unix)]
     fn mode(path: &Path) -> u32 {
         fs::metadata(path).unwrap().permissions().mode() & 0o777
+    }
+
+    fn assert_private(path: &Path, directory: bool) {
+        #[cfg(unix)]
+        assert_eq!(
+            mode(path),
+            if directory { 0o700 } else { 0o600 },
+            "{}",
+            path.display()
+        );
+        #[cfg(windows)]
+        {
+            let _ = directory;
+            windows::assert_private(path);
+        }
     }
 
     #[tokio::test]
@@ -1205,14 +1265,15 @@ mod tests {
         .await
         .unwrap();
         let kept = directory.join(kept.asset.hex()).join("screen.png");
-        assert_eq!(mode(&directory), 0o700);
+        assert_private(&directory, true);
         for file in [&fetched[0].path, &again[0].path, &kept] {
-            assert_eq!(mode(file.parent().unwrap()), 0o700, "{}", file.display());
-            assert_eq!(mode(file), 0o600, "{}", file.display());
+            assert_private(file.parent().unwrap(), true);
+            assert_private(file, false);
         }
         let _ = fs::remove_dir_all(directory.parent().unwrap());
     }
 
+    #[cfg(unix)]
     #[test]
     fn what_an_older_axo_left_open_is_closed_and_links_are_not_followed() {
         let root = temporary_directory();

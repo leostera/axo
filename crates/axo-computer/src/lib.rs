@@ -75,9 +75,9 @@ fn our_name(tool: &str) -> &str {
 /// fills them in (RFD0029). Never reaches `call`.
 pub const REQUEST_INPUT: &str = "request_input";
 
-/// Native AX on macOS and exact AT-SPI object binding on Linux; delivery still needs confirmation.
-pub const FORM_INPUT_AVAILABLE: bool = cfg!(any(target_os = "macos", target_os = "linux"));
-pub const INPUT_AVAILABLE: bool = cfg!(any(target_os = "macos", target_os = "linux"));
+/// Native form binding uses macOS AX, Linux AT-SPI, or Windows UIA.
+pub const FORM_INPUT_AVAILABLE: bool = cfg!(any(target_os = "macos", target_os = "linux", windows));
+pub const INPUT_AVAILABLE: bool = cfg!(any(target_os = "macos", target_os = "linux", windows));
 
 #[cfg(target_os = "linux")]
 fn request_input_definition() -> Value {
@@ -137,7 +137,7 @@ fn form_input_definition() -> Value {
 }
 
 /// Whether this build can do computer use at all.
-pub const AVAILABLE: bool = cfg!(any(target_os = "macos", target_os = "linux"));
+pub const AVAILABLE: bool = cfg!(any(target_os = "macos", target_os = "linux", windows));
 
 /// The allowlisted tools' definitions: `{ name, description, inputSchema }`.
 pub fn tool_definitions() -> Vec<Value> {
@@ -213,8 +213,10 @@ fn refusal_while(tool: &str, locked: impl Fn() -> bool) -> Option<Value> {
 /// screenshots show it, and clicks and keys go to it, not to the apps (RFD0028).
 #[cfg(target_os = "linux")]
 pub const LOCKED: &str = "Not done: this Linux desktop is locked, inactive or could not be verified. Computer use requires one active, unlocked graphical login for this user; bash and other tools still work.";
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", windows)))]
 pub const LOCKED: &str = "Not done: this Mac is locked, so its screen and input belong to the login window. Computer use needs the person to unlock it; bash and the other tools still work.";
+#[cfg(windows)]
+pub const LOCKED: &str = "Not done: this computer is locked or its interactive desktop is unavailable. Computer use needs the person to unlock it; the other tools still work.";
 
 /// Tools that touch neither the screen nor input, and answer the same locked or not.
 const WORKS_LOCKED: &[&str] = &["check_permissions", "get_guide"];
@@ -380,7 +382,11 @@ mod tests {
     }
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+#[cfg(windows)]
+#[path = "windows.rs"]
+mod imp;
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
 mod imp {
     use serde_json::Value;
 
