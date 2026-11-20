@@ -1024,6 +1024,7 @@ impl Backend {
             runtime.turn = None;
             runtime.pending.clear();
             runtime.pending_user_commands.clear();
+            runtime.remote_command = None;
             runtime.progress.clear();
             runtime.turn_entries.clear();
             (runtime.generation, runtime.agent.take())
@@ -1031,22 +1032,41 @@ impl Backend {
         // Drop outside the runtime lock. The old reader may still report an exit; its
         // generation must not overwrite the new process's state or displayed conversation.
         drop(old_agent);
+        match self.start_agent(id, session, generation) {
+            Ok(agent) => Ok(agent),
+            Err(error) => {
+                let mut runtime = session.runtime.lock().unwrap();
+                // Ignore the failed child's eventual EOF notification; it must not
+                // replace the actionable startup error with a generic exit message.
+                runtime.generation += 1;
+                runtime.status = Some(SessionStatus::Unavailable);
+                runtime.error = Some(error.to_string());
+                drop(runtime);
+                self.publish_snapshot(id);
+                Err(error)
+            }
+        }
+    }
+
+    fn start_agent(
+        self: &Arc<Self>,
+        id: SessionId,
+        session: &Arc<LiveSession>,
+        generation: u64,
+    ) -> io::Result<Arc<Codex>> {
         let cwd = axo_store::session_initial_pwd(&self.database.lock().unwrap(), id)?;
         let weak = Arc::downgrade(self);
         let live = Arc::downgrade(session);
-        let agent = Arc::new(
-            Codex::spawn_with_config(&self.codex, &cwd, &self.mcp_config(id)?, move |event| {
+        let agent = Arc::new(Codex::spawn_with_config(
+            &self.codex,
+            &cwd,
+            &self.mcp_config(id)?,
+            move |event| {
                 if let (Some(backend), Some(session)) = (weak.upgrade(), live.upgrade()) {
                     backend.on_event(id, &session, generation, event);
                 }
-            })
-            .map_err(|error| {
-                let mut runtime = session.runtime.lock().unwrap();
-                runtime.status = Some(SessionStatus::Unavailable);
-                runtime.error = Some(error.to_string());
-                error
-            })?,
-        );
+            },
+        )?);
         let thread = axo_store::coding::thread_id(&self.database.lock().unwrap(), id)?;
         let full = self.computer.settings.lock().unwrap().codex_full_access;
         let mut parameters = json!({"cwd":cwd,"approvalPolicy":if full {"never"} else {"on-request"},"approvalsReviewer":"user","sandbox":if full {"danger-full-access"} else {"workspace-write"},"serviceName":"axo"});
@@ -1064,6 +1084,12 @@ impl Backend {
         axo_store::coding::set_thread_id(&self.database.lock().unwrap(), id, thread)?;
         self.remember_conversation(id, &result)?;
         let mut runtime = session.runtime.lock().unwrap();
+        if !agent.is_alive() {
+            return Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "Codex exited while opening the Session",
+            ));
+        }
         runtime.agent = Some(agent.clone());
         runtime.status = Some(SessionStatus::Ready);
         runtime.error = None;
@@ -1148,6 +1174,10 @@ impl Backend {
             }
             "axo/codex/exited" => {
                 runtime.turn = None;
+                runtime.remote_command = None;
+                runtime.pending_user_commands.clear();
+                runtime.turn_entries.clear();
+                runtime.progress.clear();
                 runtime.pending.clear();
                 runtime.status = Some(SessionStatus::Unavailable);
                 runtime.error =

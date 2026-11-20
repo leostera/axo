@@ -194,28 +194,40 @@ impl Backend {
             }
             Err(e) => {
                 let mut runtime = session.runtime.lock().unwrap();
-                runtime.status = Some(SessionStatus::Ready);
-                runtime.pending_user_commands.pop_back();
+                // A timeout is not a rejection: Codex may still start the turn. Keep
+                // the submission reserved until a turn event or disconnect settles it.
+                if e.kind() != io::ErrorKind::TimedOut
+                    && runtime.status == Some(SessionStatus::Working)
+                    && runtime.turn.is_none()
+                {
+                    runtime.status = Some(if agent.is_alive() {
+                        SessionStatus::Ready
+                    } else {
+                        SessionStatus::Unavailable
+                    });
+                    runtime.pending_user_commands.pop_back();
+                    runtime.remote_command = None;
+                }
                 Err(e)
             }
         }
     }
 
     pub(super) fn drain(self: &Arc<Self>, id: SessionId) {
-        let run = || -> io::Result<()> {
+        let run = || -> io::Result<bool> {
             let s = self.session(id)?;
             let _operation = s.operation.lock().unwrap();
             {
                 let r = s.runtime.lock().unwrap();
                 if r.turn.is_some() || r.status != Some(SessionStatus::Ready) {
-                    return Ok(());
+                    return Ok(false);
                 }
             }
             let next = axo_store::coding::queued(&self.database.lock().unwrap(), id)?
                 .into_iter()
                 .find(|q| q["state"] == "queued");
             let Some(next) = next else {
-                return Ok(());
+                return Ok(false);
             };
             let agent = self.connect(id, &s)?;
             let thread = axo_store::coding::thread_id(&self.database.lock().unwrap(), id)?
@@ -250,10 +262,19 @@ impl Backend {
                 error.as_deref(),
             )?;
             self.publish_snapshot(id);
-            Ok(())
+            // Rejected starts do not emit turn/completed. Mark that entry failed
+            // and check whether the next one can run. Never replay the failed entry.
+            Ok(result.is_err())
         };
-        if let Err(e) = run() {
-            log::warn!("event=codex.queue_failed kind={:?}", e.kind());
+        loop {
+            match run() {
+                Ok(true) => continue,
+                Ok(false) => break,
+                Err(e) => {
+                    log::warn!("event=codex.queue_failed kind={:?}", e.kind());
+                    break;
+                }
+            }
         }
     }
 
