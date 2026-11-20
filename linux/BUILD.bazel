@@ -1,3 +1,5 @@
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
+
 package(default_visibility = ["//visibility:public"])
 
 alias(
@@ -6,21 +8,31 @@ alias(
     target_compatible_with = ["@platforms//os:linux"],
 )
 
+sh_test(
+    name = "runtime_test",
+    srcs = ["runtime_test.sh"],
+    args = ["$(rootpath :runtime)", "$(rootpath //crates/axod:testdata/pi-fixture.sh)"],
+    data = [":runtime", "runtime_test.py", "smoke.py", "//crates/axod:testdata/pi-fixture.sh"],
+    target_compatible_with = ["@platforms//os:linux"],
+    timeout = "moderate",
+)
+
 # Runtime programs are installed together; axod locates its helpers beside itself.
 genrule(
     name = "runtime",
-    srcs = [":axod", "//crates/axod:axo-askpass", "@llama_server//:axod-infer", "//packages/pi-axo:extension_js"],
+    srcs = [":axod", "//crates/axo-cli:axo", "//crates/axod:axo-askpass", "@llama_server//:axod-infer", "//packages/pi-axo:extension_js"],
     outs = ["axo-linux.tar.gz"],
     cmd = """
         staging=$$(mktemp -d)
         trap 'rm -rf "$$staging"' EXIT
         cp $(location :axod) "$$staging/axod"
+        cp $(location //crates/axo-cli:axo) "$$staging/axo"
         cp $(location //crates/axod:axo-askpass) "$$staging/axo-askpass"
         cp $(location @llama_server//:axod-infer) "$$staging/axod-infer"
-        chmod 755 "$$staging/axod" "$$staging/axod-infer" "$$staging/axo-askpass"
+        chmod 755 "$$staging/axo" "$$staging/axod" "$$staging/axod-infer" "$$staging/axo-askpass"
         mkdir -p "$$staging/AxoPi"
         cp $(locations //packages/pi-axo:extension_js) "$$staging/AxoPi/"
-        tar -czf "$@" -C "$$staging" axod axod-infer axo-askpass AxoPi
+        tar -czf "$@" -C "$$staging" axo axod axod-infer axo-askpass AxoPi
     """,
     target_compatible_with = ["@platforms//os:linux"],
 )

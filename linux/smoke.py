@@ -23,8 +23,8 @@ def rpc(path, method, params):
         return response["result"]
 
 
-def wait_for(description, check, daemon):
-    deadline = time.monotonic() + 10
+def wait_for(description, check, daemon, timeout=10):
+    deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if daemon.poll() is not None:
             raise RuntimeError(f"daemon exited with {daemon.returncode}: {description}")

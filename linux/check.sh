@@ -5,6 +5,7 @@ cd "$(dirname "$0")/.."
 bazel build //linux:runtime --jobs=8 "$@"
 # Linux inotify instances are shared per user. Keep integration daemons serialized.
 bazel test \
+  //linux:runtime_test \
   //crates/axo-protocol:axo_protocol_tests \
   //crates/axo-ipc:axo_ipc_tests \
   //crates/axo-seal:axo_seal_tests \

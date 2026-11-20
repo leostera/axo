@@ -13,7 +13,26 @@ bazel build //linux:axod //linux:runtime
 - Daemon: `bazel-bin/crates/axod/axod`
 - Runtime archive: `bazel-bin/linux/axo-linux.tar.gz`
 
-The archive contains `axod`, the pinned `axod-infer` sidecar, `axo-askpass` for sudo input, and the compiled Pi extension under `AxoPi/`. Keep that layout when extracting it. Install all three executables beside one another: the daemon discovers its helpers relative to its own executable. Linux defaults to CPU inference; MLX and Core ML remain Apple-only.
+The archive contains the `axo` CLI, `axod`, the pinned `axod-infer` sidecar, `axo-askpass` for sudo input, and the compiled Pi extension under `AxoPi/`. Keep that layout when extracting it. Keep all four executables beside one another: the daemon discovers its helpers relative to its own executable. Linux defaults to CPU inference; MLX and Core ML remain Apple-only.
+
+### Headless archive contract
+
+```sh
+bazel test //linux:runtime_test
+```
+
+This uses private HOME/XDG directories, sockets and an owned Pi fixture. It checks
+CLI-to-daemon health, unlinked status, non-overwriting/idempotent `axo cli install`,
+and catalog/host-identity/settings preservation after a graceful stop and restart
+from a relocated candidate directory. It neither registers a service nor touches
+the installed runtime. Relocation of the same build is not cross-version migration,
+signed-update or rollback acceptance. No native terminal or display server is needed.
+
+After extraction, `./axo --socket /absolute/path/to/axod.sock daemon status` checks
+a running host. `./axo cli install` adds a non-overwriting link in `~/.local/bin`;
+it does not install/update a daemon service. An existing different command/link
+is refused. A supported Linux service installer and authenticated update/rollback
+flow remain separate work; do not treat CLI link installation as an updater.
 
 ### CUDA
 
@@ -96,7 +115,7 @@ Pass the same CUDA repository options if testing a CUDA build. The launcher owns
 
 [`AxoDesktop/`](AxoDesktop/README.md) contains the Rust/GTK4 window hosting the pinned Ghostty GTK renderer. Build/run it with `bazel run //linux/AxoDesktop:run` on a Linux development host with its native dependencies. Its isolated fixture tests real rendering, PTY keyboard input, resize and widget teardown without driving the real desktop.
 
-The candidate now has a first local Session sidebar and persisted split-pane workbench through an explicitly selected daemon, plus single-shell attachment and separate standalone development modes. It also has native daemon settings and optional StatusNotifierItem/DBusMenu integration. It is **not yet Mac feature parity** or an installer; exited-Pi recovery, close/archive, layout writes and remaining controls are pending. A separate UI owner now wakes only a foreground selected Dormant Pi, with serial unavailable-only requests, conservative attempt fencing and no force fallback. Explicit current-context/Home/native-folder creation now uses typed shared RPCs with one pending intent, authoritative selection and no automatic retry after an uncertain reply. Native viewport publication now uses actual Ghostty metrics and an independently negotiated v2 method, preserving Mac v1 and legacy storage. Live catalog subscriptions and read-only reconnect use one shared Rust watcher; the isolated reconnect driver cuts catalog and attach transports without restarting its fixture daemon or replaying input. Attachment requires the candidate's captured-grid v3 protocol; the server keeps v2 compatible for existing Mac clients. It never upgrades/restarts the paired daemon implicitly. The [Mac feature map and shared-core contract](../docs/rfds/RFD0054-linux-desktop.md) define the path to the full workbench; session/account/storage logic stays in shared Rust rather than becoming a separate Linux backend. The generated CLI source is also available at `//crates/axo-cli:axo`; the runtime archive above does not yet bundle/install it.
+The candidate now has a first local Session sidebar and persisted split-pane workbench through an explicitly selected daemon, plus single-shell attachment and separate standalone development modes. It also has native daemon settings and optional StatusNotifierItem/DBusMenu integration. It is **not yet Mac feature parity** or an installer; exited-Pi recovery, close/archive, layout writes and remaining controls are pending. A separate UI owner now wakes only a foreground selected Dormant Pi, with serial unavailable-only requests, conservative attempt fencing and no force fallback. Explicit current-context/Home/native-folder creation now uses typed shared RPCs with one pending intent, authoritative selection and no automatic retry after an uncertain reply. Native viewport publication now uses actual Ghostty metrics and an independently negotiated v2 method, preserving Mac v1 and legacy storage. Live catalog subscriptions and read-only reconnect use one shared Rust watcher; the isolated reconnect driver cuts catalog and attach transports without restarting its fixture daemon or replaying input. Attachment requires the candidate's captured-grid v3 protocol; the server keeps v2 compatible for existing Mac clients. It never upgrades/restarts the paired daemon implicitly. The [Mac feature map and shared-core contract](../docs/rfds/RFD0054-linux-desktop.md) define the path to the full workbench; session/account/storage logic stays in shared Rust rather than becoming a separate Linux backend. The CLI is also available separately at `//crates/axo-cli:axo` and is bundled in the headless runtime archive.
 
 ## Blocked-input hardening gate
 
