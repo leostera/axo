@@ -14,9 +14,8 @@ import { ModelPicker } from "./model-picker.tsx";
 import { matchingCommands, slashQuery, withCommand } from "./pi-controls.ts";
 import { canAnswerQuestionHere, type Delivery } from "./transcript.ts";
 import { noteRender } from "./render-count.ts";
+import { followsAfterScroll } from "./scroll-follow.ts";
 
-/** How close to the bottom still counts as following the conversation. */
-const FOLLOW_SLACK_PX = 80;
 /** How close to the top starts reading the page before. */
 const OLDER_SLACK_PX = 400;
 
@@ -65,6 +64,11 @@ export function Conversation({ workbench, wide, onShowChats, onToggleInfo, onApp
   }, []);
   const following = useRef(true);
   const lastScrollTop = useRef(0);
+  const followEnd = (element: HTMLDivElement) => {
+    scrollToEnd(element);
+    // Record commanded movement now, not when its delayed scroll event arrives.
+    lastScrollTop.current = element.scrollTop;
+  };
   const [showJump, setShowJump] = useState(false);
   const [hasNew, setHasNew] = useState(false);
   /**
@@ -86,7 +90,7 @@ export function Conversation({ workbench, wide, onShowChats, onToggleInfo, onApp
     seenLastMessage.current = feed.lastMessageId;
     setShowJump(false);
     setHasNew(false);
-    if (scroller.current) scrollToEnd(scroller.current);
+    if (scroller.current) followEnd(scroller.current);
   }, [session?.sessionId, selection?.kind]);
 
   // The bars float over the transcript, as in the phone app: the transcript leaves room under its
@@ -99,7 +103,7 @@ export function Conversation({ workbench, wide, onShowChats, onToggleInfo, onApp
     const fit = () => {
       section.current?.style.setProperty("--footer-height", `${bar.offsetHeight}px`);
       const element = scroller.current;
-      if (element && following.current) scrollToEnd(element);
+      if (element && following.current) followEnd(element);
     };
     fit();
     const observer = new ResizeObserver(fit);
@@ -130,7 +134,7 @@ export function Conversation({ workbench, wide, onShowChats, onToggleInfo, onApp
         restoreAnchor(element, opened);
         following.current = element.scrollHeight - element.scrollTop - element.clientHeight < 1;
         setShowJump(!following.current);
-      } else if (following.current) scrollToEnd(element);
+      } else if (following.current) followEnd(element);
       else {
         restoreAnchor(element, anchor.current);
         if (added) setHasNew(true);
@@ -138,6 +142,7 @@ export function Conversation({ workbench, wide, onShowChats, onToggleInfo, onApp
       anchor.current = findAnchor(element);
     });
     observer.observe(column);
+    observer.observe(element); // Viewport/keyboard resizing can hide the tail without changing rows.
     return () => observer.disconnect();
   }, []);
 
@@ -146,9 +151,11 @@ export function Conversation({ workbench, wide, onShowChats, onToggleInfo, onApp
     if (!element || !session) return;
     // Near the end follows again, unless the view is on its way up from there.
     const fromEnd = element.scrollHeight - element.scrollTop - element.clientHeight;
-    const goingUp = element.scrollTop < lastScrollTop.current - 0.5;
+    following.current = followsAfterScroll({
+      wasFollowing: following.current, previousTop: lastScrollTop.current,
+      top: element.scrollTop, fromEnd,
+    });
     lastScrollTop.current = element.scrollTop;
-    following.current = fromEnd < 1 || (fromEnd < FOLLOW_SLACK_PX && !goingUp);
     setShowJump(!following.current);
     if (following.current) setHasNew(false);
     anchor.current = findAnchor(element);
@@ -184,8 +191,7 @@ export function Conversation({ workbench, wide, onShowChats, onToggleInfo, onApp
     anchor.current = null;
     // Commit all revealed rows before measuring the destination; never scroll to yesterday's tail.
     flushSync(() => { if (session) void workbench.jumpToLatest(session.sessionId); });
-    scrollToEnd(element);
-    lastScrollTop.current = element.scrollTop;
+    followEnd(element);
   };
 
   const send = async (delivery: Delivery = "interrupt") => {

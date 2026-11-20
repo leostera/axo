@@ -53,9 +53,23 @@ for (const [name, viewport] of [
       assert.match(rows[0].text, /Then check the image/);
       assert.match(rows[1].text, /Also check the recording/);
 
+      // Changing the viewport while following keeps the tail visible too.
+      await page.setViewportSize({ ...viewport, height: viewport.height - 200 });
+      await page.waitForFunction(() => {
+        const element = document.querySelector('[data-testid="transcript"]');
+        return element.scrollHeight - element.clientHeight - element.scrollTop < 1;
+      });
+      await page.setViewportSize(viewport);
+
       // A fixed queue tail must not hide the new-output indicator from a reader in history.
       await page.getByTestId("transcript").evaluate(element => { element.scrollTop = 50; });
-      await page.getByRole("button", { name: "Jump to latest", exact: true }).waitFor();
+      await page.getByRole("button", { name: "Jump to latest", exact: true }).waitFor().catch(async error => {
+        const state = await page.getByTestId("transcript").evaluate(element => ({
+          top: element.scrollTop, height: element.clientHeight, content: element.scrollHeight,
+          jump: document.querySelector(".jump-button")?.outerHTML,
+        }));
+        throw new Error(`${error.message}; scroll: ${JSON.stringify(state)}; errors: ${JSON.stringify(errors)}`);
+      });
       cloud.write(chat, { role: "assistant", timestamp: 1_700_000_003_000, content: [{ type: "text", text: "New output above the waiting queue." }] });
       await page.getByRole("button", { name: "Jump to new message", exact: true }).waitFor();
       rows = await tail();
