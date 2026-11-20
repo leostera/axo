@@ -22,6 +22,9 @@ use crate::outbound::{Priority, RelayCallError, RelayChannel, SocketEpoch};
 /// Records and bytes of lines in one append batch.
 const BATCH_RECORDS: usize = 64;
 const BATCH_BYTES: usize = 1_048_576;
+/// A SessionDO acknowledgement is not independent backup. Keep owner files until
+/// the protocol can attest to a verified, recoverable R2 copy (RFD0044).
+const AUTOMATIC_TRANSCRIPT_EVICTION: bool = false;
 /// Every request has this long to be answered; a timeout starts the handshake again.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 /// The wait before a handshake that failed is tried again.
@@ -184,6 +187,7 @@ impl Uploader {
         self.send_metadata_and_status().await;
         match self.upload_next().await {
             Ok(true) => Next::Now,
+            Ok(false) if !AUTOMATIC_TRANSCRIPT_EVICTION => Next::Idle,
             Ok(false) => match self.evict_next().await {
                 Ok(true) => Next::Now,
                 Ok(false) => Next::Idle,
