@@ -213,9 +213,10 @@ function bundleOf(entry: string): Promise<string> {
 
 /**
  * `entry` replaces the Worker's entry module, for a test that runs another release's code (a
- * fixture under `tests/fixtures/`).
+ * fixture under `tests/fixtures/`). `r2` binds more buckets than production has, for a test of a
+ * binding no deployment has yet (`SESSIONS`, RFD0044).
  */
-export async function harness(configuration: { bindings?: Record<string, string>; outbound?: Outbound; entry?: string } = {}) {
+export async function harness(configuration: { bindings?: Record<string, string>; outbound?: Outbound; entry?: string; r2?: string[] } = {}) {
   const directory = await mkdtemp(join(tmpdir(), "axo-api-"));
   const modules = await bundleOf(configuration.entry ?? resolve(root, "packages/axo-api-worker/src/index.ts"));
   const bundle = join(modules, "worker.mjs");
@@ -262,7 +263,7 @@ export async function harness(configuration: { bindings?: Record<string, string>
       TEST_ASSETS: { className: "AxoAssetsDO", useSQLite: true },
       TEST_WHATSAPP: { className: "AxoWhatsAppDO", useSQLite: true },
     },
-    r2Buckets: ["PUBLIC_SESSIONS", "AXO_ASSETS"],
+    r2Buckets: ["PUBLIC_SESSIONS", "AXO_ASSETS", ...(configuration.r2 ?? [])],
     workerLoaders: { LOADER: {} },
     resourcePersistencePath: join(directory, "storage"),
     unsafeInspectDurableObjects: true,

@@ -14,6 +14,18 @@ import {
 import type { EntryRecord, TranscriptHeader } from "@leostera/atxf";
 import { addColumns, migrate, type SchemaStep } from "./schema";
 import { ATXF_CONVERTER, AtxfTranslator, storedForm, withNative } from "./session-atxf";
+import {
+  SEGMENT_BYTES,
+  SEGMENT_RECORDS,
+  generationPrefix,
+  headerName,
+  segmentBody,
+  segmentLines,
+  segmentName,
+  sha256Hex,
+  type AxoHeaderExt,
+  type SegmentMeta,
+} from "./session-storage";
 
 /**
  * One Session's transcript (RFD0018, SessionDO): the lines of its Pi session file as hash-linked
@@ -88,6 +100,43 @@ const TRANSLATE_RECORDS = 2048;
 const TRANSLATE_BYTES = 16 * 1_048_576;
 /** Lines read back per query when rebuilding the stream. */
 const REPLAY_PAGE = 256;
+/** How long after the first record R2 lacks its alarm stores it (RFD0044, commitArms). */
+export const STORE_DELAY_MS = 60 * 60 * 1000;
+/** The longest wait between tries after R2 failed. */
+const STORE_RETRY_MAX_MS = 60 * 60 * 1000;
+
+/** What R2 holds of one epoch (RFD0044). The current epoch's `last` and `translated` are the live count and `atxf_through`. */
+type StorageEpoch = {
+  epoch: number;
+  keep: number;
+  parent: number | null;
+  last: number | null;
+  translated: number | null;
+  /** The last cursor R2 has. */
+  through: number;
+  /** The last cursor R2 gave back equal to what this object holds. */
+  verified: number;
+  header_saved: number;
+};
+type StoragePending = { kind: "header" | "segment"; epoch: number; from: number | null; to: number | null; stored: number };
+type StorageRow = { generation: string; due_at: number | null; failures: number; refused: string | null };
+
+/** What a SessionDO says of its R2 copy: for the account's storage view, tests and, later, eviction (RFD0044). */
+export type StorageStatus = {
+  enabled: boolean;
+  generation: string;
+  dueAt: number | null;
+  failures: number;
+  refused: string | null;
+  pending: StoragePending | null;
+  /** The current epoch and how many of its records R2 gave back; eviction may go only when it is its count. */
+  epoch: number | null;
+  count: number;
+  stored: number;
+  epochs: Array<{ epoch: number; keep: number; parent: number | null; last: number; translated: number; through: number; verified: number; headerSaved: boolean }>;
+  /** Records a cut moved aside that R2 has not given back yet. */
+  cutRecords: number;
+};
 
 /** The SessionDO's schema, one step per change (RFD0032, Release P). */
 const SESSION_SCHEMA: readonly SchemaStep[] = [
@@ -120,6 +169,22 @@ const SESSION_SCHEMA: readonly SchemaStep[] = [
   (sql) => {
     // RFD0032: the highest fence a HostDO's head read carried; older writes are refused.
     sql.exec("CREATE TABLE IF NOT EXISTS write_fence (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), fence INTEGER NOT NULL)");
+  },
+  (sql) => {
+    // RFD0044: where each record is in R2, and what R2 holds of each epoch. Added only.
+    addColumns(sql, "records", { segment: "TEXT", seg_offset: "INTEGER", seg_length: "INTEGER" });
+    // A new object, including one rebuilt after losing its storage, writes under a generation of its own.
+    sql.exec(`CREATE TABLE IF NOT EXISTS storage (singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+      generation TEXT NOT NULL, due_at INTEGER, failures INTEGER NOT NULL DEFAULT 0, refused TEXT)`);
+    sql.exec("INSERT OR IGNORE INTO storage (singleton, generation) VALUES (1, ?)", crypto.randomUUID());
+    sql.exec(`CREATE TABLE IF NOT EXISTS storage_epochs (epoch INTEGER PRIMARY KEY, keep INTEGER NOT NULL, parent INTEGER,
+      last INTEGER, translated INTEGER, through INTEGER NOT NULL, verified INTEGER NOT NULL, header_saved INTEGER NOT NULL DEFAULT 0)`);
+    sql.exec(`CREATE TABLE IF NOT EXISTS storage_pending (singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+      kind TEXT NOT NULL, epoch INTEGER NOT NULL, "from" INTEGER, "to" INTEGER, stored INTEGER NOT NULL DEFAULT 0)`);
+    sql.exec(`CREATE TABLE IF NOT EXISTS storage_cut (epoch INTEGER NOT NULL, cursor INTEGER NOT NULL,
+      hash TEXT NOT NULL, chain TEXT NOT NULL, line TEXT, atxf TEXT, PRIMARY KEY (epoch, cursor))`);
+    sql.exec(`CREATE TABLE IF NOT EXISTS storage_cut_parts (epoch INTEGER NOT NULL, cursor INTEGER NOT NULL, kind TEXT NOT NULL,
+      idx INTEGER NOT NULL, data TEXT NOT NULL, PRIMARY KEY (epoch, cursor, kind, idx))`);
   },
 ];
 
@@ -237,6 +302,8 @@ export class AxoSessionDO extends DurableObject<Env> {
           sql.exec("INSERT INTO record_parts (cursor, idx, data) VALUES (?, ?, ?)", cursor, idx, data));
         for (const id of row.refs) sql.exec("UPDATE records SET referenced = 1 WHERE id = ? AND referenced = 0", id);
       });
+      this.ensureEpoch(committed.epoch);
+      this.armStore();
       return { outcome: "committed", epoch: committed.epoch, count: count + rows.length, chain, added: rows.length, cleared: [...cleared], fence: this.fence() };
     });
     if (result.outcome === "committed") await this.translateAfterAppend(count);
@@ -256,6 +323,10 @@ export class AxoSessionDO extends DurableObject<Env> {
    */
   async truncate(binding: SessionBinding, keep: number, expectedChain: string, fence: number): Promise<StoreTruncateResult> {
     if (!this.owns(binding)) throw new Error("Session identity conflict");
+    // The epoch being cut is stored as ATXF from the side table, so its lines are translated first,
+    // while the stream that read them still can (RFD0044, cutKeepsUnstored). A line ATXF refuses
+    // stops this, and the lines from it on stay in the side table.
+    if (this.segments()) while (this.translate(TRANSLATE_RECORDS, TRANSLATE_BYTES));
     const result = this.ctx.storage.transactionSync((): StoreTruncateResult => {
       const transcript = this.transcript();
       const refuse = (outcome: "mismatch" | "fenced"): StoreTruncateResult => ({
@@ -265,6 +336,7 @@ export class AxoSessionDO extends DurableObject<Env> {
       if (!transcript || this.chainAt(keep, transcript) !== expectedChain) return refuse("mismatch");
       const sql = this.ctx.storage.sql;
       const epoch = transcript.epoch + 1;
+      this.keepForStorage(transcript.epoch, epoch, keep);
       sql.exec("DELETE FROM records WHERE cursor > ?", keep);
       sql.exec("DELETE FROM record_parts WHERE cursor > ?", keep);
       // The translations of the cut rows went with them; the stream read them, so it starts over.
@@ -278,7 +350,7 @@ export class AxoSessionDO extends DurableObject<Env> {
       return { outcome: "truncated", epoch, count: keep, chain: expectedChain, fence: this.fence() };
     });
     // The cut cleared any stop, since the line that caused it may be gone: try again if records wait.
-    if (result.outcome === "truncated") await this.catchUp();
+    if (result.outcome === "truncated") await this.scheduleAlarm();
     return result;
   }
 
@@ -346,9 +418,316 @@ export class AxoSessionDO extends DurableObject<Env> {
     };
   }
 
-  /** Translates what is left, a slice per alarm (RFD0035). */
+  /**
+   * The one alarm does both jobs (RFD0044, oneAlarm): translates what is left, a slice per run
+   * (RFD0035), then, when it is due, stores the next segment in R2. It sets itself again on the way out.
+   */
   async alarm(): Promise<void> {
-    if (this.translate(TRANSLATE_RECORDS, TRANSLATE_BYTES)) await this.ctx.storage.setAlarm(Date.now());
+    this.translate(TRANSLATE_RECORDS, TRANSLATE_BYTES);
+    await this.store();
+    await this.scheduleAlarm();
+  }
+
+  /**
+   * Asks this object to store now whatever R2 lacks: the HostDO's backfill, for a Session stored
+   * before RFD0044, and a retry that should not wait for its backoff.
+   */
+  async armStorage(binding: SessionBinding): Promise<StorageStatus> {
+    if (!this.owns(binding)) throw new Error("Session identity conflict");
+    const transcript = this.transcript();
+    if (this.segments() && transcript) {
+      this.ensureEpoch(transcript.epoch);
+      if (this.nextUnit() !== null) this.ctx.storage.sql.exec("UPDATE storage SET due_at = ? WHERE refused IS NULL", Date.now());
+      await this.scheduleAlarm();
+    }
+    return this.storageStatus();
+  }
+
+  /** What R2 holds of this Session, and what waits for it. */
+  async storage(binding: SessionBinding): Promise<StorageStatus> {
+    if (!this.owns(binding)) throw new Error("Session identity conflict");
+    return this.storageStatus();
+  }
+
+  /**
+   * Where segments go: the `SESSIONS` bucket (RFD0044). No deployment binds it yet, so it is read
+   * as optional, outside `Env`, and without it a SessionDO stores nothing in R2.
+   */
+  protected segments(): R2Bucket | undefined {
+    return (this.env as { SESSIONS?: R2Bucket }).SESSIONS;
+  }
+
+  private storageStatus(): StorageStatus {
+    const sql = this.ctx.storage.sql;
+    const row = this.storageRow();
+    const transcript = this.transcript();
+    const count = this.count();
+    const epochs = sql.exec<StorageEpoch>("SELECT * FROM storage_epochs ORDER BY epoch").toArray().map((e) => {
+      const live = this.epochLimits(e, transcript?.epoch ?? null, count);
+      return { epoch: e.epoch, keep: e.keep, parent: e.parent, last: live.last, translated: live.translated, through: e.through, verified: e.verified, headerSaved: e.header_saved === 1 };
+    });
+    const current = epochs.find((e) => e.epoch === transcript?.epoch);
+    return {
+      enabled: this.segments() !== undefined,
+      generation: row.generation,
+      dueAt: row.due_at,
+      failures: row.failures,
+      refused: row.refused,
+      pending: sql.exec<StoragePending>('SELECT kind, epoch, "from", "to", stored FROM storage_pending').toArray()[0] ?? null,
+      epoch: transcript?.epoch ?? null,
+      count,
+      stored: current && current.headerSaved ? current.verified : 0,
+      epochs,
+      cutRecords: sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM storage_cut").one().n,
+    };
+  }
+
+  private storageRow(): StorageRow {
+    return this.ctx.storage.sql.exec<StorageRow>("SELECT generation, due_at, failures, refused FROM storage WHERE singleton = 1").one();
+  }
+
+  /** The epoch's row, made on first use: epoch 1 of a new Session, or the epoch a Session stored before RFD0044 is in. */
+  private ensureEpoch(epoch: number): void {
+    // A Session stored before keeps no records of its earlier epochs past their cuts: its current
+    // epoch is stored whole, as if it had no parent.
+    this.ctx.storage.sql.exec(`INSERT OR IGNORE INTO storage_epochs (epoch, keep, parent, through, verified) VALUES (?, 0, NULL, 0, 0)`, epoch);
+  }
+
+  /** Sets when R2 should next have what it lacks, if nothing has yet (RFD0044, commitArms). Call in the write's transaction. */
+  private armStore(): void {
+    if (!this.segments()) return;
+    this.ctx.storage.sql.exec("UPDATE storage SET due_at = ? WHERE due_at IS NULL AND refused IS NULL", Date.now() + STORE_DELAY_MS);
+  }
+
+  /**
+   * Moves aside every record of the epoch being cut that R2 has not given back (RFD0044,
+   * cutKeepsUnstored), records where the epoch ended, and starts the next one's row. Runs in the
+   * cut's transaction, before anything is deleted. Without a bucket a cut deletes as it did before
+   * RFD0044: keeping cuts with no R2 to take them is a change of its own.
+   */
+  private keepForStorage(epoch: number, next: number, keep: number): void {
+    const sql = this.ctx.storage.sql;
+    if (!this.segments()) return;
+    this.ensureEpoch(epoch);
+    const row = sql.exec<StorageEpoch>("SELECT * FROM storage_epochs WHERE epoch = ?", epoch).one();
+    const from = row.verified;
+    sql.exec(`INSERT OR IGNORE INTO storage_cut (epoch, cursor, hash, chain, line, atxf)
+      SELECT ?, cursor, hash, chain, line, atxf FROM records WHERE cursor > ?`, epoch, from);
+    sql.exec(`INSERT OR IGNORE INTO storage_cut_parts (epoch, cursor, kind, idx, data)
+      SELECT ?, cursor, 'line', idx, data FROM record_parts WHERE cursor > ?`, epoch, from);
+    sql.exec(`INSERT OR IGNORE INTO storage_cut_parts (epoch, cursor, kind, idx, data)
+      SELECT ?, cursor, 'atxf', idx, data FROM atxf_parts WHERE cursor > ?`, epoch, from);
+    sql.exec("UPDATE storage_epochs SET last = ?, translated = MIN(?, ?) WHERE epoch = ?", this.count(), this.translation()?.atxf_through ?? 0, this.count(), epoch);
+    // The next epoch's first `keep` records are its parent's, which stores them.
+    sql.exec("INSERT OR IGNORE INTO storage_epochs (epoch, keep, parent, through, verified) VALUES (?, ?, ?, ?, ?)", next, keep, epoch, keep, keep);
+    this.armStore();
+  }
+
+  /** How far an epoch goes, and how far it is translated: live for the current one, as cut for the others. */
+  private epochLimits(row: StorageEpoch, current: number | null, count: number): { last: number; translated: number } {
+    if (row.epoch === current) return { last: count, translated: Math.min(count, this.translation()?.atxf_through ?? 0) };
+    return { last: row.last ?? 0, translated: row.translated ?? 0 };
+  }
+
+  /**
+   * The next object R2 lacks, oldest epoch first: an epoch's header, then its records from
+   * `through + 1` up to the last translated one, at most a segment's worth. Null when R2 has all
+   * it can have now.
+   */
+  private nextUnit(): StoragePending | null {
+    const sql = this.ctx.storage.sql;
+    const transcript = this.transcript();
+    if (!transcript) return null;
+    const count = this.count();
+    for (const row of sql.exec<StorageEpoch>("SELECT * FROM storage_epochs ORDER BY epoch").toArray()) {
+      const { last, translated } = this.epochLimits(row, transcript.epoch, count);
+      if (last === 0 || last <= row.keep) continue;
+      if (row.header_saved === 0) return { kind: "header", epoch: row.epoch, from: null, to: null, stored: 0 };
+      if (row.through >= translated) continue;
+      let to = row.through;
+      let bytes = 0;
+      for (const record of this.storableRows(row.epoch, transcript.epoch, row.through + 1, Math.min(translated, row.through + SEGMENT_RECORDS))) {
+        if (to > row.through && bytes + record.bytes > SEGMENT_BYTES) break;
+        bytes += record.bytes;
+        to = record.cursor;
+      }
+      if (to > row.through) return { kind: "segment", epoch: row.epoch, from: row.through + 1, to, stored: 0 };
+    }
+    return null;
+  }
+
+  /** Sizes of an epoch's records in a range: the current epoch's from `records`, a cut one's from the side table. */
+  private storableRows(epoch: number, current: number, from: number, to: number): Array<{ cursor: number; bytes: number }> {
+    const sql = this.ctx.storage.sql;
+    if (epoch === current) return sql.exec<{ cursor: number; bytes: number }>("SELECT cursor, bytes FROM records WHERE cursor BETWEEN ? AND ? ORDER BY cursor", from, to).toArray();
+    return sql.exec<{ cursor: number; bytes: number }>(
+      `SELECT cursor, LENGTH(CAST(COALESCE(line, (SELECT GROUP_CONCAT(data, '') FROM (SELECT data FROM storage_cut_parts p
+         WHERE p.epoch = c.epoch AND p.cursor = c.cursor AND p.kind = 'line' ORDER BY idx))) AS BLOB)) AS bytes
+       FROM storage_cut c WHERE epoch = ? AND cursor BETWEEN ? AND ? ORDER BY cursor`, epoch, from, to).toArray();
+  }
+
+  /** One epoch's records in a range, as committed: line, ATXF, hash and chain. */
+  private heldRecords(epoch: number, current: number, from: number, to: number): Array<{ cursor: number; line: string; atxf: string; chain: string }> {
+    const sql = this.ctx.storage.sql;
+    if (epoch === current) {
+      return sql.exec<{ cursor: number; line: string | null; atxf: string | null; chain: string }>(
+        "SELECT cursor, line, atxf, chain FROM records WHERE cursor BETWEEN ? AND ? ORDER BY cursor", from, to).toArray()
+        .map((row) => ({ cursor: row.cursor, chain: row.chain, line: row.line ?? this.parts(row.cursor), atxf: row.atxf ?? this.parts(row.cursor, "atxf_parts") }));
+    }
+    const cutParts = (cursor: number, kind: string) => sql.exec<{ data: string }>(
+      "SELECT data FROM storage_cut_parts WHERE epoch = ? AND cursor = ? AND kind = ? ORDER BY idx", epoch, cursor, kind).toArray().map((row) => row.data).join("");
+    return sql.exec<{ cursor: number; line: string | null; atxf: string | null; chain: string }>(
+      "SELECT cursor, line, atxf, chain FROM storage_cut WHERE epoch = ? AND cursor BETWEEN ? AND ? ORDER BY cursor", epoch, from, to).toArray()
+      .map((row) => ({ cursor: row.cursor, chain: row.chain, line: row.line ?? cutParts(row.cursor, "line"), atxf: row.atxf ?? cutParts(row.cursor, "atxf") }));
+  }
+
+  /** The object a unit is: its key, bytes and metadata, built from what this object holds, the same on every try. */
+  private build(unit: StoragePending, binding: SessionBinding, generation: string, transcript: Transcript): {
+    key: string; body: Uint8Array<ArrayBuffer>; meta: Record<string, string>; lines: string[]; offsets: Array<{ cursor: number; offset: number; length: number }>;
+  } {
+    const prefix = generationPrefix(binding, generation);
+    const sql = this.ctx.storage.sql;
+    const row = sql.exec<StorageEpoch>("SELECT * FROM storage_epochs WHERE epoch = ?", unit.epoch).one();
+    if (unit.kind === "header") {
+      const header = new AtxfTranslator().start(transcript.header);
+      const axo: AxoHeaderExt = {
+        accountId: binding.accountId, hostId: binding.hostId, sessionId: binding.sessionId, generation,
+        epoch: unit.epoch, keep: row.keep, parent: row.parent, headerLine: transcript.header, headerHash: transcript.header_hash, converter: ATXF_CONVERTER,
+      };
+      const json = JSON.stringify({ ...header, ext: { ...(header as { ext?: Record<string, unknown> }).ext, axo } });
+      return { key: prefix + headerName(unit.epoch), body: encoder.encode(json), meta: { epoch: String(unit.epoch) }, lines: [], offsets: [] };
+    }
+    const held = this.heldRecords(unit.epoch, transcript.epoch, unit.from!, unit.to!);
+    if (held.length !== unit.to! - unit.from! + 1 || held.some((record, index) => record.cursor !== unit.from! + index))
+      throw new Error(`epoch ${unit.epoch} no longer holds records ${unit.from}-${unit.to}`);
+    const { body, offsets } = segmentBody(held.map((record) => withNative(record.atxf, record.line)));
+    const meta: SegmentMeta = { epoch: String(unit.epoch), from: String(unit.from), to: String(unit.to), chain: held.at(-1)!.chain };
+    return {
+      key: prefix + segmentName(unit.epoch, unit.from!, unit.to!), body, meta, lines: held.map((record) => record.line),
+      offsets: offsets.map((at, index) => ({ cursor: held[index]!.cursor, ...at })),
+    };
+  }
+
+  /**
+   * Stores the next object R2 lacks, if storing is due: writes the unit down before its PUT
+   * (outbox), PUTs it once with `If-None-Match: *`, reads it back, and only then records that R2
+   * gave it back (readBackBeforeDrop, without the drop: release 1 keeps every line). A failure is
+   * retried with backoff; R2 giving back other bytes stops storing for this Session.
+   */
+  private async store(): Promise<void> {
+    const bucket = this.segments();
+    const sql = this.ctx.storage.sql;
+    const state = this.storageRow();
+    if (!bucket || state.refused !== null || state.due_at === null || state.due_at > Date.now()) return;
+    const binding = this.identity();
+    const transcript = this.transcript();
+    if (!binding || !transcript) {
+      sql.exec("UPDATE storage SET due_at = NULL");
+      return;
+    }
+    this.ensureEpoch(transcript.epoch);
+    let unit = sql.exec<StoragePending>('SELECT kind, epoch, "from", "to", stored FROM storage_pending').toArray()[0];
+    if (!unit) {
+      const next = this.nextUnit();
+      if (!next) {
+        sql.exec("UPDATE storage SET due_at = NULL, failures = 0");
+        return;
+      }
+      unit = next;
+      // Written down before the PUT: a retry sends this range again, never a longer one from the same cursor.
+      sql.exec('INSERT INTO storage_pending (singleton, kind, epoch, "from", "to", stored) VALUES (1, ?, ?, ?, ?, 0)', unit.kind, unit.epoch, unit.from, unit.to);
+    }
+    const pending = unit;
+    let built: ReturnType<AxoSessionDO["build"]> | undefined;
+    const refuse = (why: string) => {
+      sql.exec("UPDATE storage SET refused = ?, due_at = NULL", why);
+      console.error(JSON.stringify({ event: "session.storage_refused", key: built?.key, why }));
+    };
+    const started = Date.now();
+    try {
+      built = this.build(pending, binding, state.generation, transcript);
+      const object = built;
+      const sha256 = await sha256Hex(object.body);
+      if (pending.stored === 0) {
+        const put = await bucket.put(object.key, object.body, {
+          onlyIf: new Headers({ "If-None-Match": "*" }),
+          sha256,
+          customMetadata: object.meta,
+          httpMetadata: { contentType: pending.kind === "header" ? "application/json" : "application/jsonl" },
+        });
+        if (put === null) {
+          // The key is taken: an earlier try whose answer was lost stored it, or something else did.
+          const there = await bucket.head(object.key);
+          const theirs = there?.checksums.sha256 ? await bytesHex(there.checksums.sha256) : null;
+          if (theirs !== sha256) return refuse(`another object is stored at ${object.key}`);
+        }
+        this.ctx.storage.transactionSync(() => {
+          sql.exec("UPDATE storage_pending SET stored = 1");
+          if (pending.kind === "header") sql.exec("UPDATE storage_epochs SET header_saved = 1 WHERE epoch = ?", pending.epoch);
+          else {
+            sql.exec("UPDATE storage_epochs SET through = MAX(through, ?) WHERE epoch = ?", pending.to, pending.epoch);
+            // Rows of the current epoch learn their segment; a cut since moved the rest aside.
+            if (this.transcript()?.epoch === pending.epoch) {
+              const name = object.key.slice(object.key.lastIndexOf("epoch-"));
+              for (const at of object.offsets)
+                sql.exec("UPDATE records SET segment = ?, seg_offset = ?, seg_length = ? WHERE cursor = ?", name, at.offset, at.length, at.cursor);
+            }
+          }
+        });
+      }
+
+      // Read back: R2 must give the bytes, and every Pi line, exactly as this object holds them.
+      const back = await bucket.get(object.key);
+      if (!back) throw new Error(`${object.key} is not there after it was stored`);
+      const bytes = new Uint8Array(await back.arrayBuffer());
+      if ((await sha256Hex(bytes)) !== sha256) return refuse(`${object.key} came back with other bytes`);
+      if (pending.kind === "segment") {
+        const lines = segmentLines(new TextDecoder().decode(bytes));
+        if (lines.length !== object.lines.length || lines.some((line, index) => line !== object.lines[index]))
+          return refuse(`${object.key} came back with other lines`);
+      }
+      this.ctx.storage.transactionSync(() => {
+        sql.exec("DELETE FROM storage_pending");
+        if (pending.kind === "segment") {
+          sql.exec("UPDATE storage_epochs SET verified = MAX(verified, ?) WHERE epoch = ?", pending.to, pending.epoch);
+          // What a cut moved aside goes only once R2 gave it back.
+          sql.exec("DELETE FROM storage_cut WHERE epoch = ? AND cursor BETWEEN ? AND ?", pending.epoch, pending.from, pending.to);
+          sql.exec("DELETE FROM storage_cut_parts WHERE epoch = ? AND cursor BETWEEN ? AND ?", pending.epoch, pending.from, pending.to);
+        }
+        sql.exec("UPDATE storage SET failures = 0, due_at = ?", this.nextUnit() === null ? null : Date.now());
+      });
+      console.log(JSON.stringify({ event: "session.storage_stored", kind: pending.kind, epoch: pending.epoch, from: pending.from, to: pending.to, bytes: object.body.byteLength, ms: Date.now() - started }));
+    } catch (error) {
+      const failures = this.storageRow().failures + 1;
+      const wait = Math.min(2 ** failures * 60_000, STORE_RETRY_MAX_MS);
+      sql.exec("UPDATE storage SET failures = ?, due_at = ?", failures, Date.now() + wait);
+      console.error(JSON.stringify({ event: "session.storage_failed", epoch: pending.epoch, failures, error: error instanceof Error ? error.message : String(error) }));
+    }
+  }
+
+  /**
+   * Sets the one alarm to the earliest job (RFD0044, oneAlarm): now if translation waits, or when
+   * R2 is due. Nothing else sets it, since setting it replaces the other job's time.
+   */
+  private async scheduleAlarm(): Promise<void> {
+    const state = this.translation();
+    const now = Date.now();
+    const due = this.segments() ? this.storageRow() : undefined;
+    const times: number[] = [];
+    if (state && state.atxf_error === null && state.atxf_through < this.count()) times.push(now);
+    if (due && due.refused === null && due.due_at !== null) times.push(Math.max(now, due.due_at));
+    if (times.length === 0) return;
+    const at = Math.min(...times);
+    const set = await this.ctx.storage.getAlarm();
+    // An alarm already set for the same time, or one already due, does the job.
+    if (set === at || (set !== null && set <= now && at <= now)) return;
+    await this.ctx.storage.setAlarm(at);
+  }
+
+  private identity(): SessionBinding | undefined {
+    const row = this.ctx.storage.sql.exec<{ account_id: string; host_id: string; session_id: string }>(
+      "SELECT account_id, host_id, session_id FROM session_identity WHERE singleton = 1").toArray()[0];
+    return row && { accountId: row.account_id, hostId: row.host_id, sessionId: row.session_id };
   }
 
   /**
@@ -357,10 +736,11 @@ export class AxoSessionDO extends DurableObject<Env> {
    */
   private async translateAfterAppend(before: number): Promise<void> {
     const behind = this.translation();
-    if (!behind || behind.atxf_error !== null) return;
-    const warm = this.translator !== undefined && this.translator.through === before;
-    if (behind.atxf_through === before && (warm || before === 0) && !this.translate(SYNC.appendRecords, TRANSLATE_BYTES)) return;
-    await this.ctx.storage.setAlarm(Date.now());
+    if (behind && behind.atxf_error === null) {
+      const warm = this.translator !== undefined && this.translator.through === before;
+      if (behind.atxf_through === before && (warm || before === 0)) this.translate(SYNC.appendRecords, TRANSLATE_BYTES);
+    }
+    await this.scheduleAlarm();
   }
 
   /**
@@ -423,7 +803,7 @@ export class AxoSessionDO extends DurableObject<Env> {
   /** Sets an alarm to translate, if records wait for it (RFD0035): a Session stored before, or one that fell behind. */
   private async catchUp(): Promise<void> {
     const state = this.translation();
-    if (state && state.atxf_error === null && state.atxf_through < this.count()) await this.ctx.storage.setAlarm(Date.now());
+    if (state && state.atxf_error === null && state.atxf_through < this.count()) await this.scheduleAlarm();
   }
 
   /**
@@ -518,7 +898,10 @@ export function clearedSlot(line: string): string | null {
   return null;
 }
 
-/** Adds the columns `table` does not have yet. */
+async function bytesHex(buffer: ArrayBuffer): Promise<string> {
+  return [...new Uint8Array(buffer)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
 /** Cuts a line into parts that each fit a SQLite value, never between a surrogate pair. */
 function splitParts(line: string): string[] {
   const parts: string[] = [];
