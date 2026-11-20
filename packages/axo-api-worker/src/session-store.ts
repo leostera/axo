@@ -43,14 +43,15 @@ export function sessionDOName(accountId: string, hostId: string, sessionId: stri
   return `${uuid.parse(accountId)}:${uuid.parse(hostId)}:${uuid.parse(sessionId)}`;
 }
 
-export type SessionHead = { epoch: number; count: number; chain: string; heads: string[] };
+/** `stored`: records of this epoch R2 gave back (RFD0044); absent without a bucket. */
+export type SessionHead = { epoch: number; count: number; chain: string; heads: string[]; stored?: number };
 
 /**
  * Every write's answer says what this object then holds, and its fence (RFD0032, Host sync from
  * the index): a HostDO trusts its index for a Session only after an answer that carries one.
  */
 export type StoreAppendResult = (
-  | { outcome: "committed"; epoch: number; count: number; chain: string; added: number; cleared: string[] }
+  | { outcome: "committed"; epoch: number; count: number; chain: string; added: number; cleared: string[]; stored?: number }
   | { outcome: "gap" | "conflict" | "epoch" | "invalid" | "fenced"; epoch: number | null; count: number; chain: string | null }
 ) & { fence: number };
 
@@ -223,6 +224,7 @@ export class AxoSessionDO extends DurableObject<Env> {
       count: this.count(),
       chain: this.chainAt(this.count(), transcript)!,
       heads: sql.exec<{ hash: string }>("SELECT hash FROM records WHERE referenced = 0 OR id IS NULL ORDER BY hash").toArray().map((row) => row.hash),
+      ...this.storedField(),
     };
   }
 
@@ -304,7 +306,7 @@ export class AxoSessionDO extends DurableObject<Env> {
       });
       this.ensureEpoch(committed.epoch);
       this.armStore();
-      return { outcome: "committed", epoch: committed.epoch, count: count + rows.length, chain, added: rows.length, cleared: [...cleared], fence: this.fence() };
+      return { outcome: "committed", epoch: committed.epoch, count: count + rows.length, chain, added: rows.length, cleared: [...cleared], ...this.storedField(), fence: this.fence() };
     });
     if (result.outcome === "committed") await this.translateAfterAppend(count);
     return result;
@@ -476,10 +478,35 @@ export class AxoSessionDO extends DurableObject<Env> {
       pending: sql.exec<StoragePending>('SELECT kind, epoch, "from", "to", stored FROM storage_pending').toArray()[0] ?? null,
       epoch: transcript?.epoch ?? null,
       count,
-      stored: current && current.headerSaved ? current.verified : 0,
+      stored: this.storedCount(),
       epochs,
       cutRecords: sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM storage_cut").one().n,
     };
+  }
+
+  /** `stored` for an answer: absent without a bucket, since then R2 holds nothing to restore from. */
+  private storedField(): { stored?: number } {
+    return this.segments() ? { stored: this.storedCount() } : {};
+  }
+
+  /**
+   * How many records of the current epoch R2 alone gives back: its verified count, if its header
+   * is stored and every epoch it keeps records of gave those back too; otherwise none, since a
+   * restore of it would fail.
+   */
+  private storedCount(): number {
+    const transcript = this.transcript();
+    if (!transcript) return 0;
+    const sql = this.ctx.storage.sql;
+    const row = (epoch: number) => sql.exec<StorageEpoch>("SELECT * FROM storage_epochs WHERE epoch = ?", epoch).toArray()[0];
+    const current = row(transcript.epoch);
+    if (!current || current.header_saved === 0) return 0;
+    for (let child = current; child.keep > 0;) {
+      const parent = child.parent === null ? undefined : row(child.parent);
+      if (!parent || parent.header_saved === 0 || parent.verified < child.keep) return 0;
+      child = parent;
+    }
+    return Math.min(current.verified, this.count());
   }
 
   private storageRow(): StorageRow {

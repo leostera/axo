@@ -139,7 +139,14 @@ export type HostSyncParams = z.infer<typeof hostSyncParamsSchema>;
 
 export const cloudSessionStateSchema = z.discriminatedUnion("state", [
   z.object({ sessionId: uuid, state: z.literal("unknown") }).strict(),
-  z.object({ sessionId: uuid, state: z.literal("known"), epoch, count, chain: hashSchema, heads: z.array(hashSchema).max(1024) }).strict(),
+  z.object({
+    sessionId: uuid, state: z.literal("known"), epoch, count, chain: hashSchema, heads: z.array(hashSchema).max(1024),
+    /**
+     * How many records of this epoch R2 gave back byte for byte (RFD0044). Absent when the cloud
+     * cannot say, and then a Mac never evicts its transcript; it evicts only when this is `count`.
+     */
+    stored: count.optional(),
+  }).strict(),
 ]);
 export type CloudSessionState = z.infer<typeof cloudSessionStateSchema>;
 
@@ -168,7 +175,8 @@ export type AppendParams = z.infer<typeof appendParamsSchema>;
 
 /** `gap`, `conflict` and `epoch` all mean: run the handshake again for this Session. */
 export const appendResultSchema = z.discriminatedUnion("outcome", [
-  z.object({ outcome: z.literal("committed"), epoch, count, chain: hashSchema }).strict(),
+  /** `stored` as in the handshake's answer (RFD0044): absent when the cloud cannot say. */
+  z.object({ outcome: z.literal("committed"), epoch, count, chain: hashSchema, stored: count.optional() }).strict(),
   z.object({ outcome: z.enum(["gap", "conflict", "epoch", "invalid"]), epoch: epoch.nullable(), count, chain: hashSchema.nullable() }).strict(),
 ]);
 export type AppendResult = z.infer<typeof appendResultSchema>;

@@ -114,6 +114,8 @@ type IndexRow = {
   chain: string | null;
   /** The row was last set from an answer that carried the SessionDO's fence, and no write to it is out since. */
   verified: number;
+  /** Records of the epoch R2 gave back, as the SessionDO last said (RFD0044); null when it did not say. */
+  stored: number | null;
 };
 
 type ClientStub = { notify(hostId: string, notices: HostNotice[]): Promise<boolean> };
@@ -202,6 +204,10 @@ const HOST_SCHEMA: readonly SchemaStep[] = [
   (sql) => {
     sql.exec("CREATE TABLE IF NOT EXISTS resolution_push (id TEXT PRIMARY KEY, route_json TEXT NOT NULL, next_at INTEGER NOT NULL, attempts INTEGER NOT NULL DEFAULT 0)");
     sql.exec("CREATE TABLE IF NOT EXISTS settled_requests (id TEXT PRIMARY KEY, expires_at INTEGER NOT NULL)");
+  },
+  (sql) => {
+    // RFD0044: what R2 holds of each Session, as its SessionDO last said; added only.
+    addColumns(sql, "session_index", { stored: "INTEGER" });
   },
 ];
 /** How long a progress snapshot may wait to be saved; an idle object is evicted after longer. */
@@ -487,7 +493,8 @@ export class AxoHostDO extends AxoHostRelay {
     const toRead: string[] = [];
     for (const { sessionId, upload } of sessions) {
       const row = this.indexRow(sessionId);
-      const agrees = row !== undefined && row.verified === 1 &&
+      // A row behind on what R2 holds is read again, so a Mac learns when its copy may go (RFD0044).
+      const agrees = row !== undefined && row.verified === 1 && (row.stored === null || row.stored >= row.head) &&
         (upload === null || (row.epoch !== null && row.head === upload.count && row.chain === upload.chain));
       if (agrees) states.set(sessionId, indexState(row));
       else toRead.push(sessionId);
@@ -497,6 +504,7 @@ export class AxoHostDO extends AxoHostRelay {
       await Promise.all(toRead.slice(start, start + 16).map(async (sessionId) => {
         const read = await this.syncHead(sessionId, fence);
         this.refreshHead(sessionId, read.head ? read.head.epoch : null, read.head?.count ?? 0, read.head?.chain ?? null, read.fenced);
+        this.noteStored(sessionId, read.head?.stored);
         states.set(sessionId, read.head ? { sessionId, state: "known", ...read.head } : { sessionId, state: "unknown" });
       }));
     }
@@ -510,7 +518,10 @@ export class AxoHostDO extends AxoHostRelay {
   private async syncHead(sessionId: string, fence: number): Promise<{ head: SessionHead | null; fenced: boolean }> {
     const read = await this.session(sessionId).syncHead(this.binding(sessionId), fence);
     this.adoptFence(read.fence);
-    return { head: read.head && { epoch: read.head.epoch, count: read.head.count, chain: read.head.chain, heads: [...read.head.heads] }, fenced: read.fence >= fence };
+    return {
+      head: read.head && { epoch: read.head.epoch, count: read.head.count, chain: read.head.chain, heads: [...read.head.heads], ...(read.head.stored === undefined ? {} : { stored: read.head.stored }) },
+      fenced: read.fence >= fence,
+    };
   }
 
   private currentFence(): number {
@@ -554,6 +565,7 @@ export class AxoHostDO extends AxoHostRelay {
     // A fenced write reaches axod as the conflict it already handles by handshaking again.
     if (result.outcome === "fenced") return { outcome: "conflict", epoch: result.epoch, count: result.count, chain: result.chain };
     if (result.outcome !== "committed") return { outcome: result.outcome, epoch: result.epoch, count: result.count, chain: result.chain };
+    this.noteStored(sessionId, result.stored);
     for (const slot of result.cleared) {
       if (!this.progress.get(sessionId)?.has(slot)) continue;
       this.setProgress(sessionId, slot, null);
@@ -562,7 +574,7 @@ export class AxoHostDO extends AxoHostRelay {
     // The records it just committed go to protocol 3's sockets from here, with no read
     // (pushFromAppend). Those sends happen before the first await; axod's answer waits for no read.
     void this.clients.committed(sessionId, result.epoch, committedRecords(input.data, result.count, result.added)).catch(() => undefined);
-    return { outcome: "committed", epoch: result.epoch, count: result.count, chain: result.chain };
+    return { outcome: "committed", epoch: result.epoch, count: result.count, chain: result.chain, ...(result.stored === undefined ? {} : { stored: result.stored }) };
   }
 
   private async chainAt(params: unknown, { peer }: CallerContext) {
@@ -582,6 +594,8 @@ export class AxoHostDO extends AxoHostRelay {
     recordApiEvent({ event: "session_truncate", outcome: result.outcome });
     this.adoptFence(result.fence);
     this.refreshHead(sessionId, result.epoch, result.count, result.chain, true);
+    // A cut starts an epoch whose R2 copy the SessionDO has not described yet.
+    this.noteStored(sessionId, undefined);
     if (result.outcome !== "truncated") return { round, outcome: "mismatch" as const };
     // This HostDO made the cut, so protocol 3's sockets learn where with no read.
     this.clients.cut(sessionId, result.epoch, keep);
@@ -1133,6 +1147,11 @@ export class AxoHostDO extends AxoHostRelay {
     };
   }
 
+  /** Keeps what the SessionDO said R2 holds; undefined (it did not say) forgets it, so the index never claims more. */
+  private noteStored(sessionId: string, stored: number | undefined): void {
+    this.ctx.storage.sql.exec("UPDATE session_index SET stored = ? WHERE session_id = ?", stored ?? null, sessionId);
+  }
+
   private indexRow(sessionId: string): IndexRow | undefined {
     return this.ctx.storage.sql.exec<IndexRow>("SELECT * FROM session_index WHERE session_id = ?", sessionId).toArray()[0];
   }
@@ -1192,7 +1211,10 @@ export function committedRecords(params: { records: Array<{ id: string | null; l
 /** A verified index row as the handshake's answer; axod ignores `heads`, which the index doesn't keep. */
 function indexState(row: IndexRow): CloudSessionState {
   if (row.epoch === null || row.chain === null) return { sessionId: row.session_id, state: "unknown" };
-  return { sessionId: row.session_id, state: "known", epoch: row.epoch, count: row.head, chain: row.chain, heads: [] };
+  return {
+    sessionId: row.session_id, state: "known", epoch: row.epoch, count: row.head, chain: row.chain, heads: [],
+    ...(row.stored === null ? {} : { stored: Math.min(row.stored, row.head) }),
+  };
 }
 
 function outcomeKind(error: { code: number; message: string }): "error" | "disconnected" | "timeout" {

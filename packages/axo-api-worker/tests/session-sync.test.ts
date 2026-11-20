@@ -41,8 +41,8 @@ async function call<T>(peer: Peer, method: string, params: unknown, schema?: { p
 type Fixture = { h: Harness; session: AccountSession; host: PairedHost; daemon: Peer; transcript: FakeTranscript; round: number };
 
 /** A paired, connected host with one synced Session of `lines` records. */
-async function fixture(t: { after(fn: () => unknown): void }, lines = 3): Promise<Fixture> {
-  const h = await harness();
+async function fixture(t: { after(fn: () => unknown): void }, lines = 3, r2: string[] = []): Promise<Fixture> {
+  const h = await harness({ r2 });
   t.after(() => h.close());
   const session = await signIn(h);
   const host = await pairHost(h, session);
@@ -572,4 +572,34 @@ test("metadata stored before Workspaces went is read as a Mac sends it now (RFD0
   const { workspaceId: _id, workspaceName: _name, ...rest } = stored;
   const current = { ...rest, folderName: "kept" };
   assert.deepEqual(withoutWorkspace(current), current, "metadata already in the new shape is left alone");
+});
+
+test("with R2 bound, appends and handshakes say how many records R2 gave back; without it they never do (RFD0044)", async (t) => {
+  const { h, daemon, transcript, host, session } = await fixture(t, 3, ["SESSIONS"]);
+  const sync = async (round: number) => (await call(daemon, "axo.host.sync", { hostId: host.hostId, hostGeneration: host.hostGeneration, round, sessions: [transcript.manifestRow()] }, hostSyncResultSchema)).sessions[0]!;
+  await transcript.write(userMessage("four"));
+  const committed = await append(daemon, transcript, 4);
+  assert.deepEqual(committed, { outcome: "committed", epoch: 1, count: 4, chain: transcript.transcript.chain, stored: 0 }, "nothing is in R2 an hour before it is due");
+  // Behind on R2, the row is read from the SessionDO, heads and all.
+  const { heads: _, ...known } = (await sync(2)) as { heads: string[] };
+  assert.deepEqual(known, { sessionId: transcript.sessionId, state: "known", epoch: 1, count: 4, chain: transcript.transcript.chain, stored: 0 });
+
+  // Stored now instead of in an hour, as the HostDO's backfill asks.
+  const namespace = (await h.mf.getDurableObjectNamespace("TEST_SESSION_HISTORY")) as unknown as { idFromName(name: string): unknown; get(id: unknown): { armStorage(b: unknown): Promise<unknown>; storage(b: unknown): Promise<{ stored: number }> } };
+  const object = namespace.get(namespace.idFromName(`${session.accountId}:${host.hostId}:${transcript.sessionId}`));
+  const binding = { accountId: session.accountId, hostId: host.hostId, sessionId: transcript.sessionId };
+  await object.armStorage(binding);
+  for (const deadline = Date.now() + 20_000; JSON.parse(JSON.stringify(await object.storage(binding))).stored !== 4;) {
+    assert.ok(Date.now() < deadline, "stored in time");
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  // The index was behind on R2, so the handshake asks the SessionDO; then the index answers alone.
+  assert.equal((await sync(3) as { stored?: number }).stored, 4);
+  assert.equal((await sync(4) as { stored?: number }).stored, 4);
+
+  // A cut starts an epoch the index knows nothing of in R2: it says nothing, and a Mac keeps its file.
+  const cut = await call(daemon, "axo.host.session.truncate", { sessionId: transcript.sessionId, round: 5, keep: 2, expectedChain: transcript.transcript.chainAt(2) }, truncateResultSchema);
+  assert.equal(cut.outcome, "truncated");
+  const after = await sync(6) as { stored?: number; count: number };
+  assert.ok(after.stored === undefined || after.stored < 4, JSON.stringify(after));
 });
