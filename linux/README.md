@@ -40,6 +40,45 @@ it does not install/update a daemon service. An existing different command/link
 is refused. A supported Linux service installer and authenticated update/rollback
 flow remain separate work; do not treat CLI link installation as an updater.
 
+### Native Debian/Ubuntu installer
+
+The headless installer is a `.deb` with the CLI, daemon, helpers and a systemd
+**user** unit. It has no maintainer scripts, automatic activation, root daemon,
+user-state cleanup, APT repository, or shared `latest.json` writer. Stop an existing
+daemon before updating; manual user units and `~/.local/bin` overrides are retained.
+The package records its ABI dependencies from `dpkg-shlibdeps`; do not advertise
+support for distributions older than those dependencies allow.
+
+After integration, from clean primary main matching freshly fetched origin/main:
+
+```sh
+bazel build //linux:runtime //crates/axo-cli:axo
+python3 linux/build_deb.py --source . --runtime bazel-bin/linux/axo-linux.tar.gz \
+  --cli bazel-bin/crates/axo-cli/axo --output /absolute/path/to/artifacts
+```
+
+Local development must add `--candidate`; the filename and JSON provenance then
+remain explicitly non-release-eligible. Both modes require the transcript-retention
+and reopen-regression ancestors and automatic transcript eviction disabled.
+The output includes package SHA256, binary hashes, source and native build environment.
+The coordinator alone sequences publication and chooses the immutable platform path.
+
+```sh
+bazel test //linux:deb_packager_test
+python3 linux/deb_smoke.py /absolute/path/to/installer.deb \
+  --old-runtime /absolute/path/to/prior/runtime \
+  --pi-fixture crates/axod/testdata/pi-fixture.sh --output /tmp/axo-deb-smoke.json
+```
+
+Smoke requires `fakeroot`, `dpkg`, `dpkg-deb` and Python, and only changes a temporary
+package database/sysroot. It executes the installed native binaries on the host ABI
+with private HOME/state, tests reinstall and upgrade from the older real runtime,
+and preserves Session/pane IDs, identity, settings and a user-state sentinel.
+Empty-sysroot dependency records are omitted with `--force-depends`; this is not
+full dependency-resolution or VM/systemd-activation acceptance. No live service,
+account, credentials, unlock/reboot or host package installation is performed.
+See [RFD0090](../docs/rfds/RFD0090-linux-native-debian-installer.md).
+
 ### CUDA
 
 Use a CUDA toolkit compatible with the host compiler and NVIDIA driver. It must include nvcc, headers, static cudart, cuBLAS/cuBLASLt and their static dependencies. Driver installation or a reboot is not part of this build. For an RTX 2080 Ti (compute capability 7.5):

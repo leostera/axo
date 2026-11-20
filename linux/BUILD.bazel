@@ -17,6 +17,13 @@ sh_test(
     timeout = "moderate",
 )
 
+sh_test(
+    name = "deb_packager_test",
+    srcs = ["deb_packager_test.sh"],
+    data = ["build_deb.py", "build_deb_test.py"],
+    target_compatible_with = ["@platforms//os:linux"],
+)
+
 # Runtime programs are installed together; axod locates its helpers beside itself.
 genrule(
     name = "runtime",
