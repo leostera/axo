@@ -138,6 +138,22 @@ impl Extension for Remote {
         add(
             handler,
             core,
+            "axo.remote.agents.models",
+            |core, request: AgentModelsParams| async move {
+                use axo_agent::catalog::CatalogError;
+                let models = axo_agent::catalog::models(&core.home, request.agent)
+                    .await
+                    .map_err(|error| match error {
+                        CatalogError::NotInstalled => MethodError::new(NOT_FOUND, "This agent is not installed on the host"),
+                        CatalogError::Busy => MethodError::new(BUSY, "Model catalog busy; try again"),
+                        CatalogError::Failed => MethodError::new(REFUSED, "Could not read this agent's model catalog"),
+                    })?;
+                Ok(Answer::Models { models })
+            },
+        );
+        add(
+            handler,
+            core,
             "axo.remote.session.create",
             // The account names no paths: a new Session starts beside another, or at home.
             |core, request: CreateSessionParams| async move {
@@ -549,6 +565,7 @@ macro_rules! params {
 
 params! {
     AgentsParams {}
+    AgentModelsParams { agent: axo_agent::AgentKind }
     SessionTargetParams { session_id: SessionId }
     CreateSessionParams {
         like: Option<SessionId> = default,
@@ -631,6 +648,26 @@ mod tests {
                 _ => {}
             }
         }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn model_discovery_rejects_unscoped_requests_before_running_any_agent() {
+        let fixture = Fixture::new().await;
+        let handler = methods(&fixture);
+        let method = "axo.remote.agents.models";
+        let valid = json!({ "target": target(&fixture), "agent": "pi" });
+        assert_eq!(call(&handler, method, valid).await["error"]["code"], -32601);
+        let mut stale = target(&fixture);
+        stale["hostGeneration"] = json!("00000000-0000-4000-8000-000000000001");
+        assert_eq!(as_account(&handler, method, json!({ "target": stale, "agent": "pi" }))
+            .await["error"]["code"], STALE_HOST);
+        for invalid in [
+            json!({ "target": target(&fixture), "agent": "arbitrary" }),
+            json!({ "target": target(&fixture), "agent": "pi", "sessionId": "surprise" }),
+        ] {
+            assert_eq!(as_account(&handler, method, invalid).await["error"]["code"], INVALID_PARAMS);
+        }
+        assert!(fixture.core.catalog.records().is_empty());
     }
 
     #[tokio::test(flavor = "multi_thread")]

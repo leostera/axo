@@ -14,6 +14,7 @@
     "axo.remote.agents.list",
     "axo.remote.session.key",
     "axo.remote.session.stop",
+    "axo.remote.agents.models",
     "axo.remote.session.commands",
     "axo.remote.session.models",
     "axo.remote.session.model.set"

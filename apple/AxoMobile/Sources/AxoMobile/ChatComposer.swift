@@ -333,6 +333,7 @@ struct ComposerPi {
   let chooseLevel: (ThinkingLevel) -> Void
   var useDefault: (() -> Void)? = nil
   var modelsFailure: String? = nil
+  var catalogOnly = false
   var supportsCommands = true
 }
 
@@ -417,17 +418,25 @@ private struct ModelMenu: View {
           Button("Retry") { Task { await pi.loadModels() } }
             .padding(10).accessibilityIdentifier("model-retry")
         }
+        if pi.catalogOnly {
+          Text("Claude Code’s advertised models. Choose the model in Claude Code.")
+            .font(.footnote).foregroundStyle(.secondary).padding(10)
+        }
         if let models = pi.models {
           if !thinkingOnly {
-          ForEach(Self.providers(models), id: \.provider) { group in
-            header(Self.providerName(group.provider))
-            ForEach(group.models) { model in
-              row(model.name, chosen: model.isModel(pi.runtime?.model), id: "model-\(model.id)") {
-                pi.choose(model)
-                done()
+            ForEach(Self.providers(models), id: \.provider) { group in
+              header(Self.providerName(group.provider))
+              ForEach(group.models) { model in
+                if pi.catalogOnly {
+                  Text(model.name).font(.body).padding(10)
+                } else {
+                  row(model.name, chosen: model.isModel(pi.runtime?.model), id: "model-\(model.id)") {
+                    pi.choose(model)
+                    done()
+                  }
+                }
               }
             }
-          }
           }
           if thinkingOnly, let levels = current?.thinkingLevels, !levels.isEmpty {
             header("Thinking")
@@ -437,6 +446,9 @@ private struct ModelMenu: View {
                 done()
               }
             }
+          } else if thinkingOnly && !pi.catalogOnly {
+            Text("No thinking options advertised for this model.")
+              .font(.footnote).foregroundStyle(.secondary).padding(10)
           }
         } else if pi.modelsFailure == nil {
           HStack(spacing: 8) {

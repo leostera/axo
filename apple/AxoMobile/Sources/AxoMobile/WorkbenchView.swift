@@ -1283,7 +1283,7 @@ extension ClientID {
               let attempt = lock.withLock { agentChecks += 1; return agentChecks }
               return attempt <= failures ? nil : "{\"agents\":[\"pi\",\"codex\"]}"
             }()
-          case "axo.remote.session.models": PreviewFixture.models
+          case "axo.remote.agents.models", "axo.remote.session.models": PreviewFixture.models
           case "axo.remote.session.model.set": #"{"saved":true}"#
           case "axo.remote.session.restart":
             { restart(params?["params"] as? [String: Any]); return #"{"restarted":true}"# }()

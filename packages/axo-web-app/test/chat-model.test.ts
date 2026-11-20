@@ -887,6 +887,39 @@ test("a new chat starts with the agent picked for it, and Pi is left unsaid for 
   workbench.dispose();
 });
 
+test("a draft catalog belongs to host and agent, and discovery never starts a chat", async () => {
+  const { workbench, account } = await workbenchWith();
+  const small = { provider: "openai", id: "small", name: "Small", thinkingLevels: ["low", "high"] } as const;
+  account.answers.set("axo.remote.agents.models", { models: [small] });
+  await workbench.loadDraftModels();
+  assert.deepEqual(account.commands.map(({ method, params }) => [method, params]), [
+    ["axo.remote.agents.models", { target: { hostId, hostGeneration }, agent: "pi" }],
+  ]);
+  assert.ok(workbench.draftModels?.kind === "loaded");
+  const piScope = workbench.draftCatalogScope;
+  const model = workbench.draftModels.items[0]!;
+  assert.ok(workbench.chooseDraftModel(piScope, model, "high"));
+  workbench.chooseAgent("codex");
+  assert.equal(workbench.draftModels, null);
+  assert.equal(workbench.draftModelChoice, undefined);
+  assert.equal(workbench.chooseDraftModel(piScope, model), false);
+  workbench.chooseAgent("pi");
+  assert.equal(workbench.draftModelChoice?.model.id, "small");
+  account.answers.set("axo.remote.session.models", { models: [] });
+  workbench.setDraft("Retain this");
+  assert.deepEqual(await workbench.send(), { kind: "failed" });
+  assert.equal(workbench.draft(), "Retain this");
+  assert.equal(account.commands.filter(call => call.method.endsWith("session.prompt")).length, 0);
+  account.answers.set("axo.remote.session.models", { models: [small] });
+  assert.deepEqual(await workbench.send(), { kind: "sent" });
+  assert.equal(account.commands.filter(call => call.method.endsWith("session.create")).length, 1);
+  const writes = account.commands.filter(call => /model\.set|session\.prompt/u.test(call.method));
+  assert.deepEqual(writes.map(call => call.method), ["axo.remote.session.model.set", "axo.remote.session.prompt"]);
+  assert.equal(writes[0]?.params.thinkingLevel, "high");
+  assert.equal(writes[1]?.params.text, "Retain this");
+  workbench.dispose();
+});
+
 test("a refused message comes back to the box; one whose delivery is uncertain stays, marked", async () => {
   const { workbench, account } = await workbenchWith();
   workbench.selectChat(hostId, sid(1));

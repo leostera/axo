@@ -109,7 +109,7 @@ export async function startCloud(transcripts, sessions, { models = [], commands 
       }
       if (call.method === "axo.remote.agents.list") return reply({ agents: ["pi", "codex"] });
       if (call.method === "axo.remote.session.commands") return reply({ commands });
-      if (call.method === "axo.remote.session.models") return reply({ models });
+      if (call.method === "axo.remote.agents.models" || call.method === "axo.remote.session.models") return reply({ models });
       if (call.method === "axo.remote.session.model.set") {
         modelSets.push(call.params);
         if (rejectNextModel) {
@@ -201,6 +201,7 @@ export async function startApp(cloud) {
     root: siteRoot,
     define: { "import.meta.env.VITE_AXO_API_BASE_URL": JSON.stringify(appUrl), __AXO_WEB_BUILD__: JSON.stringify("test") },
     plugins: [react()],
+    optimizeDeps: { force: true }, // Workspace packages can change without changing the lockfile.
     resolve: { dedupe: ["react", "react-dom"], alias: { "@axo/web-app": resolve(import.meta.dirname, "../src/main.tsx") } },
     server: {
       host: "127.0.0.1", port: appPort, strictPort: true,

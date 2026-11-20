@@ -48,13 +48,15 @@ final class DraftModelSelectionTests: XCTestCase {
   }
 
   func testInspectingAHostCatalogCreatesNoChatAndChangesNoExistingModel() async throws {
-    let host = Mac("A", online: true, sessions: [1])
+    let host = Mac("A", online: true)
     let world = try await world([host])
     let phone = world.workbench!
     let channel = try await world.transport.channel()
-    let loading = Task { await phone.current?.loadDraftModels() }
+    let loading = Task { await phone.current?.loadDraftModels(for: .opencode) }
     let read = try await channel.nextRequest()
-    XCTAssertEqual(read.method, "axo.remote.session.models")
+    XCTAssertEqual(read.method, "axo.remote.agents.models")
+    XCTAssertEqual(read.params["agent"] as? String, "opencode")
+    XCTAssertNil(read.params["sessionId"])
     XCTAssertEqual(read.hostID, host.id.uuidString.lowercased())
     channel.reply(to: read.id, result: catalog)
     await loading.value
@@ -198,10 +200,13 @@ final class DraftModelSelectionTests: XCTestCase {
 
   func testAnEmptyHostReportsUnavailabilityWithoutCreatingAnything() async throws {
     let world = try await world([Mac("Empty", online: true)])
-    await world.workbench.current?.loadDraftModels()
+    let loading = Task { await world.workbench.current?.loadDraftModels() }
+    let channel = try await world.transport.channel()
+    let read = try await channel.nextRequest("axo.remote.agents.models")
+    channel.reply(to: read.id, result: #"{"models":[]}"#)
+    await loading.value
     XCTAssertEqual(world.workbench.current?.draftModels, [])
     XCTAssertNotNil(world.workbench.current?.draftModelsFailure)
-    let channel = try await world.transport.channel()
     XCTAssertFalse(channel.hasRequest)
   }
 

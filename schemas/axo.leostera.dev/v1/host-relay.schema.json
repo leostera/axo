@@ -66,6 +66,9 @@
           "$ref": "#/$defs/RemoteAgentsCall"
         },
         {
+          "$ref": "#/$defs/RemoteAgentModelsCall"
+        },
+        {
           "$ref": "#/$defs/RemoteSessionModelsCall"
         },
         {
@@ -1058,6 +1061,22 @@
           "params": {
             "type": "object", "additionalProperties": false, "required": ["target"],
             "properties": { "target": { "$ref": "common.schema.json#/$defs/HostRef" } }
+          }
+        } }
+      ],
+      "unevaluatedProperties": false, "required": ["params"]
+    },
+    "RemoteAgentModelsCall": {
+      "allOf": [
+        { "$ref": "#/$defs/BaseCall" },
+        { "properties": {
+          "method": { "const": "axo.remote.agents.models" },
+          "params": {
+            "type": "object", "additionalProperties": false, "required": ["target", "agent"],
+            "properties": {
+              "target": { "$ref": "common.schema.json#/$defs/HostRef" },
+              "agent": { "enum": ["pi", "codex", "opencode", "claude-code"] }
+            }
           }
         } }
       ],

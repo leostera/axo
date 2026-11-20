@@ -86,6 +86,17 @@ test("composer: host, actual agent, model and thinking stay separate on one tool
     await agentBadge.waitFor();
     assert.equal(cloud.prompts.length, 0);
     assert.equal(await field.inputValue(), "Keep this unsent", "badges do not move or send the draft");
+
+    await page.setViewportSize({ width: 1100, height: 844 });
+    await page.getByRole("button", { name: "New chat", exact: true }).click();
+    await page.getByRole("button", { name: "Model: Host default", exact: true }).click();
+    const model = page.getByRole("option", { name: /A deliberately long model name/ });
+    await model.click({ timeout: 5_000 }).catch(async error => {
+      throw new Error(`${error.message}; toolbar: ${await page.locator(".composer-toolbar").innerText()}; page errors: ${JSON.stringify(errors)}`);
+    });
+    await page.getByRole("button", { name: "Model: A deliberately long model name", exact: true }).waitFor();
+    assert.equal(cloud.modelSets.length, 1, "draft choice never changes a running model");
+    assert.equal(cloud.prompts.length, 0, "draft catalog does not send");
   } finally {
     await app?.close();
   }

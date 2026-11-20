@@ -7,7 +7,7 @@ import type { ChatWorkbench, Session } from "./workbench.ts";
 type Choice = { kind: "model"; model: PiModel } | { kind: "thinking"; level: ThinkingLevel };
 
 /** Two independent selections. The catalog is a searchable drill-down, never above Thinking. */
-export function ModelPicker({ workbench, session, disabled }: { workbench: ChatWorkbench; session: Session; disabled: boolean }) {
+export function ModelPicker({ workbench, session, disabled }: { workbench: ChatWorkbench; session: Session | null; disabled: boolean }) {
   const [open, setOpen] = useState(false);
   const [page, setPage] = useState<"settings" | "models">("settings");
   const [query, setQuery] = useState("");
@@ -19,25 +19,29 @@ export function ModelPicker({ workbench, session, disabled }: { workbench: ChatW
   const trigger = useRef<HTMLButtonElement>(null);
   const modelRow = useRef<HTMLButtonElement>(null);
   const search = useRef<HTMLInputElement>(null);
-  const sessionId = useRef(session.sessionId);
-  sessionId.current = session.sessionId;
+  const scope = session?.sessionId ?? workbench.draftCatalogScope;
+  const activeScope = useRef(scope);
+  activeScope.current = scope;
   const listId = useId();
-  const label = session.pi?.model?.name;
-  const state = workbench.chat(session.sessionId).models;
+  const draft = session ? undefined : workbench.draftModelChoice;
+  const catalogOnly = !session && workbench.newChatAgent === "claude-code";
+  const current = session?.pi?.model ?? draft?.model;
+  const label = current?.name ?? (session ? "Model" : "Host default");
+  const state = session ? workbench.chat(session.sessionId).models : workbench.draftModels;
+  const loadModels = () => session ? workbench.loadModels(session.sessionId) : workbench.loadDraftModels();
   const models = state?.kind === "loaded" ? state.items : [];
   const groups = useMemo(() => modelsByProvider(matchingModels(models, query)), [models, query]);
   const choices = groups.flatMap(group => group.models);
   const active = Math.min(highlighted, Math.max(0, choices.length - 1));
-  const current = session.pi?.model;
-  const levels = levelsOf(models, session.pi);
-  const thinking = pending?.kind === "thinking" ? pending.level : session.pi?.thinkingLevel;
+  const levels = session ? levelsOf(models, session.pi) : draft?.model.thinkingLevels ?? [];
+  const thinking = pending?.kind === "thinking" ? pending.level : session?.pi?.thinkingLevel ?? draft?.thinkingLevel;
   const optionId = (index: number) => `${listId}-model-${index}`;
 
   useLayoutEffect(() => {
     setOpen(false);
     setPending(null);
     setError(null);
-  }, [session.sessionId]);
+  }, [scope]);
   useLayoutEffect(() => {
     if (!open) return;
     const place = () => {
@@ -89,19 +93,25 @@ export function ModelPicker({ workbench, session, disabled }: { workbench: ChatW
   }, [open, page]);
 
   const choose = async (choice: Choice) => {
-    if (disabled || pending) return;
-    const target = session.sessionId;
+    if (disabled || pending || catalogOnly) return;
+    if (!session) {
+      const model = choice.kind === "model" ? choice.model : draft?.model;
+      const level = choice.kind === "thinking" ? choice.level
+        : draft?.thinkingLevel && model?.thinkingLevels.includes(draft.thinkingLevel) ? draft.thinkingLevel : undefined;
+      if (workbench.chooseDraftModel(scope, model, level)) setPage("settings");
+      return;
+    }
     setPending(choice);
     setError(null);
     try {
-      const applied = await workbench.setModel(target, choice.kind === "model"
+      const applied = await workbench.setModel(session.sessionId, choice.kind === "model"
         ? { model: { provider: choice.model.provider, id: choice.model.id } }
         : { thinkingLevel: choice.level });
-      if (sessionId.current !== target) return;
+      if (activeScope.current !== scope) return;
       if (applied) setPage("settings");
-      else setError(workbench.failure ?? "Could not update Pi. Try again.");
+      else setError(workbench.failure ?? "Could not update this agent. Try again.");
     } finally {
-      if (sessionId.current === target) setPending(null);
+      if (activeScope.current === scope) setPending(null);
     }
   };
   const chooseModel = (model: PiModel) => {
@@ -117,7 +127,7 @@ export function ModelPicker({ workbench, session, disabled }: { workbench: ChatW
       if (choices[active]) chooseModel(choices[active]);
     }
   };
-  if (!label) return null;
+  if (session && !session.pi?.model && !session.agent) return null;
 
   return (
     <div className="model-picker" ref={root}>
@@ -125,7 +135,7 @@ export function ModelPicker({ workbench, session, disabled }: { workbench: ChatW
         aria-haspopup="dialog" aria-expanded={open && page === "models"} aria-label={`Model: ${label}`} title="Choose model"
         onClick={event => {
           trigger.current = event.currentTarget;
-          setPage("models"); setQuery(""); setError(null); void workbench.loadModels(session.sessionId);
+          setPage("models"); setQuery(""); setError(null); void loadModels();
           setOpen(!open || page !== "models");
         }}>
         <span className="model-picker-label">{label}</span><Icon name="chevronDown" size={11} />
@@ -136,7 +146,7 @@ export function ModelPicker({ workbench, session, disabled }: { workbench: ChatW
         onClick={event => {
           trigger.current = event.currentTarget;
           setPage("settings"); setError(null);
-          void workbench.loadModels(session.sessionId);
+          void loadModels();
           setOpen(!open || page !== "settings");
         }}>
         <span className="model-picker-label"><span className="thinking-full">{thinking ? levelName(thinking) : "Thinking"}</span><span className="thinking-short">{thinking === "medium" ? "Med" : thinking === "minimal" ? "Min" : thinking === "xhigh" ? "XHigh" : thinking ? levelName(thinking) : "Think"}</span></span><Icon name="chevronDown" size={11} />
@@ -165,7 +175,7 @@ export function ModelPicker({ workbench, session, disabled }: { workbench: ChatW
                     ))}
                   </div>
                 ) : <p className="menu-note">{levels[0] ? levelName(levels[0]) : "Not available for this model"}</p>
-                  : <CatalogStatus state={state} retry={() => void workbench.loadModels(session.sessionId)} />}
+                  : <CatalogStatus state={state} retry={() => void loadModels()} />}
               </div>
             </>
           ) : (
@@ -177,6 +187,10 @@ export function ModelPicker({ workbench, session, disabled }: { workbench: ChatW
                   autoComplete="off" autoCapitalize="off" spellCheck={false} maxLength={128} value={query}
                   onChange={event => { setQuery(event.target.value); setHighlighted(0); }} onKeyDown={searchKeys} />
               </div>
+              {catalogOnly ? <p className="menu-note">Claude Code’s advertised models. Choose the model in Claude Code.</p> : null}
+              {!session && !catalogOnly ? <button type="button" className="model-setting-row" onClick={() => {
+                if (workbench.chooseDraftModel(scope)) setPage("settings");
+              }}>Use host default</button> : null}
               <div className="model-results" role="listbox" aria-label="Models" id={listId}>
                 {state?.kind === "loaded" ? groups.length ? groups.map(group => (
                   <div key={group.provider} role="group" aria-label={group.provider}>
@@ -186,7 +200,7 @@ export function ModelPicker({ workbench, session, disabled }: { workbench: ChatW
                       const selected = current?.provider === model.provider && current.id === model.id;
                       return (
                         <button id={optionId(index)} key={model.id} type="button" role="option" tabIndex={-1} aria-selected={selected}
-                          disabled={Boolean(pending)} className={index === active ? "host-menu-item highlighted" : "host-menu-item"}
+                          disabled={Boolean(pending) || catalogOnly} className={index === active ? "host-menu-item highlighted" : "host-menu-item"}
                           onPointerDown={event => event.preventDefault()} onPointerEnter={() => setHighlighted(index)} onClick={() => chooseModel(model)}>
                           <span className="menu-check">{selected ? <Icon name="check" size={14} /> : null}</span>
                           <span className="host-picker-label">{model.name}<small className="model-id">{model.id}</small></span>
@@ -195,7 +209,7 @@ export function ModelPicker({ workbench, session, disabled }: { workbench: ChatW
                     })}
                   </div>
                 )) : <p className="menu-note">No models match “{query}”.</p>
-                  : <CatalogStatus state={state} retry={() => void workbench.loadModels(session.sessionId)} />}
+                  : <CatalogStatus state={state} retry={() => void loadModels()} />}
               </div>
               {state?.kind === "loaded" ? <p className="model-result-count" role="status">{choices.length} {choices.length === 1 ? "model" : "models"}</p> : null}
             </>

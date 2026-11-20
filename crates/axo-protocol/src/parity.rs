@@ -261,6 +261,7 @@ pub const REMOTE_ONLY: &[&str] = &[
     // Stops the turn a client showed running, and no other (RFD0024).
     "axo.remote.session.stop",
     // What the Session's Pi can run and switch to, and switching it (RFD0033).
+    "axo.remote.agents.models",
     "axo.remote.session.commands",
     "axo.remote.session.models",
     "axo.remote.session.model.set",

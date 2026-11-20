@@ -4,6 +4,11 @@ What changed in each published version of Axo. Every publish raises the minor ve
 
 ## Unreleased
 
+## 0.83 (Mac app build 355, axod 99)
+
+- New-chat model catalogs come from the selected host and agent, even with no chats open. Pi, OpenCode and Codex support model selection; Claude Code’s advertised model aliases are browse-only in Axo. Existing chats still use their live catalogs. Browsing does not send a prompt.
+- Model selections are scoped to host and agent. Web and mobile wait for the new Session to confirm the requested model before sending their first message; a failure leaves the draft intact.
+- Use shorter visible composer pills without reducing their tap area.
 - Keep Add on the left of the composer toolbar and group the other controls on the right, including on iPad. Existing Sessions show read-only Host and Agent badges; the Host badge includes the machine icon. Both remain selectable when starting a new Session.
 
 ## 0.82 (Mac app build 354, axod 98)

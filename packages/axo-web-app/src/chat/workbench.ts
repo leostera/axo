@@ -87,6 +87,7 @@ export interface AccountLink {
   closeSession(sessionId: string): void;
   resolveElicitation(hostId: string, elicitationId: string, action: ElicitationAnswer, device: DeviceProof | undefined, sealed?: Sealed): Promise<void>;
   command(method: "axo.remote.agents.list", params: { target: HostRef }): Promise<{ agents: CodingAgent[] }>;
+  command(method: "axo.remote.agents.models", params: { target: HostRef; agent: CodingAgent }): Promise<{ models: PiModel[] }>;
   command(method: "axo.remote.session.create", params: { target: HostRef; agent?: CodingAgent }): Promise<{ session: CreatedSession }>;
   command(method: "axo.remote.session.prompt", params: { target: HostRef; sessionId: string; text: string; commandId: string; attachments?: Attachment[]; delivery?: Delivery }): Promise<unknown>;
   command(method: "axo.remote.session.restart", params: { target: HostRef; sessionId: string }): Promise<unknown>;
@@ -405,6 +406,10 @@ export class ChatWorkbench {
   /** What the Macs ask, by elicitation id, oldest first (RFD0029). */
   private readonly asked = new Map<string, AskedQuestion>();
   private readonly drafts = new Map<string, string>();
+  private readonly draftModelChoices = new Map<string, { model: PiModel; thinkingLevel?: ThinkingLevel }>();
+  private readonly initialModelChoices = new Map<string, { model: PiModel; thinkingLevel?: ThinkingLevel }>();
+  private readonly preparedChats = new Map<string, string>();
+  private draftCatalog: { scope: string; state: Loadable<PiModel> } | null = null;
   private readonly draftFiles = new Map<string, DraftAttachment[]>();
   private readonly listeners = new Set<() => void>();
   private connection: AccountLink | null = null;
@@ -976,7 +981,7 @@ export class ChatWorkbench {
 
   /** The coding agent the new chat starts with. */
   chooseAgent(agent: CodingAgent): void {
-    if (agent === this.newChatAgent || !CODING_AGENTS.some(choice => choice.agent === agent)
+    if (this.isSending || this.selection?.kind !== "new" || agent === this.newChatAgent || !CODING_AGENTS.some(choice => choice.agent === agent)
       || (this.availableCodingAgents !== null && !this.availableCodingAgents.includes(agent))) return;
     this.newChatAgent = agent;
     this.changed();
@@ -1094,17 +1099,28 @@ export class ChatWorkbench {
       const host = this.openHost;
       if (!host || !this.ready()) return { kind: "failed" };
       const target = this.reference(host);
-      let created: CreatedSession;
+      const revision = this.navigationRevision;
+      const connection = this.connection!;
+      const scope = this.draftCatalogScope;
+      const choice = this.draftModelChoice;
       const agent = this.newChatAgent;
+      let created: CreatedSession;
+      const prepared = this.preparedChats.get(scope);
       try {
+        if (prepared) created = { sessionId: prepared };
+        else {
         // Pi is left unsaid, so that a Mac older than the picker still takes the chat.
-        ({ session: created } = await this.connection!.command("axo.remote.session.create",
-          agent === "pi" ? { target } : { target, agent }));
+          ({ session: created } = await connection.command("axo.remote.session.create",
+            agent === "pi" ? { target } : { target, agent }));
+          this.preparedChats.set(scope, created.sessionId);
+        }
       } catch (error) {
         return this.report(`Could not start the chat: ${describe(error)}`);
       }
-      // Listed at once; the host's own listing replaces this when it arrives.
-      this.storeSession({
+      if (this.navigationRevision !== revision || this.selection !== draft || this.connection !== connection
+        || this.draftCatalogScope !== scope || !this.ready()) return { kind: "failed" };
+      // Listed at once; don't overwrite a real listing that arrived during creation.
+      if (!this.openHost?.sessions.some(session => session.sessionId === created.sessionId)) this.storeSession({
         hostId: host.hostId,
         sessionId: created.sessionId,
         epoch: null,
@@ -1124,6 +1140,8 @@ export class ChatWorkbench {
       this.rebuildHosts();
       // The words move to the chat they started; a refusal leaves them in its box.
       const chat: Selection = { kind: "chat", sessionId: created.sessionId };
+      this.preparedChats.delete(scope);
+      if (choice) this.initialModelChoices.set(`${this.agentHostKey}/${created.sessionId}`, choice);
       this.setDraft(this.draft(draft), chat);
       this.setDraft("", draft);
       this.setAttachments(this.attachments(draft), chat);
@@ -1186,6 +1204,30 @@ export class ChatWorkbench {
     const text = this.draft(selection).trim();
     const files = this.attachments(selection);
     if (!host || !this.canSendDraft || !this.ready()) return { kind: "failed" };
+    const initialKey = `${this.agentHostKey}/${selection.sessionId}`;
+    const choice = this.initialModelChoices.get(initialKey);
+    if (choice) {
+      const target = this.reference(host), connection = this.connection!, revision = this.navigationRevision;
+      try {
+        const { models } = await connection.command("axo.remote.session.models", { target, sessionId: selection.sessionId });
+        const current = () => this.navigationRevision === revision && this.connection === connection
+          && this.selection === selection && `${this.agentHostKey}/${selection.sessionId}` === initialKey;
+        if (!current()) return { kind: "failed" };
+        const model = models.find(model => model.provider === choice.model.provider && model.id === choice.model.id);
+        if (!model || (choice.thinkingLevel && !model.thinkingLevels.includes(choice.thinkingLevel)))
+          return this.report("The chosen model or thinking level is unavailable. Your message was not sent.");
+        await connection.command("axo.remote.session.model.set", {
+          target, sessionId: selection.sessionId, model: { provider: model.provider, id: model.id },
+          ...(choice.thinkingLevel ? { thinkingLevel: choice.thinkingLevel } : {}),
+        });
+        if (!current()) return { kind: "failed" };
+        this.initialModelChoices.delete(initialKey);
+        // Re-read the draft only after the exact Session acknowledged configuration.
+        return this.prompt(selection, delivery);
+      } catch (error) {
+        return this.report(`Could not confirm the starting model: ${describe(error)}. Your message was not sent.`);
+      }
+    }
     const chat = this.chat(selection.sessionId);
     const attachments = files.flatMap(file => file.uploaded ? [file.uploaded] : []);
     const pending: PendingPrompt = { id: this.newId(), text, attachments, delivery, state: "sending" };
@@ -1356,6 +1398,47 @@ export class ChatWorkbench {
       (await this.connection!.command("axo.remote.session.commands", { target, sessionId })).commands);
   }
 
+  get draftCatalogScope(): string { return `${this.agentHostKey}/${this.newChatAgent}`; }
+
+  get draftModelChoice() { return this.draftModelChoices.get(this.draftCatalogScope); }
+
+  get draftModels(): Loadable<PiModel> | null {
+    return this.draftCatalog?.scope === this.draftCatalogScope ? this.draftCatalog.state : null;
+  }
+
+  async loadDraftModels(): Promise<void> {
+    const host = this.openHost, connection = this.connection, scope = this.draftCatalogScope;
+    if (this.selection?.kind !== "new" || !host || !connection?.active) return;
+    const request = { scope, state: { kind: "loading" } as Loadable<PiModel> };
+    this.draftCatalog = request;
+    this.changed();
+    try {
+      const { models } = await connection.command("axo.remote.agents.models", { target: this.reference(host), agent: this.newChatAgent });
+      request.state = { kind: "loaded", items: models };
+    } catch (error) {
+      request.state = { kind: "failed", message: (error as { code?: number }).code === -32601
+        ? "Update Axo on this host to list models before starting a chat." : describe(error) };
+    }
+    if (this.draftCatalog === request) {
+      if (this.connection !== connection) this.draftCatalog = null;
+      this.changed();
+    }
+  }
+
+  chooseDraftModel(scope: string, model?: PiModel, thinkingLevel?: ThinkingLevel): boolean {
+    if (this.isSending || this.selection?.kind !== "new" || scope !== this.draftCatalogScope) return false;
+    if (model && this.newChatAgent === "claude-code") return false;
+    if (!model) this.draftModelChoices.delete(scope);
+    else {
+      const actual = this.draftModels?.kind === "loaded"
+        ? this.draftModels.items.find(item => item.provider === model.provider && item.id === model.id) : undefined;
+      if (!actual || (thinkingLevel && !actual.thinkingLevels.includes(thinkingLevel))) return false;
+      this.draftModelChoices.set(scope, { model: actual, thinkingLevel });
+    }
+    this.changed();
+    return true;
+  }
+
   /** Reads the models the chat's Pi can switch to, each time the model menu opens. */
   async loadModels(sessionId: string): Promise<void> {
     await this.load(sessionId, "models", async (target) =>
@@ -1391,6 +1474,10 @@ export class ChatWorkbench {
     if (!host || !this.ready()) return false;
     try {
       await this.connection!.command("axo.remote.session.model.set", { target: this.reference(host), sessionId, ...change });
+      if (change.model) {
+        // An explicit replacement acknowledged by the agent supersedes failed initial intent.
+        this.initialModelChoices.delete(`${host.hostId}/${host.hostGeneration}/${sessionId}`);
+      }
       return true;
     } catch (error) {
       const code = (error as { code?: unknown }).code;

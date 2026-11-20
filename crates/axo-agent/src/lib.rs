@@ -9,6 +9,7 @@
 
 pub mod activity;
 pub mod axo_mcp;
+pub mod catalog;
 mod channel;
 pub mod claude;
 pub mod codex;

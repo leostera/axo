@@ -149,6 +149,11 @@ public struct HostConnection: Sendable {
     try await call("axo.remote.session.commands", SessionTarget(target: host, sessionId: id), as: Commands.self).commands
   }
 
+  /// Model metadata belongs to the selected host and agent, not an existing Session.
+  public func availableModels(for agent: CodingAgent) async throws -> [PiModel] {
+    try await call("axo.remote.agents.models", AgentModelsTarget(target: host, agent: agent), as: Models.self).models
+  }
+
   /// The models the Session's Pi has credentials for, each with the thinking levels it supports.
   public func piModels(in id: SessionID) async throws -> [PiModel] {
     try await call("axo.remote.session.models", SessionTarget(target: host, sessionId: id), as: Models.self).models
@@ -240,6 +245,7 @@ public enum PiControlError {
 // MARK: - Wire shapes
 
 private struct Target: Encodable, Sendable { let target: RemoteHostRef }
+private struct AgentModelsTarget: Encodable, Sendable { let target: RemoteHostRef; let agent: CodingAgent }
 private struct SessionCreateTarget: Encodable, Sendable {
   let target: RemoteHostRef
   let like: SessionID?

@@ -1,7 +1,7 @@
 # RFD0065 - Axo: choose a model before the first message
 
 - Feature Name: `draft-model-selection`
-- Status: Partially implemented — mobile preselection; empty-host discovery and server-wide initialization pending
+- Status: Partially implemented — host catalog and web/mobile preselection; server-wide initialization barrier pending
 - Author: leostera
 - Start Date: 2026-11-17
 - Document Type: Proposal
@@ -14,7 +14,24 @@ to the selected host and its Pi configuration, not the phone, browser, account i
 or an arbitrary existing chat. Catalog inspection must not create a persisted chat or send a
 synthetic prompt. This is a requested product contract, not optional client feature parity.
 
-## Mobile delivery
+## As built in 0.83
+
+Clients call `axo.remote.agents.models` with `target` (host ID and generation) and `agent`,
+never a Session ID. The relay checks account ownership and the daemon checks target generation.
+Axod resolves the installed executable, runs a bounded metadata-only probe, and returns model
+references and only observed thinking levels. CLI output and diagnostics stay on the host. Pi uses
+its CLI without extensions; OpenCode uses its catalog command without attaching to a shared
+server on 2.x. Codex uses an owned stdio app-server and paged `model/list`. Claude Code sends only
+`initialize` in bare, non-persisting stream mode, with tools and configured MCP disabled. Its
+advertised model aliases are browse-only because Axo cannot yet set the model on that adapter.
+A clean-home probe of each installed CLI matched the contract and left no conversation files.
+
+iPhone/iPad and web keep pending choices by host generation and agent. They check model
+availability again in the actual new Session and wait for the set acknowledgement before
+sending. An error retains the original draft; there is no fallback to another model. This is a
+client first-prompt fence, not yet the server-wide barrier described below.
+
+## Earlier mobile delivery (superseded catalog source)
 
 The mobile client can inspect a read-only catalog already announced by a Pi on the selected host,
 without creating, waking, prompting or reconfiguring that existing chat. It checks up to three
@@ -76,7 +93,7 @@ moves the previous host's model choice across machines.
 - After creation, normal model controls address that Session. Preserve existing approval-before-
   Send fences and original-destination dictation; model selection grants no execution authority.
 
-## Agent-specific discovery
+## Agent-specific discovery rationale
 
 Discovery is owned by the host and selected agent, not by a Session. Reuse the executable
 resolution used for launching agents. Separate installed-agent discovery from on-demand model
@@ -88,12 +105,12 @@ context; switching agents must not reuse another agent's catalog or model choice
 | Pi | `pi --list-models` confirms the CLI surface. Prefer the same runtime registry for structured IDs and exact thinking capabilities. |
 | OpenCode | [`opencode models`](https://opencode.ai/docs/cli/commands/). Verify the installed version's output and provider availability semantics. |
 | Codex | Initialize a dedicated app-server connection, page `model/list`, then close it. No `thread/start`, `thread/resume` or `turn/start`. Verify version-dependent authentication behavior before enabling this probe. |
-| Claude Code | [Agent SDK `supportedModels()`](https://platform.claude.com/docs/en/agent-sdk/typescript) is the documented metadata surface. No standalone CLI listing was verified. Enable only after an integration test proves metadata-only initialization requires no prompt, durable conversation, or unintended tool startup. |
+| Claude Code | [Agent SDK `supportedModels()`](https://platform.claude.com/docs/en/agent-sdk/typescript) reads initialization metadata. A bare CLI control handshake can expose the same advertised aliases without a user message. |
 
 Do not trigger sign-in during discovery. When a verified probe is unavailable, keep host default
 available and distinguish unsupported, sign-in required, failure and a genuinely empty catalog.
-These are proposed host adapters, not current support. Existing Sessions still use their actual
-runtime for in-session changes.
+Existing Sessions still use their actual runtime for in-session changes. Catalog membership is not
+proof of provider sign-in or that a Session in a different folder can use that model.
 
 ## Implementation questions
 

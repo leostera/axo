@@ -514,7 +514,7 @@ function Composer({ workbench, voice, placeholder, canCompose, canSend, onSend, 
             }} plugins={Boolean(onApps)} />
             <HostPicker workbench={workbench} />
             <AgentPicker workbench={workbench} />
-            {session ? <ModelPicker workbench={workbench} session={session} disabled={!canSend} /> : <><button type="button" className="model-picker-button" disabled title="The host default applies until this Session starts">Model</button><button type="button" className="model-picker-button" disabled title="The host default applies until this Session starts">Thinking</button></>}
+            <ModelPicker workbench={workbench} session={session} disabled={!canSend || workbench.isSending} />
             {voice ? (
               <button type="button" className="round-button composer-mic"
                 disabled={!canCompose || voice.isBusy} onClick={() => void voice.start()}

@@ -63,7 +63,11 @@ public final class PhoneWorkbench {
   @ObservationIgnored private var voiceCheckpoint: DraftTextStore.Checkpoint?
   public private(set) var draftStorageFailure: String?
   /// Preferences never cross host generations; pending initialization stays with its created chat.
-  private var draftModels: [RemoteHostRef: DraftModelChoice] = [:]
+  private struct CatalogScope: Hashable {
+    let host: RemoteHostRef
+    let agent: CodingAgent
+  }
+  private var draftModels: [CatalogScope: DraftModelChoice] = [:]
   private var initialModels: [Selection: DraftModelChoice] = [:]
   private struct DraftTarget: Hashable {
     let host: RemoteHostRef
@@ -166,18 +170,21 @@ public final class PhoneWorkbench {
   public func modelChoice(for destination: Selection) -> DraftModelChoice? {
     if destination.session != nil { return initialModels[destination] }
     guard let host = hosts.hosts.first(where: { $0.hostId == destination.host }) else { return nil }
-    return draftModels[host.reference]
+    return draftModels[CatalogScope(host: host.reference, agent: newChatAgent)]
   }
 
   /// Picking changes intent only. Even Retry requires an explicit Send, never an automatic prompt.
-  public func chooseModel(_ model: PiModel?, thinkingLevel: ThinkingLevel? = nil, for destination: Selection) {
-    guard !isSending, selection == destination, let current else { return }
+  public func chooseModel(_ model: PiModel?, thinkingLevel: ThinkingLevel? = nil, for destination: Selection,
+    agent: CodingAgent? = nil) {
+    guard !isSending, selection == destination, let current,
+      destination.session != nil || agent == nil || agent == newChatAgent else { return }
+    guard destination.session != nil || newChatAgent != .claudeCode || model == nil else { return }
     let choice = model.flatMap { DraftModelChoice(model: $0, thinkingLevel: thinkingLevel) }
     guard model == nil || choice != nil else { return }
     if destination.session != nil {
       initialModels[destination] = choice
     } else {
-      draftModels[current.reference] = choice
+      draftModels[CatalogScope(host: current.reference, agent: newChatAgent)] = choice
     }
   }
   /// What the Macs' agents ask now, oldest first (RFD0029).
@@ -789,7 +796,7 @@ public final class PhoneWorkbench {
     let revision = navigationRevision
     let agent = newChatAgent
     let target = DraftTarget(host: workbench.reference, place: place, agent: agent)
-    let choice = draftModels[workbench.reference]
+    let choice = draftModels[CatalogScope(host: workbench.reference, agent: agent)]
     let id: SessionID
     if let prepared = preparedChats[target] {
       id = prepared.sessionId

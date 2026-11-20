@@ -52,23 +52,25 @@ struct DraftComposer: View {
   private var pi: ComposerPi? {
     guard let workbench, let destination = phone.selection else { return nil }
     if session == nil || phone.modelChoice(for: destination) != nil {
+      let draftAgent = phone.newChatAgent
       let choice = phone.modelChoice(for: destination)
       return ComposerPi(
         runtime: choice?.runtime,
-        models: session.map { workbench.chat($0).models } ?? workbench.draftModels,
+        models: session.map { workbench.chat($0).models } ?? (workbench.draftModelsAgent == draftAgent ? workbench.draftModels : nil),
         commands: nil,
         loadModels: {
           if let session { await workbench.loadModels(in: session) }
-          else { await workbench.loadDraftModels() }
+          else { await workbench.loadDraftModels(for: draftAgent) }
         },
         loadCommands: {},
         choose: { model in
-          let level = choice.flatMap { model.thinkingLevels.contains($0.thinkingLevel) ? $0.thinkingLevel : nil }
-          phone.chooseModel(model, thinkingLevel: level, for: destination)
+          let level = choice?.thinkingLevel.flatMap { model.thinkingLevels.contains($0) ? $0 : nil }
+          phone.chooseModel(model, thinkingLevel: level, for: destination, agent: draftAgent)
         },
-        chooseLevel: { level in phone.chooseModel(choice?.model, thinkingLevel: level, for: destination) },
-        useDefault: session == nil ? { phone.chooseModel(nil, for: destination) } : nil,
-        modelsFailure: session == nil ? workbench.draftModelsFailure : workbench.failure,
+        chooseLevel: { level in phone.chooseModel(choice?.model, thinkingLevel: level, for: destination, agent: draftAgent) },
+        useDefault: session == nil ? { phone.chooseModel(nil, for: destination, agent: draftAgent) } : nil,
+        modelsFailure: session == nil ? (workbench.draftModelsAgent == draftAgent ? workbench.draftModelsFailure : nil) : workbench.failure,
+        catalogOnly: session == nil && draftAgent == .claudeCode,
         supportsCommands: false)
     }
     guard let session else { return nil }

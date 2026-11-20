@@ -148,6 +148,7 @@ const rpcIdSchema = z.union([
 ]);
 const appRemoteResults = {
   "axo.remote.agents.list": hostV1Results["axo.remote.agents.list"],
+  "axo.remote.agents.models": remoteModelsResultSchema,
   "axo.remote.session.create": remoteSessionCreateResultSchema,
   "axo.remote.session.close": remoteSessionCloseResultSchema,
   "axo.remote.session.rename": remoteLayoutSetResultSchema,

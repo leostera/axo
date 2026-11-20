@@ -200,6 +200,7 @@ export const availableAgentsSchema = z.object({ agents: z.array(z.enum(["pi", "c
 
 export const hostV1Methods = {
   "axo.remote.agents.list": targetSchema,
+  "axo.remote.agents.models": targetSchema.extend({ agent: agentKindSchema }).strict(),
   "axo.host.register": hostRegisterSchema,
   "axo.host.heartbeat": hostHeartbeatSchema,
   "axo.host.sessions.publish": hostSessionsPublishSchema,
@@ -327,6 +328,7 @@ export const remoteTerminalResizeResultSchema = z.object({
 
 export const hostV1Results = {
   "axo.remote.agents.list": availableAgentsSchema,
+  "axo.remote.agents.models": remoteModelsResultSchema,
   "axo.host.register": hostRegisterResultSchema,
   "axo.host.heartbeat": heartbeatResultSchema,
   "axo.host.sessions.publish": sessionsPublishResultSchema,

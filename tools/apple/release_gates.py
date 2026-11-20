@@ -18,7 +18,7 @@ TESTS = [
     "//apple/AxoCompanion:AxoCompanionTests", "//packages/pi-axo:test",
     "//packages/pi-axo:typecheck_tests", "//packages/axo-web-app:test",
     "//packages/axo-api:test", "//packages/axo-api:schema_check", "//crates/axo-relay:axo_relay_tests",
-    "//packages/axo-api-worker:session_sync_test",
+    "//packages/axo-api-worker:session_sync_test", "//crates/axo-agent:axo_agent_tests", "//crates/axo-protocol:axo_protocol_tests",
     "//packages/axo-web-app:composer_browser_test",
     "//packages/axo-web-app:slash_browser_test", "//packages/axo-web-app:elicitations_browser_test",
     "//packages/axo-web-app:sidebar_browser_test", "//specs:recovery_test",

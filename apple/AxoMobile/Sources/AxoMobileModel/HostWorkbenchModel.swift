@@ -68,6 +68,7 @@ public final class HostWorkbenchModel {
   /// A read-only catalog reported by a Pi on this exact host generation; not another chat's settings.
   public private(set) var draftModels: [PiModel]?
   public private(set) var draftModelsFailure: String?
+  public private(set) var draftModelsAgent: CodingAgent?
   @ObservationIgnored private var draftModelsRequest: UUID?
 
   /// Each chat's state. Not observed as a whole: views observe the one `Chat` they show.
@@ -722,38 +723,32 @@ public final class HostWorkbenchModel {
     return chatStore[id]?.commands
   }
 
-  /// Existing daemons keep Pi's announced catalog. Reading it neither wakes nor changes that Pi.
-  /// No catalog yet is an explicit limitation, not permission to invent models or create a chat.
-  public func loadDraftModels() async {
+  /// Host metadata: no Session lookup and no agent turn.
+  public func loadDraftModels(for agent: CodingAgent = .pi) async {
     let request = UUID()
     draftModelsRequest = request
+    draftModelsAgent = agent
     draftModels = nil
     draftModelsFailure = nil
     guard status == .online, link == .connected else {
       draftModelsFailure = "Reconnect to this host to read its models."
       return
     }
-    let candidates = sessions.reversed().filter {
-      $0.hasAgent != false && ($0.status == .ready || $0.status == .working || $0.status == .needsAttention)
-    }.prefix(3)
     do {
-      for session in candidates {
-        try Task.checkCancellation()
-        let models = try await connection.piModels(in: session.sessionId)
-        guard draftModelsRequest == request, status == .online, link == .connected else { return }
-        if !models.isEmpty {
-          draftModels = models
-          return
-        }
-      }
-      guard draftModelsRequest == request else { return }
-      draftModels = []
-      draftModelsFailure = "This host hasn't reported models yet. Open Pi on the host, then retry, or use the host default."
+      let models = try await connection.availableModels(for: agent)
+      guard draftModelsRequest == request, status == .online, link == .connected else { return }
+      draftModels = models
+      if models.isEmpty { draftModelsFailure = "This agent reported no available models." }
     } catch is CancellationError {
     } catch {
       guard draftModelsRequest == request else { return }
       account.noteFailure(error)
-      draftModelsFailure = Self.controlFailure(error)
+      if case AxoClientError.serverRejected(let code, let message) = error {
+        draftModelsFailure = code == -32601
+          ? "Update Axo on this host to list models before starting a chat." : message
+      } else {
+        draftModelsFailure = "Couldn’t read models from this host."
+      }
     }
   }
 
@@ -768,7 +763,7 @@ public final class HostWorkbenchModel {
       let models = try await connection.piModels(in: id)
       chat(id).models = models
       guard let available = models.first(where: { $0.isModel(choice.runtime.model) }),
-        available.thinkingLevels.contains(choice.thinkingLevel)
+        choice.thinkingLevel.map(available.thinkingLevels.contains) ?? true
       else {
         failure = "The chosen model or thinking level isn't available in this chat. Choose another before sending."
         return false
