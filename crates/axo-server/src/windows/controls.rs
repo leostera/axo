@@ -187,6 +187,19 @@ impl Backend {
                     );
                 }
                 let mut r = session.runtime.lock().unwrap();
+                if let Some(runtime_model) = r.model.as_mut() {
+                    if let Some(id) = preferences["model"].as_str() {
+                        if let Some(model) = runtime_model.model.as_mut() {
+                            model.id = id.to_owned();
+                            model.name = id.to_owned();
+                        }
+                    }
+                    if let Some(effort) = preferences["effort"].as_str() {
+                        if let Ok(level) = serde_json::from_value(json!(if effort == "none" { "off" } else { effort })) {
+                            runtime_model.thinking_level = level;
+                        }
+                    }
+                }
                 if r.status == Some(SessionStatus::Working) && r.turn.is_none() {
                     r.turn = result["turn"]["id"].as_str().map(str::to_owned);
                 }
@@ -329,8 +342,11 @@ impl Backend {
         if name == "axo.session.models" {
             return Ok(json!({"models":models}));
         }
-        let model = params.get("model").filter(|v| !v.is_null());
         let effort = params.get("effort").filter(|v| !v.is_null());
+        let current_model = s.runtime.lock().unwrap().model.as_ref()
+            .and_then(|runtime| runtime.model.as_ref()).map(|model| json!(model.id));
+        let model = params.get("model").filter(|v| !v.is_null())
+            .or_else(|| effort.and(current_model.as_ref()));
         if let Some(model) = model {
             let offered = models
                 .iter()

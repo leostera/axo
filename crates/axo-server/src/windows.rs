@@ -84,6 +84,7 @@ const METHODS: &[&str] = &[
 
 #[derive(Default)]
 struct Runtime {
+    model: Option<axo_protocol::PiRuntime>,
     generation: u64,
     agent: Option<Arc<Codex>>,
     status: Option<SessionStatus>,
@@ -401,6 +402,22 @@ fn command_approval_message(params: &Value) -> Option<String> {
     Some(lines.join("\n\n"))
 }
 
+fn codex_runtime_model(response: &Value) -> Option<axo_protocol::PiRuntime> {
+    let id = response["model"].as_str().filter(|id| !id.is_empty())?;
+    let thinking_level = match response["reasoningEffort"].as_str()? {
+        "none" => axo_protocol::ThinkingLevel::Off,
+        effort => serde_json::from_value(json!(effort)).ok()?,
+    };
+    Some(axo_protocol::PiRuntime {
+        model: Some(axo_protocol::PiModelRef {
+            provider: "codex".into(),
+            id: id.into(),
+            name: id.into(),
+        }),
+        thinking_level,
+    })
+}
+
 fn invalid(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, message)
 }
@@ -531,7 +548,7 @@ impl Backend {
             "status":if attention {SessionStatus::NeedsAttention} else {runtime.status.unwrap_or(SessionStatus::Ready)},"error":runtime.error,
             "connected":runtime.agent.as_ref().is_some_and(|a| a.is_alive()),
             "agentProcessId":runtime.agent.as_ref().map(|a|a.process_id()),
-            "threadId":thread,
+            "threadId":thread,"pi":runtime.model.as_ref().filter(|_| runtime.agent.as_ref().is_some_and(|a| a.is_alive())),
             "pendingRequests":pending,"eventSequence":runtime.sequence}),
         )
     }
@@ -1090,6 +1107,7 @@ impl Backend {
                 "Codex exited while opening the Session",
             ));
         }
+        runtime.model = codex_runtime_model(&result);
         runtime.agent = Some(agent.clone());
         runtime.status = Some(SessionStatus::Ready);
         runtime.error = None;
