@@ -24,6 +24,8 @@ const AT_ONCE: Duration = Duration::from_millis(150);
 
 struct Host {
     transcript: PathBuf,
+    archived: bool,
+    eviction_calls: AtomicUsize,
     catalog_reads: AtomicUsize,
     round: AtomicU64,
 }
@@ -42,7 +44,7 @@ impl SyncStore for Host {
                 agent: None,
                 created_at: None,
                 last_message_at: None,
-                archived: false,
+                archived: self.archived,
                 workspace_state: None,
                 pi: None,
             },
@@ -65,6 +67,7 @@ impl SyncStore for Host {
         _: SyncCursor,
         _: u64,
     ) -> HostFuture<'_, io::Result<Eviction>> {
+        self.eviction_calls.fetch_add(1, Ordering::SeqCst);
         Box::pin(std::future::ready(Ok(Eviction::Kept)))
     }
     fn next_round(&self) -> HostFuture<'_, io::Result<u64>> {
@@ -101,6 +104,8 @@ impl World {
             .unwrap();
         let host = Arc::new(Host {
             transcript,
+            archived: false,
+            eviction_calls: AtomicUsize::new(0),
             catalog_reads: AtomicUsize::new(0),
             round: AtomicU64::new(0),
         });
@@ -201,6 +206,62 @@ fn answer(message: &Value, received: &Mutex<Received>) -> Option<Value> {
         }
         _ => message.get("id").map(|_| json!({})),
     }
+}
+
+#[test]
+fn acknowledged_archive_stays_on_disk_before_reopen() {
+    let path = transcript_path("archive-retention");
+    write_record(&path, 1);
+    let original = std::fs::read(&path).unwrap();
+    let host = Arc::new(Host {
+        transcript: path.clone(),
+        archived: true,
+        eviction_calls: AtomicUsize::new(0),
+        catalog_reads: AtomicUsize::new(0),
+        round: AtomicU64::new(0),
+    });
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let channel = RelayChannel::new();
+        let AttachedSocket { mut outgoing, .. } = channel.attach();
+        let received = Arc::new(Mutex::new(Received::default()));
+        let replies = channel.clone();
+        let seen = received.clone();
+        tokio::spawn(async move {
+            while let Some(msg) = outgoing.recv().await {
+                let req: Value = serde_json::from_str(&msg.text).unwrap();
+                if let Some(result) = answer(&req, &seen) {
+                    replies.resolve(&json!({"id": req["id"], "result": result}));
+                }
+            }
+        });
+        let identity = HostIdentity {
+            host_id: "36bc9f8c-8a79-4885-9ca8-a1a271ccdcfe".into(),
+            host_generation: "f9c5761c-3b2d-42a8-bb19-9a8c0b8cf230".into(),
+        };
+        let mut uploader = super::uploader::Uploader::new(
+            host.clone(),
+            identity,
+            channel,
+            Arc::new(super::watch::TranscriptWatch::new().unwrap()),
+        );
+        for _ in 0..8 {
+            if matches!(uploader.turn(false).await, super::uploader::Next::Idle) {
+                assert_eq!(received.lock().unwrap().appended, 1);
+                assert_eq!(
+                    host.eviction_calls.load(Ordering::SeqCst),
+                    0,
+                    "acknowledgement is not a backup"
+                );
+                assert_eq!(std::fs::read(&path).unwrap(), original);
+                return;
+            }
+        }
+        panic!("uploader did not settle after the archive was acknowledged");
+    });
 }
 
 fn transcript_path(name: &str) -> PathBuf {
