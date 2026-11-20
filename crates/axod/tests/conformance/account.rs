@@ -205,14 +205,30 @@ fn other_macs_are_none_without_an_account() {
 }
 
 #[test]
-fn only_axods_own_tools_fetch_assets_or_ask_for_input() {
+fn asset_fetch_and_input_intents_keep_their_platform_boundaries() {
     let axod = Axod::start();
     let session = axod.new_session()["id"].clone();
     let fetch = axod.err("axo.assets.fetch", json!({ "attachments": [] }));
     assert!(fetch.message.contains("only axod"), "{fetch:?}");
-    let input = axod.err(
-        "axo.computer.input",
-        json!({ "sessionId": session, "args": {} }),
-    );
-    assert!(input.code < 0 && input.code != INVALID_PARAMS, "{input:?}");
+    #[cfg(not(target_os = "linux"))]
+    {
+        let input = axod.err(
+            "axo.computer.input",
+            json!({ "sessionId": session, "args": {} }),
+        );
+        assert!(input.code < 0 && input.code != INVALID_PARAMS, "{input:?}");
+    }
+    #[cfg(target_os = "linux")]
+    {
+        // Linux admits a receipt-only intent, not a signed caller or an answer.
+        // Malformed intents cannot request fields, carry values, or fill anything.
+        for args in [json!({}), json!({"values":{"f0":"owned test value"}})] {
+            let input = axod.ok(
+                "axo.computer.input",
+                json!({"sessionId":session,"args":args}),
+            );
+            assert_eq!(input["isError"], true, "{input}");
+            assert_eq!(input["structuredContent"]["filled"], false, "{input}");
+        }
+    }
 }
