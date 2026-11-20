@@ -74,7 +74,9 @@ async function failWithContext(page, error, context) {
 
 test("browser chats with Axo on a Mac: history, live replies, new chats, info, account and pairing", {
   skip: !existsSync(chromePath) && "Set CHROME_PATH to a Chrome/Chromium executable to run this browser acceptance test",
-  timeout: 60_000,
+  // Many independent functional flows share this case. Keep operation deadlines
+  // unchanged, but leave headroom beyond the observed near-60s cold headless run.
+  timeout: 90_000,
 }, async () => {
   const sessions = [listed({
     sessionId: sid(1),
@@ -560,6 +562,7 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     page.on("console", (message) => context.browserMessages.push(`${message.type()}: ${message.text()}`));
     // AXO_WEB_SHOTS=<dir> keeps a picture of each step, to compare with the phone's.
     const shot = async (name) => {
+      console.log(`browser acceptance stage: ${name}`);
       if (process.env.AXO_WEB_SHOTS) await page.screenshot({ path: resolve(process.env.AXO_WEB_SHOTS, `web-${name}.png`) });
     };
     const expect = (locator) => locator.waitFor({ timeout: 10_000 }).catch((error) => failWithContext(page, error, context));
