@@ -81,7 +81,7 @@ test("a HostDO ignores the client sockets another release left on it, and closes
 
 /** How many schema steps each object has in this release. */
 const HOST_STEPS = 12;
-const SESSION_STEPS = 4;
+const SESSION_STEPS = 5;
 const version = (h: Harness, className: string) =>
   objectRows<{ version: number }>(h, className, "SELECT version FROM schema_version").map((row) => row.version);
 const hasTable = (h: Harness, className: string, table: string) =>

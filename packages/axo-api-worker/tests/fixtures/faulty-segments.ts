@@ -17,13 +17,19 @@ export type SegmentFaults = {
   failGet: number;
   /** The next this many PUTs of a segment store other bytes than those sent. */
   corruptPut: number;
+  /** The most cut records the object keeps, in place of its real limit. */
+  cutLimit: number | null;
 };
 
 export class AxoSessionDO extends ReleaseSessionDO {
-  private readonly faults: SegmentFaults = { offline: false, loseAnswer: 0, failGet: 0, corruptPut: 0 };
+  private readonly faults: SegmentFaults = { offline: false, loseAnswer: 0, failGet: 0, corruptPut: 0, cutLimit: null };
 
   async injectFaults(faults: Partial<SegmentFaults>): Promise<void> {
     Object.assign(this.faults, faults);
+  }
+
+  protected override cutKeepLimit(): number {
+    return this.faults.cutLimit ?? super.cutKeepLimit();
   }
 
   protected override segments(): R2Bucket | undefined {

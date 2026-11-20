@@ -147,12 +147,13 @@ test("without the SESSIONS bucket, a SessionDO arms nothing and stores nothing",
   assert.equal(status.enabled, false);
   assert.equal(status.dueAt, null);
   assert.equal(status.stored, 0);
-  // A cut works as before: nothing is moved aside and nothing is armed.
+  // A cut keeps what it deletes, for R2 to take once a bucket is bound; nothing is armed.
   assert.equal((await s.truncate(4, transcript.chainAt(4)!)).outcome, "truncated");
   const cut = await s.status();
-  assert.equal(cut.cutRecords, 0);
+  assert.equal(cut.cutRecords, 6);
   assert.equal(cut.dueAt, null);
   assert.equal(cut.count, 4);
+  assert.deepEqual(cut.epochs.map((e) => [e.epoch, e.keep, e.last]), [[1, 0, 10], [2, 4, 4]]);
 });
 
 test("a commit arms storing for an hour later; R2 gets one header and one segment, read back equal, and every line stays", async (t) => {
@@ -280,7 +281,7 @@ test("a cut before R2 has the lines keeps them; both epochs restore from R2 alon
   const cut = await s.truncate(25, first.chainAt(25)!);
   assert.equal(cut.outcome, "truncated");
   const kept = await s.status();
-  assert.equal(kept.cutRecords, 40, "every record of epoch 1 R2 lacks is kept aside");
+  assert.equal(kept.cutRecords, 15, "every record the cut deleted is kept aside; the 25 it kept stay where they are");
   const second = await file(s.binding, [...piLines(40).slice(0, 25), ...piLines(30, "b", "e24")]);
   await upload(s, second, 26, 2);
 
@@ -308,7 +309,7 @@ test("a cut between a segment's store and its read-back keeps the lines until R2
 
   const cut = await s.truncate(10, first.chainAt(10)!);
   assert.equal(cut.outcome, "truncated");
-  assert.equal((await s.status()).cutRecords, 30);
+  assert.equal((await s.status()).cutRecords, 20);
   const second = await file(s.binding, [...piLines(30).slice(0, 10), ...piLines(5, "b", "e9")]);
   await upload(s, second, 11, 2);
 
@@ -401,4 +402,47 @@ test("a restore refuses a gap, a changed line and a header that is not its line"
     const h = o.get(prefix + "epoch-1/header.json")!;
     h.text = h.text.replace('\\"cwd\\":\\"/w\\"', '\\"cwd\\":\\"/x\\"');
   }), prefix, 1), /headerHash/);
+});
+
+test("a cut below an earlier cut keeps each deleted record for the epoch that stores it, and all three epochs restore", async (t) => {
+  const h = await harness({ r2: ["SESSIONS"] });
+  t.after(() => h.close());
+  const s = await session(h);
+  const first = await file(s.binding, piLines(40));
+  await upload(s, first, 1);
+  assert.equal((await s.truncate(25, first.chainAt(25)!)).outcome, "truncated");
+  const second = await file(s.binding, [...piLines(40).slice(0, 25), ...piLines(10, "b", "e24")]);
+  await upload(s, second, 26, 2);
+  // Below the first cut: records 11-25 belong to epoch 1, 26-35 to epoch 2.
+  assert.equal((await s.truncate(10, second.chainAt(10)!)).outcome, "truncated");
+  assert.equal((await s.status()).cutRecords, 15 + 15 + 10);
+  const third = await file(s.binding, [...piLines(40).slice(0, 10), ...piLines(5, "c", "e9")]);
+  await upload(s, third, 11, 3);
+
+  await s.arm();
+  const status = await until(s, (st) => settled(st) && st.stored === 15, "all three epochs stored");
+  assert.equal(status.cutRecords, 0);
+  sameAs(await restored(h, s, status.generation, 1), first);
+  sameAs(await restored(h, s, status.generation, 2), second);
+  sameAs(await restored(h, s, status.generation, 3), third);
+});
+
+test("a cut that would keep more than the limit is refused and deletes nothing", async (t) => {
+  const h = await harness({ entry: FAULTY });
+  t.after(() => h.close());
+  const s = await session(h);
+  const transcript = await file(s.binding, piLines(20));
+  await upload(s, transcript, 1);
+  const bytes = transcript.records.slice(10).reduce((total, record) => total + new TextEncoder().encode(record.line).byteLength, 0);
+  await s.faults({ cutLimit: bytes - 1 });
+  await assert.rejects(s.truncate(10, transcript.chainAt(10)!));
+  const refused = await s.status();
+  assert.equal(refused.count, 20);
+  assert.equal(refused.epoch, 1);
+  assert.equal(refused.cutRecords, 0);
+  assert.deepEqual(await lines(s), transcript.records.map((record) => record.line));
+  // At the limit exactly, it goes.
+  await s.faults({ cutLimit: bytes });
+  assert.equal((await s.truncate(10, transcript.chainAt(10)!)).outcome, "truncated");
+  assert.equal((await s.status()).cutRecords, 10);
 });

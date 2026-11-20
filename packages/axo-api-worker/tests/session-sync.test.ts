@@ -10,7 +10,8 @@ import {
 import { sessionMetadataSchema } from "@axo/protocol";
 import { withoutWorkspace } from "../src/stored-metadata";
 import { Peer } from "../testing/client";
-import { harness, signIn, type AccountSession, type Harness } from "./harness";
+import { resolve } from "node:path";
+import { harness, root, signIn, type AccountSession, type Harness } from "./harness";
 import { objectRows } from "./storage";
 import { FakeTranscript, assistantMessage, connectClient, connectHost, pairHost, userMessage, type PairedHost } from "./account-support";
 
@@ -41,8 +42,8 @@ async function call<T>(peer: Peer, method: string, params: unknown, schema?: { p
 type Fixture = { h: Harness; session: AccountSession; host: PairedHost; daemon: Peer; transcript: FakeTranscript; round: number };
 
 /** A paired, connected host with one synced Session of `lines` records. */
-async function fixture(t: { after(fn: () => unknown): void }, lines = 3, r2: string[] = []): Promise<Fixture> {
-  const h = await harness({ r2 });
+async function fixture(t: { after(fn: () => unknown): void }, lines = 3, r2: string[] = [], entry?: string): Promise<Fixture> {
+  const h = await harness({ r2, entry });
   t.after(() => h.close());
   const session = await signIn(h);
   const host = await pairHost(h, session);
@@ -602,4 +603,42 @@ test("with R2 bound, appends and handshakes say how many records R2 gave back; w
   assert.equal(cut.outcome, "truncated");
   const after = await sync(6) as { stored?: number; count: number };
   assert.ok(after.stored === undefined || after.stored < 4, JSON.stringify(after));
+});
+
+/** The SessionDO behind a fixture's Session, as the HostDO names it. */
+async function sessionObject(f: Fixture) {
+  const namespace = (await f.h.mf.getDurableObjectNamespace("TEST_SESSION_HISTORY")) as unknown as {
+    idFromName(name: string): unknown;
+    get(id: unknown): { storage(b: unknown): Promise<unknown>; injectFaults?(faults: unknown): Promise<void> };
+  };
+  const object = namespace.get(namespace.idFromName(`${f.session.accountId}:${f.host.hostId}:${f.transcript.sessionId}`));
+  const binding = { accountId: f.session.accountId, hostId: f.host.hostId, sessionId: f.transcript.sessionId };
+  return {
+    status: async () => JSON.parse(JSON.stringify(await object.storage(binding))) as { count: number; epoch: number; cutRecords: number },
+    faults: (faults: unknown) => object.injectFaults!(faults),
+  };
+}
+
+test("an old Mac's cut over the wire, with no R2 bound, keeps every record it deletes (RFD0044)", async (t) => {
+  const f = await fixture(t, 5);
+  // Exactly what an axod from before RFD0044 sends.
+  const cut = await call(f.daemon, "axo.host.session.truncate", { sessionId: f.transcript.sessionId, round: 1, keep: 2, expectedChain: f.transcript.transcript.chainAt(2) }, truncateResultSchema);
+  assert.deepEqual(cut, { round: 1, outcome: "truncated", epoch: 2, count: 2, chain: f.transcript.transcript.chainAt(2) }, "the answer is as it always was");
+  const status = await (await sessionObject(f)).status();
+  assert.deepEqual([status.epoch, status.count, status.cutRecords], [2, 2, 3]);
+});
+
+test("a cut past the limit of kept records fails the call, deletes nothing, and the Mac can sync again (RFD0044)", async (t) => {
+  const f = await fixture(t, 5, [], resolve(root, "packages/axo-api-worker/tests/fixtures/faulty-segments.ts"));
+  const object = await sessionObject(f);
+  await object.faults({ cutLimit: 1 });
+  const reply = await f.daemon.call("axo.host.session.truncate", { sessionId: f.transcript.sessionId, round: 1, keep: 2, expectedChain: f.transcript.transcript.chainAt(2) });
+  assert.ok("error" in reply, `refused as an error, which axod retries after its handshake delay: ${JSON.stringify(reply)}`);
+  const status = await object.status();
+  assert.deepEqual([status.epoch, status.count, status.cutRecords], [1, 5, 0]);
+  // The host is still served: its handshake answers, and appends go on.
+  const known = await call(f.daemon, "axo.host.sync", { hostId: f.host.hostId, hostGeneration: f.host.hostGeneration, round: 2, sessions: [f.transcript.manifestRow()] }, hostSyncResultSchema);
+  assert.equal((known.sessions[0] as { count: number }).count, 5);
+  await f.transcript.write(userMessage("six"));
+  assert.equal((await append(f.daemon, f.transcript, 6)).outcome, "committed");
 });

@@ -101,6 +101,12 @@ const TRANSLATE_RECORDS = 2048;
 const TRANSLATE_BYTES = 16 * 1_048_576;
 /** Lines read back per query when rebuilding the stream. */
 const REPLAY_PAGE = 256;
+/**
+ * The most a SessionDO keeps of what cuts deleted and R2 has not given back. A cut that would
+ * keep more is refused, deleting nothing: past this the object nears its storage limit, and a
+ * cut must never be the write that fails half way.
+ */
+export const CUT_KEEP_MAX_BYTES = 2 * 1024 * 1024 * 1024;
 /** How long after the first record R2 lacks its alarm stores it (RFD0044, commitArms). */
 export const STORE_DELAY_MS = 60 * 60 * 1000;
 /** The longest wait between tries after R2 failed. */
@@ -186,6 +192,10 @@ const SESSION_SCHEMA: readonly SchemaStep[] = [
       hash TEXT NOT NULL, chain TEXT NOT NULL, line TEXT, atxf TEXT, PRIMARY KEY (epoch, cursor))`);
     sql.exec(`CREATE TABLE IF NOT EXISTS storage_cut_parts (epoch INTEGER NOT NULL, cursor INTEGER NOT NULL, kind TEXT NOT NULL,
       idx INTEGER NOT NULL, data TEXT NOT NULL, PRIMARY KEY (epoch, cursor, kind, idx))`);
+  },
+  (sql) => {
+    // A cut keeps what it deletes with or without R2 (cutKeepsUnstored); its size bounds the side table.
+    addColumns(sql, "storage_cut", { bytes: "INTEGER NOT NULL DEFAULT 0" });
   },
 ];
 
@@ -325,9 +335,9 @@ export class AxoSessionDO extends DurableObject<Env> {
    */
   async truncate(binding: SessionBinding, keep: number, expectedChain: string, fence: number): Promise<StoreTruncateResult> {
     if (!this.owns(binding)) throw new Error("Session identity conflict");
-    // The epoch being cut is stored as ATXF from the side table, so its lines are translated first,
-    // while the stream that read them still can (RFD0044, cutKeepsUnstored). A line ATXF refuses
-    // stops this, and the lines from it on stay in the side table.
+    // The epoch being cut is stored as ATXF from the side table, so with a bucket its lines are
+    // translated first, while the stream that read them still can (RFD0044, cutKeepsUnstored). A
+    // line ATXF refuses stops this, and the lines from it on stay in the side table.
     if (this.segments()) while (this.translate(TRANSLATE_RECORDS, TRANSLATE_BYTES));
     const result = this.ctx.storage.transactionSync((): StoreTruncateResult => {
       const transcript = this.transcript();
@@ -527,27 +537,57 @@ export class AxoSessionDO extends DurableObject<Env> {
   }
 
   /**
-   * Moves aside every record of the epoch being cut that R2 has not given back (RFD0044,
-   * cutKeepsUnstored), records where the epoch ended, and starts the next one's row. Runs in the
-   * cut's transaction, before anything is deleted. Without a bucket a cut deletes as it did before
-   * RFD0044: keeping cuts with no R2 to take them is a change of its own.
+   * Keeps every record the cut deletes that R2 has not given back (RFD0044, cutKeepsUnstored),
+   * with or without a bucket, records where the epoch ended, and starts the next one's row. Runs
+   * in the cut's transaction, before anything is deleted.
+   *
+   * Each deleted record is kept for the epoch that stores it: the oldest epoch it belongs to past
+   * that epoch's own `keep` (a child stores only what comes after the records it shares with its
+   * parent). A record that stays in `records` is not copied: it is read from there, and copied by
+   * whichever later cut deletes it. Throws, so the cut deletes nothing, if the side table would
+   * grow past `cutKeepLimit()`.
    */
   private keepForStorage(epoch: number, next: number, keep: number): void {
     const sql = this.ctx.storage.sql;
-    if (!this.segments()) return;
     this.ensureEpoch(epoch);
-    const row = sql.exec<StorageEpoch>("SELECT * FROM storage_epochs WHERE epoch = ?", epoch).one();
-    const from = row.verified;
-    sql.exec(`INSERT OR IGNORE INTO storage_cut (epoch, cursor, hash, chain, line, atxf)
-      SELECT ?, cursor, hash, chain, line, atxf FROM records WHERE cursor > ?`, epoch, from);
-    sql.exec(`INSERT OR IGNORE INTO storage_cut_parts (epoch, cursor, kind, idx, data)
-      SELECT ?, cursor, 'line', idx, data FROM record_parts WHERE cursor > ?`, epoch, from);
-    sql.exec(`INSERT OR IGNORE INTO storage_cut_parts (epoch, cursor, kind, idx, data)
-      SELECT ?, cursor, 'atxf', idx, data FROM atxf_parts WHERE cursor > ?`, epoch, from);
-    sql.exec("UPDATE storage_epochs SET last = ?, translated = MIN(?, ?) WHERE epoch = ?", this.count(), this.translation()?.atxf_through ?? 0, this.count(), epoch);
+    const count = this.count();
+    const rows = new Map(sql.exec<StorageEpoch>("SELECT * FROM storage_epochs").toArray().map((row) => [row.epoch, row]));
+    // Walk from the epoch being cut to its oldest ancestor: each owns (its keep, the child's keep].
+    const owned: Array<{ owner: number; from: number; to: number }> = [];
+    for (let owner = rows.get(epoch), upTo = count; owner !== undefined; ) {
+      const from = Math.max(keep, owner.keep, owner.verified);
+      if (upTo > from) owned.push({ owner: owner.epoch, from, to: upTo });
+      if (owner.keep <= keep || owner.parent === null) break;
+      upTo = owner.keep;
+      owner = rows.get(owner.parent);
+    }
+    let adding = 0;
+    for (const range of owned) {
+      adding += sql.exec<{ bytes: number | null }>(
+        `SELECT SUM(bytes) AS bytes FROM records WHERE cursor > ? AND cursor <= ?
+           AND cursor NOT IN (SELECT cursor FROM storage_cut WHERE epoch = ?)`, range.from, range.to, range.owner).one().bytes ?? 0;
+    }
+    const held = sql.exec<{ bytes: number | null }>("SELECT SUM(bytes) AS bytes FROM storage_cut").one().bytes ?? 0;
+    if (adding > 0 && held + adding > this.cutKeepLimit()) {
+      console.error(JSON.stringify({ event: "session.cut_refused", keep, count, held, adding }));
+      throw new Error(`cut refused: keeping ${adding} more bytes of cut records would pass this Session's limit (${held} held)`);
+    }
+    for (const { owner, from, to } of owned) {
+      sql.exec(`INSERT OR IGNORE INTO storage_cut (epoch, cursor, hash, chain, line, atxf, bytes)
+        SELECT ?, cursor, hash, chain, line, atxf, bytes FROM records WHERE cursor > ? AND cursor <= ?`, owner, from, to);
+      for (const [kind, table] of [["line", "record_parts"], ["atxf", "atxf_parts"]] as const)
+        sql.exec(`INSERT OR IGNORE INTO storage_cut_parts (epoch, cursor, kind, idx, data)
+          SELECT ?, cursor, '${kind}', idx, data FROM ${table} WHERE cursor > ? AND cursor <= ?`, owner, from, to);
+    }
+    sql.exec("UPDATE storage_epochs SET last = ?, translated = MIN(?, ?) WHERE epoch = ?", count, this.translation()?.atxf_through ?? 0, count, epoch);
     // The next epoch's first `keep` records are its parent's, which stores them.
     sql.exec("INSERT OR IGNORE INTO storage_epochs (epoch, keep, parent, through, verified) VALUES (?, ?, ?, ?, ?)", next, keep, epoch, keep, keep);
     this.armStore();
+  }
+
+  /** The most cut records this object keeps; a test makes it small. */
+  protected cutKeepLimit(): number {
+    return CUT_KEEP_MAX_BYTES;
   }
 
   /** How far an epoch goes, and how far it is translated: live for the current one, as cut for the others. */
@@ -583,14 +623,18 @@ export class AxoSessionDO extends DurableObject<Env> {
     return null;
   }
 
-  /** Sizes of an epoch's records in a range: the current epoch's from `records`, a cut one's from the side table. */
+  /**
+   * Sizes of an epoch's records in a range. The current epoch's are in `records`; a cut one's are
+   * in the side table, or, for those it shares with every later epoch, still in `records`.
+   */
   private storableRows(epoch: number, current: number, from: number, to: number): Array<{ cursor: number; bytes: number }> {
     const sql = this.ctx.storage.sql;
     if (epoch === current) return sql.exec<{ cursor: number; bytes: number }>("SELECT cursor, bytes FROM records WHERE cursor BETWEEN ? AND ? ORDER BY cursor", from, to).toArray();
     return sql.exec<{ cursor: number; bytes: number }>(
-      `SELECT cursor, LENGTH(CAST(COALESCE(line, (SELECT GROUP_CONCAT(data, '') FROM (SELECT data FROM storage_cut_parts p
-         WHERE p.epoch = c.epoch AND p.cursor = c.cursor AND p.kind = 'line' ORDER BY idx))) AS BLOB)) AS bytes
-       FROM storage_cut c WHERE epoch = ? AND cursor BETWEEN ? AND ? ORDER BY cursor`, epoch, from, to).toArray();
+      `SELECT cursor, bytes FROM storage_cut WHERE epoch = ? AND cursor BETWEEN ? AND ?
+       UNION ALL SELECT cursor, bytes FROM records WHERE cursor BETWEEN ? AND ?
+         AND cursor NOT IN (SELECT cursor FROM storage_cut WHERE epoch = ?)
+       ORDER BY cursor`, epoch, from, to, from, to, epoch).toArray();
   }
 
   /** One epoch's records in a range, as committed: line, ATXF, hash and chain. */
@@ -603,9 +647,15 @@ export class AxoSessionDO extends DurableObject<Env> {
     }
     const cutParts = (cursor: number, kind: string) => sql.exec<{ data: string }>(
       "SELECT data FROM storage_cut_parts WHERE epoch = ? AND cursor = ? AND kind = ? ORDER BY idx", epoch, cursor, kind).toArray().map((row) => row.data).join("");
-    return sql.exec<{ cursor: number; line: string | null; atxf: string | null; chain: string }>(
-      "SELECT cursor, line, atxf, chain FROM storage_cut WHERE epoch = ? AND cursor BETWEEN ? AND ? ORDER BY cursor", epoch, from, to).toArray()
-      .map((row) => ({ cursor: row.cursor, chain: row.chain, line: row.line ?? cutParts(row.cursor, "line"), atxf: row.atxf ?? cutParts(row.cursor, "atxf") }));
+    // Kept aside, or shared with every later epoch and still in `records` (see keepForStorage).
+    return sql.exec<{ cursor: number; line: string | null; atxf: string | null; chain: string; kept: number }>(
+      `SELECT cursor, line, atxf, chain, 1 AS kept FROM storage_cut WHERE epoch = ? AND cursor BETWEEN ? AND ?
+       UNION ALL SELECT cursor, line, atxf, chain, 0 AS kept FROM records WHERE cursor BETWEEN ? AND ?
+         AND cursor NOT IN (SELECT cursor FROM storage_cut WHERE epoch = ?)
+       ORDER BY cursor`, epoch, from, to, from, to, epoch).toArray()
+      .map((row) => row.kept === 1
+        ? { cursor: row.cursor, chain: row.chain, line: row.line ?? cutParts(row.cursor, "line"), atxf: row.atxf ?? cutParts(row.cursor, "atxf") }
+        : { cursor: row.cursor, chain: row.chain, line: row.line ?? this.parts(row.cursor), atxf: row.atxf ?? this.parts(row.cursor, "atxf_parts") });
   }
 
   /** The object a unit is: its key, bytes and metadata, built from what this object holds, the same on every try. */
