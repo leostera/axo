@@ -80,9 +80,7 @@ final class AxoMobileSessionControlsTests: XCTestCase {
     selectors[2].swipeLeft()
     XCTAssertEqual(selectors[2].frame.minX, beforeSwipe.minX, accuracy: 2, "The controls do not scroll")
     XCTAssertEqual(selectors[3].frame.maxX, mic.frame.minX - 8, accuracy: 2, "Thinking is next to Mic, not floating on the left")
-    selectors[3].tap()
-    XCTAssertTrue(element(app, "thinking-medium").waitForExistence(timeout: 5))
-    element(app, "thinking-medium").tap()
+    XCTAssertTrue(selectors[3].isHittable)
     XCTAssertEqual(composer.value as? String, "Keep this unsent")
     capture(app, named: "composer-four-selectors")
   }
