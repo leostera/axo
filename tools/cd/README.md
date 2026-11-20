@@ -5,7 +5,7 @@ with Cloudflare Workers Builds. Nothing else deploys them.
 
 ## What deploys
 
-| Service | Worker | Serves | Config | Deploys on changes to |
+| Service | Worker | Serves | Config | Deploys on changes to (`service_paths` in `common.sh`) |
 |---|---|---|---|---|
 | Axo web, API and relay | `axo-public-app` | `axo.leostera.dev` | `sites/axo.leostera.dev/cloudflare.config.ts` | `sites/axo.leostera.dev`, `packages/axo-api-worker`, `packages/axo-api`, `packages/axo-web-app`, `packages/axo-app`, `packages/axo-apps`, `packages/pi-axo`, `assets`, the workspace files, `tools/cd` |
 | AXP specification | `axp-www` | `axp.leostera.dev` | `sites/axp.leostera.dev/cloudflare.config.ts` | `sites/axp.leostera.dev`, `axp`, the workspace files, `tools/cd` |
@@ -23,7 +23,11 @@ here, since they live in Cloudflare.
 
 ## A push
 
-1. Workers Builds clones the commit and runs `tools/cd/build.sh <service>`:
+1. Workers Builds starts both services on every push and runs `tools/cd/build.sh <service>`:
+   - **Affected.** It compares the commit with the one the live version is tagged with, over the
+     paths the service is built from. Unchanged, it stops, and the deploy step does nothing. A
+     live version without a commit tag counts as changed. (Workers Builds' own watch paths are
+     `*`: with a root directory set, they did not start builds for changes under it.)
    - **Exact source.** The checkout must be the pushed commit (`WORKERS_CI_COMMIT_SHA`) on
      `main`, with no tracked file changed, before the checks and again before the build.
    - **Checks.** For Axo: the protocol's schemas and tests, every typecheck, the web app's model
@@ -64,8 +68,15 @@ Mac release's.
 
 ## Triggers
 
-Both are production triggers on `main`, in Workers Builds, made with the Cloudflare API
-(`/accounts/{account}/builds/triggers`):
+Each Worker is connected to `leostera/axo` with Workers Builds (`cf builds workers get <tag>`),
+production branch `main`, previews off, watch paths `*`, build cache off, build variables
+`NODE_VERSION=24` and `SKIP_DEPENDENCY_INSTALL=1` (the build installs with pnpm itself), and the
+build token "axo Workers Builds (tools/cd)":
 
-- `axo-public-app`: root `/`, build `tools/cd/build.sh axo`, deploy `tools/cd/deploy.sh axo`.
-- `axp-www`: root `/`, build `tools/cd/build.sh axp`, deploy `tools/cd/deploy.sh axp`.
+- `axo-public-app`: root `/sites/axo.leostera.dev`, build `../../tools/cd/build.sh axo`, deploy
+  `../../tools/cd/deploy.sh axo`.
+- `axp-www`: root `/sites/axp.leostera.dev`, build `../../tools/cd/build.sh axp`, deploy
+  `../../tools/cd/deploy.sh axp`.
+
+A build by hand: `cf builds create <trigger-uuid> --commit-hash <sha>` (`cf builds triggers list
+--external-script-id <tag>` gives the trigger).

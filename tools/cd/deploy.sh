@@ -19,6 +19,11 @@ case "$service" in
   *) fail "unknown service $service" ;;
 esac
 
+if [ -e "$(skip_marker "$service")" ]; then
+  log "$service is unchanged; nothing to deploy"
+  exit 0
+fi
+
 commit="$(git rev-parse HEAD)"
 tag="${commit:0:12}"
 exact_source

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Continuous delivery, build step (tools/cd/README.md): Cloudflare Workers Builds runs this on
-# every push to main that touches a service's inputs. It refuses anything but the exact commit
-# pushed, checks it, checks the Worker against the clients people have installed, then builds.
+# every push to main. It refuses anything but the exact commit pushed, stops if nothing the service
+# is built from changed since the live commit, checks it, checks the Worker against the clients
+# people have installed, then builds.
 # Nothing here deploys; tools/cd/deploy.sh does, after this succeeds.
 #
 #   tools/cd/build.sh axo   # axo.leostera.dev: the web app, the API and the relay, one Worker
@@ -16,6 +17,12 @@ cd "$root"
 
 log "build service=$service commit=$(git rev-parse HEAD) host=$(uname -srm) node=$(node --version) build=${WORKERS_CI_BUILD_UUID:-local}"
 exact_source
+rm -f "$(skip_marker "$service")"
+if ! affected "$service"; then
+  touch "$(skip_marker "$service")"
+  log "nothing to build for $service"
+  exit 0
+fi
 ensure_pnpm
 pnpm install --frozen-lockfile
 

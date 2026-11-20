@@ -55,3 +55,42 @@ ensure_pnpm() {
   export PATH="$prefix/bin:$PATH"
   pnpm --version | grep -q '^10\.' || fail "pnpm 10 is not available"
 }
+
+# What each service is built from: a change to anything else leaves it as it is.
+service_worker() {
+  case "$1" in axo) echo axo-public-app ;; axp) echo axp-www ;; *) fail "unknown service $1" ;; esac
+}
+service_paths() {
+  local shared="package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json tools/cd"
+  case "$1" in
+    axo) echo "sites/axo.leostera.dev packages/axo-api-worker packages/axo-api packages/axo-web-app packages/axo-app packages/axo-apps packages/pi-axo assets $shared" ;;
+    axp) echo "sites/axp.leostera.dev axp $shared" ;;
+    *) fail "unknown service $1" ;;
+  esac
+}
+
+# Where a build that changes nothing for its service says so, for deploy.sh. Outside the repository.
+skip_marker() { echo "${HOME}/.cd-skip-$1"; }
+
+# Whether the commit changes the service against what is live. Workers Builds starts every service
+# on every push to main; this decides. What is live is the commit its version is tagged with;
+# without one (a version not deployed by tools/cd), or without history to compare, it is changed.
+affected() {
+  local service="$1" commit tag live paths
+  commit="$(git rev-parse HEAD)"
+  tag="$(node tools/cd/cloudflare.mjs live "$(service_worker "$service")" 2>/dev/null | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{console.log(JSON.parse(s).tag??"")}catch{console.log("")}})')"
+  if [ -z "$tag" ]; then log "live version has no commit tag: $service is affected"; return 0; fi
+  git fetch --quiet --filter=blob:none https://github.com/leostera/axo.git main 2>/dev/null || true
+  live="$(git rev-parse --verify --quiet "$tag^{commit}" || true)"
+  if [ -z "$live" ]; then log "live commit $tag is not in this clone's history: $service is affected"; return 0; fi
+  paths="$(service_paths "$service")"
+  # shellcheck disable=SC2086
+  if git diff --quiet "$live" "$commit" -- $paths; then
+    log "$service is unchanged since the live commit $live"
+    return 1
+  fi
+  log "$service changed since the live commit $live:"
+  # shellcheck disable=SC2086
+  git diff --name-only "$live" "$commit" -- $paths | head -20 | sed 's/^/[cd]   /'
+  return 0
+}
