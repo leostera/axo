@@ -9,6 +9,7 @@
 pub mod activity;
 #[cfg(unix)]
 pub mod axo_mcp;
+#[cfg(unix)]
 pub mod catalog;
 #[cfg(unix)]
 mod channel;
