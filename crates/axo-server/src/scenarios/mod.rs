@@ -4,6 +4,7 @@
 //! [`Fixture`]: crate::test_support::Fixture
 
 mod attachments;
+mod catalog;
 #[cfg(target_os = "linux")]
 mod desktop;
 mod claude;

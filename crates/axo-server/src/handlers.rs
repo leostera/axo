@@ -160,7 +160,7 @@ impl Extension for Sessions {
             |core, _: rpc::NoParams| async move {
                 let archived = core
                     .store
-                    .call(|database| axo_store::read_archived_sessions(database))
+                    .read(|database| axo_store::read_archived_sessions(database))
                     .await
                     .map_err(internal_rpc_error)?;
                 Ok(rpc::SessionCatalog {

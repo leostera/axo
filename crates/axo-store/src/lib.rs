@@ -1,13 +1,13 @@
 //! Axod's SQLite catalog: the schema and its migrations, and every read and write that touches
-//! only the database. Processes, files and settings parsing stay in `axo-server`, which owns the
-//! connection and holds its catalog lock around these calls.
+//! only the database. Processes, files and settings parsing stay in `axo-server`, which owns
+//! the serialized writer and the separate read-only catalog worker (RFD0089).
 //!
 //! Every function takes the connection (or a transaction) explicitly and maps SQLite errors to
 //! `io::Error`. Modules follow the tables:
 //!
 //! | Module | Owns |
 //! | --- | --- |
-//! | `schema` | `open`, the current schema, `SCHEMA_VERSION` |
+//! | `schema` | `open`, `open_reader`, the current schema, `SCHEMA_VERSION` |
 //! | `migrations` | Upgrading older catalogs, including the UUID rekey (RFD0017) |
 //! | `sessions` | Session rows: create, read, rename, layout, archive, reopen |
 //! | `shells` | Shell (pane) rows |

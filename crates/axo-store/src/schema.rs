@@ -1,6 +1,6 @@
-//! Opening the catalog and its current schema. `open` is the only way the daemon gets a
-//! connection: WAL, `synchronous=FULL`, foreign keys on, owner-only file, migrated to
-//! [`SCHEMA_VERSION`].
+//! Opening the durable writer and a separate read-only catalog worker.
+//! The writer uses WAL, `synchronous=FULL`, foreign keys and an owner-only file,
+//! migrated to [`SCHEMA_VERSION`]. Readers never create or migrate a catalog.
 
 use std::io;
 use std::os::unix::fs::PermissionsExt;
@@ -29,6 +29,50 @@ pub fn open(path: &Path) -> io::Result<Connection> {
         .map_err(io::Error::other)?;
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
     Ok(database)
+}
+
+/// A separate committed-snapshot reader. Never creates, migrates or configures
+/// the writer's durability: catalog inspection must not queue behind its commits.
+pub struct ReadOnlyConnection(Connection);
+
+impl ReadOnlyConnection {
+    /// SQLite's immutable read-only open flag survives transfer to a worker.
+    pub fn into_connection(self) -> Connection {
+        self.0
+    }
+}
+
+/// Opens an existing, current-schema WAL catalog after writer bootstrap.
+/// No creation, migration or writer configuration is performed.
+pub fn open_reader(path: &Path) -> io::Result<ReadOnlyConnection> {
+    let reader = Connection::open_with_flags(
+        path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(io::Error::other)?;
+    reader
+        .busy_timeout(std::time::Duration::from_secs(3))
+        .and_then(|()| reader.pragma_update(None, "query_only", "ON"))
+        .map_err(io::Error::other)?;
+    let journal: String = reader
+        .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+        .map_err(io::Error::other)?;
+    if !journal.eq_ignore_ascii_case("wal") {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "catalog reader requires an initialized WAL database",
+        ));
+    }
+    let version: i64 = reader
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .map_err(io::Error::other)?;
+    if version != SCHEMA_VERSION {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "catalog reader requires the current schema",
+        ));
+    }
+    Ok(ReadOnlyConnection(reader))
 }
 
 pub fn initialize_database(database: &mut Connection) -> rusqlite::Result<()> {
@@ -176,6 +220,51 @@ mod tests {
     use crate::DATABASE_FILE;
     use crate::metadata::load_or_create_host_id;
     use axo_protocol::new_uuid_v4;
+
+    #[test]
+    fn reader_never_creates_or_migrates_and_cannot_write() {
+        let directory =
+            std::env::temp_dir().join(format!("axo-store-reader-{}", new_uuid_v4().unwrap()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join(DATABASE_FILE);
+        assert!(open_reader(&path).is_err());
+        assert!(
+            !path.exists(),
+            "read-only open cannot create a missing database"
+        );
+
+        let database = Connection::open(&path).unwrap();
+        assert!(
+            open_reader(&path).is_err(),
+            "rollback-journal databases are not reader-ready"
+        );
+        database.pragma_update(None, "journal_mode", "WAL").unwrap();
+        assert!(
+            open_reader(&path).is_err(),
+            "a reader cannot migrate an older schema"
+        );
+        assert_eq!(
+            database
+                .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        drop(database);
+
+        let writer = open(&path).unwrap();
+        let reader = open_reader(&path).unwrap().into_connection();
+        assert!(reader.is_readonly("main").unwrap());
+        assert_eq!(
+            reader
+                .query_row("PRAGMA query_only", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        assert!(reader.execute("DELETE FROM daemon_metadata", []).is_err());
+        drop(reader);
+        drop(writer);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
 
     #[test]
     fn open_creates_an_owner_only_durable_catalog_and_reopens_it() {

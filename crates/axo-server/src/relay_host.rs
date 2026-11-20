@@ -312,11 +312,11 @@ impl axo_relay::SyncStore for RelayHostAdapter {
 async fn sync_catalog(core: &Core) -> io::Result<Vec<axo_relay::SyncSession>> {
     let archived = core
         .store
-        .call(|database| axo_store::read_archived_sessions(database))
+        .read(|database| axo_store::read_archived_sessions(database))
         .await?;
     let in_cloud: HashSet<SessionId> = core
         .store
-        .call(|database| axo_store::load_sync_states(database))
+        .read(|database| axo_store::load_sync_states(database))
         .await?
         .into_iter()
         .filter(|state| state.in_cloud)

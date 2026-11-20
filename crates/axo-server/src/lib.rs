@@ -395,7 +395,10 @@ fn open_core(
     let home = current_user_home_directory()?;
     let home = home.canonicalize().unwrap_or(home);
     let core = Arc::new(core::Core::new(core::CoreParts {
-        store: store::Store::new(database),
+        store: store::Store::new(
+            database,
+            axo_store::open_reader(&server_directory.join(axo_store::DATABASE_FILE))?,
+        ),
         host_id,
         host_generation: axo_protocol::new_uuid_v4()?,
         home,
