@@ -120,11 +120,12 @@ test("global inbox reaches both devices and Yes followed by voice Send never int
     await phoneInbox.getByText(question.message, { exact: true }).waitFor();
     if (output) await phone.screenshot({ path: resolve(output, "web-requests-phone.png") });
 
-    await desktop.getByTestId("elicitation-bell").click();
-    const inbox = desktop.getByRole("dialog", { name: "Requests", exact: true });
-    await inbox.getByRole("button", { name: "Yes", exact: true }).click();
+    const inline = desktop.getByTestId("transcript").getByRole("group", { name: "The agent asks you" });
+    assert.equal(await inline.count(), 1, "a replay never duplicates the inline card");
+    assert.equal(await phone.getByTestId("transcript").getByText(question.message).count(), 0, "other chats stay private");
+    await inline.getByRole("button", { name: "Yes", exact: true }).click();
     await phoneInbox.waitFor({ state: "hidden" });
-    await inbox.waitFor({ state: "hidden" });
+    await inline.waitFor({ state: "hidden" });
     assert.equal(await desktop.getByTestId("elicitation-bell").isDisabled(), true);
     assert.equal(await phone.getByTestId("elicitation-bell").isDisabled(), true);
     await desktop.getByRole("group", { name: "Listening", exact: true }).waitFor();

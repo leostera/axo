@@ -4,7 +4,7 @@ import { AxoMascot } from "../axo-mascot.tsx";
 import { BrandIcon } from "./brand-icon.tsx";
 import { hostIcon } from "./host-model.ts";
 import { Icon } from "./icons.tsx";
-import { MessageView, PendingView, QuestionCard } from "./message-views.tsx";
+import { ElicitationCard, MessageView, PendingView, QuestionCard } from "./message-views.tsx";
 import { appendTranscript, BrowserDictation, VoicePrompt, waveformHeight } from "./voice.ts";
 import { ConversationFeed, type FeedItem } from "./feed.ts";
 import { HoldRow } from "./tool-views.tsx";
@@ -209,7 +209,8 @@ export function Conversation({ workbench, wide, onShowChats, onToggleInfo, onApp
     if (canStop && session) void workbench.stop(session.sessionId);
   };
   const history = chat?.history ?? { kind: "none" as const };
-  const empty = !session || (messageCount === 0 && !transcript?.live.length && !chat?.waiting.length);
+  const requests = useInlineRequests(workbench, host?.hostId, session?.sessionId);
+  const empty = !session || (requests.length === 0 && messageCount === 0 && !transcript?.live.length && !chat?.waiting.length);
   const trouble = !host ? null
     : workbench.hostsPhase === "cached" ? `Connecting to ${host.label}…`
     : host.status !== "online" ? `${host.label} is offline`
@@ -256,6 +257,9 @@ export function Conversation({ workbench, wide, onShowChats, onToggleInfo, onApp
           ) : null}
 
           <HoldRow.Provider value={holdRow}><ConversationRows feed={feed} dismiss={dismiss} /></HoldRow.Provider>
+          {requests.map(question => <ElicitationCard key={question.elicitation.id} question={question}
+            canAnswer={online && !chat?.cached && workbench.link === "connected"}
+            onAnswer={(action, values) => void workbench.answerQuestion(question.elicitation.id, action, values)} />)}
           {preview ? <PendingView prompt={{ id: "submitting", text: workbench.draft(), files: workbench.attachments().map(file => file.name), state: "sending", mine: true, delivery: "interrupt" }} onDismiss={() => {}} /> : null}
           {(working || awaitingReply) ? (
             <div className="agent-activity" data-testid="agent-activity">
@@ -849,6 +853,22 @@ const noFeed = new ConversationFeed(false);
  * The conversation's rows, as the feed keeps them: rendered when a row is added or removed, and
  * not when the conversation around them renders, nor when one of them changes.
  */
+/** Expiry can happen without another host event. Only arm a timer for the next deadline. */
+function useInlineRequests(workbench: ChatWorkbench, hostId?: string, sessionId?: string) {
+  const [, refresh] = useState(0);
+  const now = Date.now();
+  const requests = sessionId ? workbench.questions(sessionId)
+    .filter(q => q.hostId === hostId && q.elicitation.expiresAt > now)
+    .sort((a, b) => a.elicitation.createdAt - b.elicitation.createdAt) : [];
+  const deadline = Math.min(...requests.map(q => q.elicitation.expiresAt));
+  useEffect(() => {
+    if (!Number.isFinite(deadline)) return;
+    const timer = setTimeout(() => refresh(n => n + 1), Math.max(0, deadline - Date.now()));
+    return () => clearTimeout(timer);
+  }, [deadline]);
+  return requests;
+}
+
 const ConversationRows = memo(function ConversationRows({ feed, dismiss }: { feed: ConversationFeed; dismiss: (id: string) => void }) {
   useSyncExternalStore(feed.subscribe, feed.getVersion);
   return <>{feed.items.map(item => <RowView key={item.id} item={item} dismiss={dismiss} />)}</>;
