@@ -295,7 +295,14 @@ mod tests {
         )));
         drop(pi);
         assert_eq!(std::fs::read_to_string(source).unwrap(), source_text);
-        assert_eq!(std::fs::read(child).unwrap(), contents);
+        let persisted = std::fs::read(child).unwrap();
+        let metadata = persisted
+            .strip_prefix(contents.as_slice())
+            .expect("the fork boundary stays unchanged");
+        assert!(std::str::from_utf8(metadata).unwrap().lines().all(|line| {
+            serde_json::from_str::<Value>(line)
+                .is_ok_and(|entry| entry["type"] == "thinking_level_change")
+        }));
     }
 
     #[test]

@@ -64,7 +64,14 @@ const requests = (async () => {
 })();
 try {
   child.stdin.write('{"id":"state","type":"get_state"}\n{"id":"messages","type":"get_messages"}\n');
-  await Promise.race([requests, exit.then(() => requests), Bun.sleep(20_000).then(() => { throw Error("Pi RPC timed out"); })]);
+  let deadline;
+  try {
+    await Promise.race([requests, new Promise((_, reject) => {
+      deadline = setTimeout(() => reject(Error("Pi RPC timed out")), 20_000);
+    })]);
+  } finally {
+    clearTimeout(deadline);
+  }
   const state = responses.get("state");
   const messages = responses.get("messages")?.messages;
   assert.equal(state?.sessionId, id);
@@ -76,7 +83,11 @@ try {
   assert.equal(messages[1].display, false);
   assert.equal(messages[1].content, origin);
   assert(!events.some(event => ["agent_start", "tool_execution_start"].includes(event)));
-  assert.equal(readFileSync(file, "utf8"), contents);
+  // First startup can persist Pi's default thinking level, not a chat turn.
+  const persisted = readFileSync(file, "utf8");
+  assert(persisted.startsWith(contents));
+  const appended = persisted.slice(contents.length).trim().split("\n").filter(Boolean).map(line => JSON.parse(line));
+  assert(appended.every(entry => entry.type === "thinking_level_change"));
   console.log(JSON.stringify({ id, cwd, transcript: file, hiddenOrigin: messages[1], status: "idle", pendingMessageCount: state.pendingMessageCount }));
 } finally {
   child.stdin.end();
