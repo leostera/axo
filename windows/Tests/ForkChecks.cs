@@ -155,6 +155,16 @@ static class ForkChecks
             await client.CallAsync("axo.session.prompt", new { sessionId = id, text = "AXO_FORK_FOLLOWUP" });
             await relay.WaitAsync(() => relay.ProviderInput is not null, "Real Codex did not issue the follow-up request");
             Require(relay.ProviderInput!.Contains(RelayFixture.HistoryMarker) && relay.ProviderInput.Contains("This conversation was forked from host") && relay.ProviderInput.Contains("AXO_FORK_FOLLOWUP"), "new Codex turn sees imported history and hidden origin");
+            bool completed = false;
+            for (int i = 0; i < 50 && !completed; i++)
+            {
+                var messages = await client.CallAsync("axo.session.messages", new { sessionId = id, after = 0 });
+                var state = await client.CallAsync("axo.session.events.poll", new { sessionId = id, after = 0 });
+                completed = state.GetProperty("status").GetString() == "ready"
+                    && messages.GetProperty("messages").EnumerateArray().Any(m => m.GetProperty("text").GetString() == "AXO_FORK_FOLLOWUP_OK");
+                if (!completed) await Task.Delay(100);
+            }
+            Require(completed, "new reply persisted and child returned to idle");
             Console.WriteLine($"Disposable Windows child {id}; cwd={folder}; rollout={path}");
             return 0;
         }

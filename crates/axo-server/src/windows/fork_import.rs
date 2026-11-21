@@ -67,17 +67,34 @@ pub(super) async fn convert(
 ) -> io::Result<Imported> {
     let stamp = axo_relay::current_timestamp();
     let input = history.into_child(child, folder, source_host, destination_host, &stamp)?;
+    let provenance: Value = serde_json::from_str(
+        std::str::from_utf8(&input)
+            .map_err(io::Error::other)?
+            .lines()
+            .last()
+            .ok_or_else(|| invalid("Fork provenance is missing"))?,
+    )?;
+    let provenance = provenance["content"]
+        .as_str()
+        .ok_or_else(|| invalid("Fork provenance is invalid"))?;
     let private = directory.join(child.to_string());
     std::fs::create_dir_all(directory)?;
     std::fs::create_dir(&private)?;
     let source = private.join("history.pi.jsonl");
-    std::fs::write(&source, input)?;
+    std::fs::write(&source, &input)?;
     let output = convert_with(converter, &source).await?;
     let rollout = private.join(format!(
         "rollout-{}-{child}.jsonl",
         stamp[..19].replace(':', "-")
     ));
-    let messages = write_rollout(output.as_slice(), &rollout, child, folder, &stamp)?;
+    let messages = write_rollout(
+        output.as_slice(),
+        &rollout,
+        child,
+        folder,
+        &stamp,
+        provenance,
+    )?;
     Ok(Imported {
         path: rollout,
         messages,
@@ -116,6 +133,7 @@ fn write_rollout(
     child: SessionId,
     folder: &Path,
     stamp: &str,
+    expected_provenance: &str,
 ) -> io::Result<Vec<ImportedMessage>> {
     let mut lines = converted.lines();
     let header: Value = serde_json::from_str(
@@ -164,7 +182,7 @@ fn write_rollout(
                 record
             }
             (Some("response_item"), Some("message"), Some("developer")) => {
-                if message_text(payload).starts_with("This conversation was forked from host ") {
+                if message_text(payload) == expected_provenance {
                     provenance += 1;
                 }
                 record
@@ -204,7 +222,7 @@ fn write_rollout(
         };
         writeln!(output, "{record}")?;
     }
-    if provenance == 0 {
+    if provenance != 1 {
         return Err(invalid("ATXF did not retain hidden fork provenance"));
     }
     output.flush()?;
