@@ -605,13 +605,16 @@ final class TerminalSessionsModelPublishingTests: XCTestCase {
   }
 
   func testForkWaitsForPeerListingBeforeShowingChildAndKeepsSourceOnFailure() async throws {
+    let suite = "axo-fork-sidebar-\(UUID())"
+    let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+    defer { defaults.removePersistentDomain(forName: suite) }
     let client = FakeAxodClient()
     client.methods.append(AxodMethodName.peerSessionsList.rawValue)
     client.sessions = [TerminalSession(id: 1, folder: "/", shells: [])]
     let hostID = UUID()
     let host = PeerHost(hostId: hostID.uuidString.lowercased(), label: "Mac Studio", online: true)
     client.peers = PeerSessionList(connected: true, hosts: [host], sessions: [])
-    let model = TerminalSessionsModel(client: client)
+    let model = TerminalSessionsModel(client: client, selectedSessionDefaults: defaults)
     await model.refresh()
     model.showSession(1)
 
