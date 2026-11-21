@@ -10,6 +10,7 @@ if (args.Length == 3 && args[0] is "--package-check" or "--install-package")
     return 0;
 }
 
+if (args.Length == 3 && args[0] == "--fork-codex") return await ForkChecks.RunAsync(args[1], args[2]);
 if (args.Length == 2 && args[0] == "--computer-fixture") return ComputerChecks.RunFixture(args[1]);
 if (args.Length == 2 && args[0] == "--untrusted-permissions")
 {

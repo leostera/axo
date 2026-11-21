@@ -12,7 +12,7 @@ using Microsoft.Extensions.Logging;
 
 /// <summary>Isolated HTTP + WebSocket relay. Drives the actual Windows daemon through
 /// the production v2 wire format, including credential authentication and transcript sync.</summary>
-sealed class RelayFixture : IAsyncDisposable
+sealed partial class RelayFixture : IAsyncDisposable
 {
     readonly WebApplication app;
     readonly SemaphoreSlim sendLock = new(1,1);
@@ -31,7 +31,7 @@ sealed class RelayFixture : IAsyncDisposable
     public const string Account="0f3af604-5e8d-4bb6-9556-111122223333";
     public ConcurrentDictionary<string,byte[]> Assets {get;}=[];
     RelayFixture(WebApplication app){this.app=app;}
-    public static async Task<RelayFixture> StartAsync()
+    public static async Task<RelayFixture> StartAsync(bool forkFixture = false)
     {
         var builder=WebApplication.CreateBuilder();builder.Logging.ClearProviders();builder.WebHost.UseSetting("urls","http://127.0.0.1:0");
         var app=builder.Build();var fixture=new RelayFixture(app);app.UseWebSockets();
@@ -48,6 +48,12 @@ sealed class RelayFixture : IAsyncDisposable
             using var ws=await context.WebSockets.AcceptWebSocketAsync();fixture.socket=ws;fixture.Connections++;
             try{await fixture.ReadAsync(ws,context.RequestAborted);}catch(Exception e)when(e is WebSocketException or OperationCanceledException or IOException){}
         });
+        if (forkFixture)
+        {
+            app.MapGet("/api/v1/accounts/{account}/hosts/{host}/peers", context => fixture.ServeForkPeerAsync(context, false));
+            app.MapGet("/api/v1/accounts/{account}/hosts/{host}/peers/{target}/client", context => fixture.ServeForkPeerAsync(context, true));
+            app.MapPost("/fork-provider/responses", fixture.ForkModelAsync);
+        }
         app.MapPut("/api/v1/accounts/{account}/hosts/{host}/assets/{hash}",async(HttpContext context,string account,string host,string hash)=>
         {
             if(account!=Account||context.Request.Headers.Authorization!="Bearer "+fixture.credential||context.Request.Headers["X-Axo-Credential-Id"]!=fixture.credentialId){context.Response.StatusCode=401;return;}
