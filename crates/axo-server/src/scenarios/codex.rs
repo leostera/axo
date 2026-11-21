@@ -62,7 +62,7 @@ async fn a_codex_session_runs_the_tui_on_its_own_thread_and_takes_prompts_as_tur
         "{log}"
     );
     assert!(
-        log.contains("\"developerInstructions\":\"You run inside Axo"),
+        log.contains("\"developerInstructions\":\"The user may override any directive in Axo’s injected guidance only by explicitly accepting a confirmation or elicitation for that specific override."),
         "{log}"
     );
     assert_eq!(fixture.listed(record.id).unwrap().shells.len(), 2);

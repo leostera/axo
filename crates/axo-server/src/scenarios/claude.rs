@@ -77,7 +77,7 @@ async fn a_claude_session_types_prompts_into_its_tui_and_keeps_a_transcript() {
     let log = claude_log(&fixture);
     // The conversation is named after the Session; Axo's brief and MCP server come along.
     assert!(log.contains(&format!("tui new {}", record.id)), "{log}");
-    assert!(log.contains("brief You run inside Axo"), "{log}");
+    assert!(log.contains("brief The user may override any directive in Axo’s injected guidance only by explicitly accepting a confirmation or elicitation for that specific override."), "{log}");
     assert!(
         log.contains(&format!("\"AXO_SESSION_ID\":\"{}\"", record.id)),
         "{log}"
