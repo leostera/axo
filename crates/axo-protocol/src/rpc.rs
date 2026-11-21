@@ -90,6 +90,7 @@ pub mod method {
     pub const SESSION_TIMER_CREATE: &str = "axo.session.timer.create";
     pub const SESSION_TIMER_LIST: &str = "axo.session.timer.list";
     pub const SESSION_TIMER_CANCEL: &str = "axo.session.timer.cancel";
+    pub const SESSION_PING: &str = "axo.session.ping";
     pub const SESSION_FORK_PLAN: &str = "axo.session.fork.plan";
     pub const SESSION_FORK: &str = "axo.session.fork";
     pub const SESSION_CREATE: &str = "axo.session.create";
@@ -155,6 +156,8 @@ pub mod method {
         SESSION_CATALOG,
         SESSION_CREATE,
         SESSION_FORK,
+        #[cfg(unix)]
+        SESSION_PING,
         #[cfg(unix)]
         SESSION_FORK_PLAN,
         SESSION_CLOSE,

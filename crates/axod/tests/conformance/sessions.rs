@@ -548,6 +548,10 @@ fn a_sleeping_pi_leaves_the_session_usable() {
     });
     assert_eq!(health["status"], "running");
     let id = axod.ok("axo.session.create", json!({}))["id"].clone();
+    assert_eq!(
+        axod.ok("axo.session.ping", json!({ "sessionId": id }))["wakeRequested"],
+        false
+    );
     let accepted = axod.ok(
         "axo.session.prompt",
         json!({ "sessionId": id, "text": "queued" }),

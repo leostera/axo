@@ -186,6 +186,17 @@ const TOOLS: &[Tool] = &[
         read_only: false,
         destructive: false,
     },
+    #[cfg(unix)]
+    Tool {
+        name: "session_ping",
+        method: Some(method::SESSION_PING),
+        description: "Wake an open local Session's dormant Pi without sending a message or restarting an active agent. Returns wakeRequested, not a readiness guarantee. Defaults to the current Session.",
+        properties: || json!({"sessionId": session_id_schema()}),
+        required: &[],
+        output: None,
+        read_only: false,
+        destructive: false,
+    },
     Tool {
         name: "session_fork",
         method: Some(method::SESSION_FORK),
@@ -706,7 +717,10 @@ impl McpServer {
         if arguments.get("like").and_then(Value::as_str) == Some(SELF) {
             arguments.insert("like".into(), json!(self.session_id));
         }
-        if tool.method == Some(method::SESSION_FORK) {
+        if matches!(
+            tool.method,
+            Some(method::SESSION_FORK | method::SESSION_PING)
+        ) {
             arguments
                 .entry("sessionId")
                 .or_insert_with(|| json!(self.session_id));

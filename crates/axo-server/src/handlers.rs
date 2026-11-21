@@ -456,6 +456,18 @@ impl Extension for Sessions {
         add(
             handler,
             core,
+            method::SESSION_PING,
+            "expected {sessionId}",
+            |core, request: rpc::SessionRef| async move {
+                ops::wake(&core, request.session_id, None)
+                    .await
+                    .map(|wake_requested| serde_json::json!({"wakeRequested": wake_requested}))
+                    .map_err(internal_rpc_error)
+            },
+        );
+        add(
+            handler,
+            core,
             method::SESSION_FORK_PLAN,
             "expected {sessionId, destinationHostId}",
             |core, request: crate::forks::BridgePlanRequest| async move {

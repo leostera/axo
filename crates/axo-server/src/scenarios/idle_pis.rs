@@ -81,6 +81,22 @@ async fn mac_pins_exempt_both_limits_and_unpin_restores_normal_sleep() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn ping_wakes_a_dormant_session_without_starting_a_turn() {
+    let fixture = Fixture::with(Pi::Fake { turn_ms: 0 }).await;
+    let id = fixture.new_session().await.id;
+    fixture.wait_for_pi(id).await;
+    assert_eq!(idle_pis::look(&fixture.core, SLEEP_ALL).await, vec![id]);
+    fixture
+        .until("Pi asleep", || pi_is_dormant(&fixture, id))
+        .await;
+    assert!(crate::ops::wake(&fixture.core, id, None).await.unwrap());
+    fixture.wait_for_pi(id).await;
+    assert!(!crate::ops::wake(&fixture.core, id, None).await.unwrap());
+    assert!(!fixture.pi_log().contains("SENT:"));
+    assert!(!fixture.pi_log().contains("RESUME_TURN"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn pinning_a_dormant_session_wakes_it_once_without_a_prompt() {
     let fixture = Fixture::with(Pi::Fake { turn_ms: 0 }).await;
     let record = fixture.new_session().await;

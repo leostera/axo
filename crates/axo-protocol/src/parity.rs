@@ -74,6 +74,11 @@ pub const PARITY: &[Parity] = &[
     ),
     #[cfg(unix)]
     row(
+        method::SESSION_PING,
+        Remote::LocalOnly("wakes a dormant local Pi runtime"),
+    ),
+    #[cfg(unix)]
+    row(
         method::SESSION_FORK_PLAN,
         Remote::LocalOnly("resolves the local Session's published snapshot before planning"),
     ),

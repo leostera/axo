@@ -250,6 +250,16 @@ pub static OPERATIONS: &[Operation] = &[
             )
         ]
     ),
+    #[cfg(unix)]
+    op!(
+        &["session", "ping"],
+        method::SESSION_PING,
+        "Wake a dormant local Pi session without sending a prompt",
+        Write,
+        Session,
+        Identity,
+        [SID]
+    ),
     op!(
         &["session", "fork"],
         method::SESSION_FORK,
