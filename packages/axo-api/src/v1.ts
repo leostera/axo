@@ -194,6 +194,11 @@ const creationNameSchema = z.string().min(1).max(80)
 
 const targetSchema = z.object({ target: hostRefSchema }).strict();
 const sessionTargetSchema = targetSchema.extend({ sessionId: sessionIdSchema }).strict();
+const forkSnapshotSchema = sessionTargetSchema.extend({
+  sourceHostId: hostIdSchema,
+  epoch: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER),
+  head: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
+}).strict();
 const shellTargetSchema = sessionTargetSchema.extend({ shellId: shellIdSchema }).strict();
 
 export const availableAgentsSchema = z.object({ agents: z.array(z.enum(["pi", "codex", "opencode", "claude-code"])).max(4) }).strict();
@@ -215,13 +220,12 @@ export const hostV1Methods = {
     // The coding agent the Session runs (RFD0072); Pi when absent.
     agent: agentKindSchema.optional(),
   }).strict(),
-  // Fork a confirmed source snapshot onto the destination. The destination verifies
-  // that the source runs Pi and that the requested history and folder are available.
-  "axo.remote.session.fork": sessionTargetSchema.extend({
-    sourceHostId: hostIdSchema,
-    epoch: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER),
-    head: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
+  // The destination resolves the source agent and history from the confirmed snapshot.
+  "axo.remote.session.fork.plan": forkSnapshotSchema,
+  "axo.remote.session.fork": forkSnapshotSchema.extend({
     requestId: z.uuid(),
+    // Omitted preserves the source agent. Never select an alternative implicitly.
+    agent: agentKindSchema.optional(),
     folder: z.string().regex(/^(?:\/|[A-Za-z]:[\\/])[^\u0000]*$/u).optional(),
   }).strict(),
   "axo.remote.session.close": sessionTargetSchema,
@@ -304,6 +308,32 @@ export const hostSessionsListResultSchema = z.object({
 export const hostSubscribeResultSchema = z.object({ subscriptionId: z.uuid() }).strict();
 export const hostUnsubscribeResultSchema = z.object({ unsubscribed: z.literal(true) }).strict();
 export const remoteSessionCreateResultSchema = z.object({ session: sessionSnapshotSchema }).strict();
+const forkDecisionSchema = z.discriminatedUnion("kind", [
+  z.strictObject({ kind: z.literal("keep"), agent: agentKindSchema }),
+  z.strictObject({
+    kind: z.literal("choose"),
+    agents: z.tuple([agentKindSchema]).rest(agentKindSchema)
+      .refine(agents => new Set(agents).size === agents.length, "Fork alternatives must be distinct"),
+  }),
+  z.strictObject({ kind: z.literal("unavailable") }),
+]);
+export const remoteSessionForkPlanResultSchema = z.strictObject({
+  sourceAgent: agentKindSchema,
+  historyFormat: z.string().min(1),
+  decision: forkDecisionSchema,
+}).refine(({ sourceAgent, decision }) => {
+  switch (decision.kind) {
+    case "keep": return decision.agent === sourceAgent;
+    case "choose": return !decision.agents.includes(sourceAgent);
+    case "unavailable": return true;
+  }
+}, "Keep must name the source agent; choices must be alternatives");
+export const forkHarnessUnavailableSchema = z.strictObject({
+  kind: z.literal("forkHarnessUnavailable"),
+  created: z.literal(false),
+});
+export type ForkHarnessUnavailable = z.infer<typeof forkHarnessUnavailableSchema>;
+
 export const remoteSessionCloseResultSchema = z.object({
   closed: z.literal(true),
   sessionId: sessionIdSchema,
@@ -348,6 +378,7 @@ export const hostV1Results = {
   "axo.host.unsubscribe": hostUnsubscribeResultSchema,
   "axo.remote.session.create": remoteSessionCreateResultSchema,
   "axo.remote.session.fork": remoteSessionCreateResultSchema,
+  "axo.remote.session.fork.plan": remoteSessionForkPlanResultSchema,
   "axo.remote.session.close": remoteSessionCloseResultSchema,
   "axo.remote.shell.create": remoteShellCreateResultSchema,
   "axo.remote.shell.close": remoteShellCloseResultSchema,

@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import Ajv2020 from "ajv/dist/2020.js";
 import addFormats from "ajv-formats";
 import {
+  forkHarnessUnavailableSchema,
   hostListResultSchema,
   hostRegisterSchema,
   hostSnapshotSchema,
@@ -190,7 +191,7 @@ validateWith(hostCallSchema, remoteCreate);
 const fork = await fixture("host-session-fork.call.json");
 const forkParams = hostV1Methods[fork.method];
 for (const params of [fork.params, { ...fork.params, folder: undefined, head: 0 },
-  { ...fork.params, folder: "C:\\Users\\Leo\\project" }, { ...fork.params, folder: "D:/work" }]) {
+  { ...fork.params, agent: "codex" }, { ...fork.params, folder: "C:\\Users\\Leo\\project" }, { ...fork.params, folder: "D:/work" }]) {
   validateWith(hostCallSchema, { ...fork, params });
   assert.ok(forkParams.safeParse(params).success);
 }
@@ -198,7 +199,7 @@ for (const overrides of [
   { sourceHostId: "not-a-host" }, { target: { hostId: fork.params.target.hostId } },
   { sessionId: 1 }, { requestId: undefined }, { requestId: "not-a-uuid" },
   { epoch: 0 }, { head: -1 }, { head: 1.5 }, { head: Number.MAX_SAFE_INTEGER + 1 },
-  { folder: "C:relative" }, { folder: "\\relative" }, { folder: "relative/path" }, { folder: "/tmp\0bad" }, { folder: null }, { agent: "pi" },
+  { folder: "C:relative" }, { folder: "\\relative" }, { folder: "relative/path" }, { folder: "/tmp\0bad" }, { folder: null }, { agent: "unknown" }, { agent: null },
 ]) {
   const params = { ...fork.params, ...overrides };
   assert.equal(ajv.getSchema(hostCallSchema)({ ...fork, params }), false, JSON.stringify(overrides));
@@ -214,6 +215,37 @@ validateWith(forkResultSchema, forkResult);
 assert.ok(hostV1Results[fork.method].safeParse(forkResult).success);
 assert.equal(ajv.getSchema(forkResultSchema)({ accepted: true }), false);
 assert.equal(hostV1Results[fork.method].safeParse({ accepted: true }).success, false);
+const plan = await fixture("host-session-fork-plan.call.json");
+validateWith(hostCallSchema, plan);
+assert.ok(hostV1Methods[plan.method].safeParse(plan.params).success);
+for (const extra of [{ agent: "pi" }, { sourceAgent: "pi" }, { historyFormat: "pi/3" }, { requestId: fork.params.requestId }, { folder: "/tmp" }]) {
+  const params = { ...plan.params, ...extra };
+  assert.equal(ajv.getSchema(hostCallSchema)({ ...plan, params }), false);
+  assert.equal(hostV1Methods[plan.method].safeParse(params).success, false);
+}
+const planResult = await fixture("host-session-fork-plan.result.json");
+const planResultSchema = "https://schemas.axo.leostera.dev/v1/host-relay.schema.json#/$defs/RemoteSessionForkPlanResult";
+for (const [decision, valid] of [
+  [planResult.decision, true],
+  [{ kind: "keep", agent: "pi" }, true],
+  [{ kind: "unavailable" }, true],
+  [{ kind: "keep", agent: "codex" }, false],
+  [{ kind: "choose", agents: [] }, false],
+  [{ kind: "choose", agents: ["codex", "codex"] }, false],
+  [{ kind: "choose", agents: ["pi"] }, false],
+  [{ kind: "choose", agents: ["other"] }, false],
+  [{ kind: "unavailable", agents: [] }, false],
+]) {
+  const value = { ...planResult, decision };
+  assert.equal(ajv.getSchema(planResultSchema)(value), valid, JSON.stringify(value));
+  assert.equal(hostV1Results[plan.method].safeParse(value).success, valid, JSON.stringify(value));
+}
+const rejectionSchema = "https://schemas.axo.leostera.dev/v1/host-relay.schema.json#/$defs/ForkHarnessUnavailable";
+const rejection = await fixture("host-session-fork-harness-unavailable.error.json");
+validateWith(rejectionSchema, rejection);
+assert.ok(forkHarnessUnavailableSchema.safeParse(rejection).success);
+assert.equal(ajv.getSchema(rejectionSchema)({ ...rejection, created: true }), false);
+assert.equal(forkHarnessUnavailableSchema.safeParse({ ...rejection, created: true }).success, false);
 validateWith(hostCallSchema, await fixture("host-register.call.json"));
 validateWith(hostCallSchema, await fixture("terminal-input.call.json"));
 validateWith(hostCallSchema, await fixture("session-prompt.call.json"));

@@ -1,0 +1,10 @@
+{
+  "sourceAgent": "pi",
+  "historyFormat": "pi/3",
+  "decision": {
+    "kind": "choose",
+    "agents": [
+      "codex"
+    ]
+  }
+}

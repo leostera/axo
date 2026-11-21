@@ -42,7 +42,7 @@ import {
   type SessionMetadata,
   type SessionStatus,
 } from "@axo/protocol";
-import { hostV1Methods, hostV1Results, type HostSnapshot, type HostMethod } from "@axo/protocol/v1";
+import { forkHarnessUnavailableSchema, hostV1Methods, hostV1Results, type ForkHarnessUnavailable, type HostSnapshot, type HostMethod } from "@axo/protocol/v1";
 import { AxoHostRelay } from "./axo-host-relay";
 import type { CallerContext, Peer } from "./relay/peer";
 import { sessionDOName, type SessionBinding, type SessionHead } from "./session-store";
@@ -91,7 +91,7 @@ export type HostSubscription = {
   elicitations: Elicitation[];
 };
 
-export type HostCommandOutcome = { result: unknown } | { error: { code: number; message: string } };
+export type HostCommandOutcome = { result: unknown } | { error: { code: number; message: string; data?: ForkHarnessUnavailable } };
 
 /** The longest a `callHost` waits for its reply: the longest a bash may run, and a margin. */
 export const CALL_HOST_MAX_MS = APPS_LIMITS.bashMaxTimeoutMs + 30_000;
@@ -223,6 +223,7 @@ const hostRemoteMethods = {
   "axo.remote.agents.models": hostV1Methods["axo.remote.agents.models"],
   "axo.remote.session.create": hostV1Methods["axo.remote.session.create"],
   "axo.remote.session.fork": hostV1Methods["axo.remote.session.fork"],
+  "axo.remote.session.fork.plan": hostV1Methods["axo.remote.session.fork.plan"],
   "axo.remote.session.close": hostV1Methods["axo.remote.session.close"],
   "axo.remote.shell.create": hostV1Methods["axo.remote.shell.create"],
   "axo.remote.shell.close": hostV1Methods["axo.remote.shell.close"],
@@ -762,10 +763,20 @@ export class AxoHostDO extends AxoHostRelay {
       return hop.resolve("error" in reply ? { error: { code: reply.error.code, message: reply.error.message } } : { result: reply.result });
     }
     const command = typeof reply.id === "string" ? this.commands.get(reply.id) : undefined;
-    if (!command) return;
+    if (!command || this.peer(socket).connectionId !== command.connectionId) return;
     this.commands.delete(reply.id as string);
-    // The host is the account's own Mac: its reason reaches the client, bounded.
-    if ("error" in reply) return command.resolve({ error: { code: reply.error.code, message: reply.error.message.slice(0, 256) || "Host rejected operation" } });
+    // Only a definitive fork rejection can carry the typed no-child outcome.
+    if ("error" in reply) {
+      const { code, message, data } = reply.error;
+      const rejection = command.method === "axo.remote.session.fork" && code !== -32004
+        ? forkHarnessUnavailableSchema.safeParse(data)
+        : undefined;
+      return command.resolve({ error: {
+        code,
+        message: message.slice(0, 256) || "Host rejected operation",
+        ...(rejection?.success ? { data: rejection.data } : {}),
+      } });
+    }
     const result = hostV1Results[command.method as HostMethod].safeParse(reply.result);
     const generation = (result.data as { hostGeneration?: unknown } | undefined)?.hostGeneration;
     if (!result.success || (generation !== undefined && generation !== command.generation))

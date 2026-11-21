@@ -18,7 +18,8 @@
     "axo.remote.agents.models",
     "axo.remote.session.commands",
     "axo.remote.session.models",
-    "axo.remote.session.model.set"
+    "axo.remote.session.model.set",
+    "axo.remote.session.fork.plan"
   ],
   "planned": []
 }

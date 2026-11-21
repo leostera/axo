@@ -62,8 +62,9 @@ export function failure(
   id: RpcId,
   code: number,
   message: string,
+  data?: unknown,
 ): Extract<Reply, { error: unknown }> {
-  return createJSONRPCErrorResponse(id, code, message);
+  return createJSONRPCErrorResponse(id, code, message, data);
 }
 export function success(
   id: RpcId,

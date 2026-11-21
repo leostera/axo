@@ -272,6 +272,8 @@ pub const REMOTE_ONLY: &[&str] = &[
     "axo.remote.session.commands",
     "axo.remote.session.models",
     "axo.remote.session.model.set",
+    // Reads the destination’s compatible importers for a confirmed source snapshot.
+    "axo.remote.session.fork.plan",
 ];
 
 /// The remote methods that must exist now: every [`Remote::Call`] and [`Remote::Events`] name,

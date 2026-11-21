@@ -83,10 +83,12 @@ export class AxoApiError extends Error {
 
 export class AxoRpcError extends Error {
   readonly code: number;
+  readonly data: unknown;
 
-  constructor(message: string, code: number) {
+  constructor(message: string, code: number, data?: unknown) {
     super(message);
     this.code = code;
+    this.data = data;
     this.name = "AxoRpcError";
   }
 }
@@ -151,6 +153,7 @@ const appRemoteResults = {
   "axo.remote.agents.models": remoteModelsResultSchema,
   "axo.remote.session.create": remoteSessionCreateResultSchema,
   "axo.remote.session.fork": hostV1Results["axo.remote.session.fork"],
+  "axo.remote.session.fork.plan": hostV1Results["axo.remote.session.fork.plan"],
   "axo.remote.session.close": remoteSessionCloseResultSchema,
   "axo.remote.session.rename": remoteLayoutSetResultSchema,
   "axo.remote.session.layout.set": remoteLayoutSetResultSchema,
@@ -378,7 +381,10 @@ class Channel {
     if (!pending) return;
     clearTimeout(pending.timeout);
     this.pending.delete(response.data.id);
-    if ("error" in response.data) pending.reject(new AxoRpcError(response.data.error.message, response.data.error.code));
+    if ("error" in response.data) {
+      const { message, code, data } = response.data.error;
+      pending.reject(new AxoRpcError(message, code, data));
+    }
     else pending.resolve(response.data.result);
   }
 

@@ -431,7 +431,7 @@ export class HostClients {
     if (!params.success || params.data.hostId !== hostId) return failure(id, -32602, "Invalid params");
     const outcome = await this.host.command(params.data.method, params.data.params)
       .catch((): HostCommandOutcome => ({ error: { code: -32004, message: "Outcome unknown; reconcile commandId" } }));
-    return "error" in outcome ? failure(id, outcome.error.code, outcome.error.message) : success(id, outcome.result);
+    return "error" in outcome ? failure(id, outcome.error.code, outcome.error.message, outcome.error.data) : success(id, outcome.result);
   }
 
   /** A person's answer to what the Mac asks. A Mac's own credential cannot answer, for any Mac (RFD0029). */

@@ -33,6 +33,9 @@
           "$ref": "#/$defs/RemoteSessionForkCall"
         },
         {
+          "$ref": "#/$defs/RemoteSessionForkPlanCall"
+        },
+        {
           "$ref": "#/$defs/RemoteSessionCloseCall"
         },
         {
@@ -356,8 +359,34 @@
         "params"
       ]
     },
+    "ForkSnapshot": {
+      "type": "object",
+      "required": ["target", "sourceHostId", "sessionId", "epoch", "head"],
+      "properties": {
+        "target": { "$ref": "common.schema.json#/$defs/HostRef", "description": "The destination host and generation." },
+        "sourceHostId": { "type": "string", "format": "uuid" },
+        "sessionId": { "$ref": "common.schema.json#/$defs/SessionId", "description": "The source Session." },
+        "epoch": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+        "head": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 }
+      }
+    },
+    "ForkAgent": { "enum": ["pi", "codex", "opencode", "claude-code"] },
+    "RemoteSessionForkPlanCall": {
+      "description": "Read-only: resolves the source agent and history format from the authenticated snapshot, then reports compatible runnable importers at the destination.",
+      "allOf": [
+        { "$ref": "#/$defs/BaseCall" },
+        {
+          "properties": {
+            "method": { "const": "axo.remote.session.fork.plan" },
+            "params": { "$ref": "#/$defs/ForkSnapshot", "unevaluatedProperties": false }
+          }
+        }
+      ],
+      "unevaluatedProperties": false,
+      "required": ["params"]
+    },
     "RemoteSessionForkCall": {
-      "description": "Forks the confirmed snapshot of a Pi Session onto the target host. The target declines if the source agent is unknown or unsupported, or the snapshot is unavailable. If the destination folder is unavailable, the error message is 'Choose a destination folder'.",
+      "description": "Forks the confirmed Session snapshot onto the target host. If the destination folder is unavailable, the error message is 'Choose a destination folder'.",
       "allOf": [
         { "$ref": "#/$defs/BaseCall" },
         {
@@ -365,14 +394,11 @@
             "method": { "const": "axo.remote.session.fork" },
             "params": {
               "type": "object",
-              "additionalProperties": false,
-              "required": ["target", "sourceHostId", "sessionId", "epoch", "head", "requestId"],
+              "$ref": "#/$defs/ForkSnapshot",
+              "unevaluatedProperties": false,
+              "required": ["requestId"],
               "properties": {
-                "target": { "$ref": "common.schema.json#/$defs/HostRef", "description": "The destination host and generation." },
-                "sourceHostId": { "type": "string", "format": "uuid" },
-                "sessionId": { "$ref": "common.schema.json#/$defs/SessionId", "description": "The source Session." },
-                "epoch": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
-                "head": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+                "agent": { "$ref": "#/$defs/ForkAgent", "description": "Omit to preserve the source agent; no implicit alternative." },
                 "requestId": { "type": "string", "format": "uuid", "description": "The caller reuses this ID when retrying the same fork." },
                 "folder": { "type": "string", "pattern": "^(?:/|[A-Za-z]:[\\\\/])[^\\u0000]*$", "description": "An absolute destination path. If omitted, try the source path on the destination." }
               }
@@ -899,6 +925,102 @@
         "session": {
           "$ref": "common.schema.json#/$defs/SessionSnapshot"
         }
+      }
+    },
+    "RemoteSessionForkPlanResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sourceAgent", "historyFormat", "decision"],
+      "properties": {
+        "sourceAgent": { "$ref": "#/$defs/ForkAgent" },
+        "historyFormat": { "type": "string", "minLength": 1 },
+        "decision": {
+          "type": "object",
+          "oneOf": [
+            {
+              "additionalProperties": false,
+              "required": ["kind", "agent"],
+              "properties": { "kind": { "const": "keep" }, "agent": { "$ref": "#/$defs/ForkAgent" } }
+            },
+            {
+              "additionalProperties": false,
+              "required": ["kind", "agents"],
+              "properties": {
+                "kind": { "const": "choose" },
+                "agents": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "#/$defs/ForkAgent" } }
+              }
+            },
+            {
+              "additionalProperties": false,
+              "required": ["kind"],
+              "properties": { "kind": { "const": "unavailable" } }
+            }
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "sourceAgent": { "const": "pi" } } },
+          "then": {
+            "properties": {
+              "decision": {
+                "properties": {
+                  "agent": { "const": "pi" },
+                  "agents": { "not": { "contains": { "const": "pi" } } }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "sourceAgent": { "const": "codex" } } },
+          "then": {
+            "properties": {
+              "decision": {
+                "properties": {
+                  "agent": { "const": "codex" },
+                  "agents": { "not": { "contains": { "const": "codex" } } }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "sourceAgent": { "const": "opencode" } } },
+          "then": {
+            "properties": {
+              "decision": {
+                "properties": {
+                  "agent": { "const": "opencode" },
+                  "agents": { "not": { "contains": { "const": "opencode" } } }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "sourceAgent": { "const": "claude-code" } } },
+          "then": {
+            "properties": {
+              "decision": {
+                "properties": {
+                  "agent": { "const": "claude-code" },
+                  "agents": { "not": { "contains": { "const": "claude-code" } } }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "ForkHarnessUnavailable": {
+      "description": "Error data for a definitive fork rejection before a child was created.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "created"],
+      "properties": {
+        "kind": { "const": "forkHarnessUnavailable" },
+        "created": { "const": false }
       }
     },
     "RemoteSessionForkResult": {

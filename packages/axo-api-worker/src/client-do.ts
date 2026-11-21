@@ -442,8 +442,8 @@ export class AxoClientDO extends DurableObject<Env> {
           // invitation to try again with a new commandId (RFD0024).
           const outcome = await this.hostStub(params.data.hostId)
             .command(params.data.method, params.data.params)
-            .catch(() => ({ error: { code: -32004, message: "Outcome unknown; reconcile commandId" } }));
-          return "error" in outcome ? failure(id, outcome.error.code, outcome.error.message) : success(id, outcome.result);
+            .catch((): HostCommandOutcome => ({ error: { code: -32004, message: "Outcome unknown; reconcile commandId" } }));
+          return "error" in outcome ? failure(id, outcome.error.code, outcome.error.message, outcome.error.data) : success(id, outcome.result);
         }
         case ELICITATION_METHODS.resolve: {
           // Only a person answers: a Mac's own credential cannot, for any Mac (RFD0029).
