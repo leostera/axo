@@ -10,6 +10,10 @@ What changed in each published version of Axo. Every publish raises the minor ve
 
 ## Unreleased
 
+## 0.90 (Mac app build 362, axod 106)
+
+- Axo’s injected guidance now opens by explaining that a user may override it by explicitly accepting a confirmation or elicitation for that specific override.
+
 ### 0.89 candidate (Mac app build 361, iPhone build 89, axod 105)
 
 - In an existing Pi chat, choosing another host asks whether to fork the conversation there. The fork copies history, not files, and opens idle; the original session stays on its host. If the source folder does not exist on the destination, choose a folder there instead.
