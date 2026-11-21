@@ -52,6 +52,9 @@ try {
         Copy-Item -LiteralPath (Join-Path $converter 'bin\atxf.exe') -Destination 'dist\Axo-Windows\atxf-0.2.0.exe'
     }
     New-Item -ItemType Directory -Path 'dist/Axo-Windows/licenses' -Force | Out-Null
+    if ($ForkCodex) {
+        Copy-Item -LiteralPath 'third_party/atxf/LICENSE-0.2.0' -Destination 'dist/Axo-Windows/licenses/ATXF-LICENSE.txt' -Force
+    }
     Copy-Item -LiteralPath 'third_party/cua/LICENSE.md' -Destination 'dist/Axo-Windows/licenses/Cua-LICENSE.md' -Force
     Copy-Item -LiteralPath 'third_party/cua/THIRD_PARTY_NOTICES.md' -Destination 'dist/Axo-Windows/licenses/Cua-THIRD_PARTY_NOTICES.md' -Force
     Copy-Item -LiteralPath 'windows/README.md' -Destination 'dist/Axo-Windows/README.md' -Force

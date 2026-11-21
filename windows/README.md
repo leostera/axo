@@ -241,6 +241,26 @@ to read and edit a separate owned WPF fixture window and independently verifies 
 dotnet run --project windows/Tests/Tests.csproj -c Release -- dist/Axo-Windows/axod.exe C:/tools/codex.exe --live
 ```
 
+## Test a Pi-to-Codex fork candidate
+
+This is a destination-only development test; it does not establish a Windows host picker or
+production account acceptance. On Windows, build with `./windows/build.ps1 -Test -ForkCodex`
+from a clean, committed checkout. `-ForkCodex` bundles the published Rust ATXF 0.2.0 converter
+with the package manifest. The importer admits the verified Codex 0.168.0 app-server only and
+never installs or replaces Codex.
+
+Then run the isolated fixture against the packaged daemon:
+
+```powershell
+dotnet run --project windows/Tests/Tests.csproj -c Release -- --fork-codex `
+    dist/Axo-Windows/axod.exe <absolute-path-to-codex.exe>
+```
+
+The fixture uses a fresh named pipe, catalog, Codex home, loopback pairing relay and local model
+endpoint. It does not use the regular account, pipe or sign-in. It verifies the Windows child
+starts idle, retry returns the same child, and a fresh prompt sees imported history. It is not a
+production install or restart.
+
 ## Scope and limits
 
 Implemented: folder-based Sessions, names/archiving, Codex conversations with streamed output,
