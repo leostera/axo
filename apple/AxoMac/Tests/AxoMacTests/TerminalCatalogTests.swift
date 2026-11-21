@@ -115,7 +115,7 @@ final class FakeAxodClient: AxodClient {
   }
 
   func createSession() async throws -> TerminalSession { throw Unsupported() }
-  func createSession(inFolder folder: String) async throws -> TerminalSession {
+  func createSession(inFolder folder: String, agent: CodingAgent) async throws -> TerminalSession {
     throw Unsupported()
   }
   func createSession(like sessionID: SessionID) async throws -> TerminalSession {

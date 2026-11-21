@@ -17,7 +17,7 @@ protocol AxodClient: AnyObject {
   func openCatalogEvents() async throws -> any CatalogEvents
 
   func createSession() async throws -> TerminalSession
-  func createSession(inFolder folder: String) async throws -> TerminalSession
+  func createSession(inFolder folder: String, agent: CodingAgent) async throws -> TerminalSession
   func createSession(like sessionID: SessionID) async throws -> TerminalSession
   /// Running `agent`, beside `sessionID` or at home (RFD0072).
   func createSession(agent: CodingAgent, like sessionID: SessionID?) async throws -> TerminalSession

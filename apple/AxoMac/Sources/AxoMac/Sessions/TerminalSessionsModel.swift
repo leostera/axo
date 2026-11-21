@@ -188,6 +188,7 @@ final class TerminalSessionsModel {
     self.selectedSessionDefaults = selectedSessionDefaults
     let preferenceDefaults = selectedSessionDefaults ?? .standard
     self.preferenceDefaults = preferenceDefaults
+    defaultCodingAgent = preferenceDefaults.string(forKey: "defaultCodingAgent").flatMap(CodingAgent.init(rawValue:)) ?? .pi
     let restartsAutomatically = preferenceDefaults.bool(forKey: AxoPreferenceKey.automaticPiRestart)
     let storedSelection = Self.storedSelectedSessionID(from: selectedSessionDefaults)
     selection = WorkbenchSelection(selectedSessionID: storedSelection)
@@ -429,6 +430,13 @@ final class TerminalSessionsModel {
 
   /// Renegotiates (Axod may have been upgraded or restarted) and re-reads the catalog. Called by
   /// `TerminalCatalogSync` whenever it (re)subscribes; failures go back to it for retry.
+  private(set) var defaultCodingAgent: CodingAgent
+  func selectDefaultAgent(_ agent: CodingAgent) {
+    guard availableCodingAgents.contains(agent) else { return }
+    defaultCodingAgent = agent
+    preferenceDefaults.set(agent.rawValue, forKey: "defaultCodingAgent")
+  }
+
   private(set) var availableCodingAgents: [CodingAgent] = []
 
   func refreshAvailableCodingAgents() async {
@@ -735,7 +743,7 @@ final class TerminalSessionsModel {
     defer { AxoTrace.endInterval(interval) }
     sessionCreationError = nil
     do {
-      adopt(try await requireClient().createSession(inFolder: folder))
+      adopt(try await requireClient().createSession(inFolder: folder, agent: defaultCodingAgent))
     } catch {
       report(error)
       sessionCreationError = error.localizedDescription
@@ -760,7 +768,7 @@ final class TerminalSessionsModel {
     defer { AxoTrace.endInterval(interval) }
     let start = ContinuousClock.now
     do {
-      let session = try await requireClient().createSession()
+      let session = try await requireClient().createSession(agent: defaultCodingAgent, like: nil)
       AxoTrace.commands.notice(
         "event=session.create_returned session_id=\(session.id.rawValue) elapsed_ms=\(AxoTrace.elapsed(since: start), privacy: .public)")
       adopt(session)
@@ -777,7 +785,7 @@ final class TerminalSessionsModel {
     let interval = AxoTrace.beginInterval("command.session.create")
     defer { AxoTrace.endInterval(interval) }
     do {
-      adopt(try await requireClient().createSession(like: selected))
+      adopt(try await requireClient().createSession(agent: defaultCodingAgent, like: selected))
     } catch {
       report(error)
     }

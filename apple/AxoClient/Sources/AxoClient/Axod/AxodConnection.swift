@@ -169,6 +169,10 @@ public final class AxodConnection: Sendable {
     try await call(AxodMethods.sessionCreate, SessionCreateRequest(folder: folder, like: nil, name: name))
   }
 
+  public func createSession(inFolder folder: String, agent: CodingAgent) async throws -> TerminalSession {
+    try await call(AxodMethods.sessionCreate, SessionCreateRequest(folder: folder, like: nil, name: nil, agent: agent))
+  }
+
   /// A new Session in the folder of the open Session `sessionID`.
   public func createSession(like sessionID: SessionID) async throws -> TerminalSession {
     try await createSession(like: sessionID, name: nil)

@@ -175,7 +175,22 @@ private struct AgentSettingsView: View {
         .fixedSize(horizontal: false, vertical: true)
       }
 
-      DaemonCommandSettingSection(setting: .agent, daemon: daemon, client: settingsClient)
+      Section("Default Agent") {
+        Picker("Agent for new local sessions", selection: Binding(
+          get: { sessions.defaultCodingAgent }, set: { sessions.selectDefaultAgent($0) }
+        )) {
+          if !sessions.availableCodingAgents.contains(sessions.defaultCodingAgent) {
+            Text("\(sessions.defaultCodingAgent.displayName) — not detected").tag(sessions.defaultCodingAgent)
+          }
+          ForEach(sessions.availableCodingAgents) { agent in Text(agent.displayName).tag(agent) }
+        }
+        .disabled(!daemon.status.isRunning || sessions.availableCodingAgents.isEmpty)
+        Button("Refresh Agents") { Task { await sessions.refreshAvailableCodingAgents() } }
+          .disabled(!daemon.status.isRunning)
+        Text("Axo checks installed agents on this Mac. Choosing one does not start a session.")
+          .font(.caption).foregroundStyle(.secondary)
+      }
+      .task(id: daemon.status) { await sessions.refreshAvailableCodingAgents() }
     }
     .formStyle(.grouped)
   }
