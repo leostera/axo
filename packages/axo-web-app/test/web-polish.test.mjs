@@ -94,6 +94,8 @@ test("web polish: user Markdown, contrasting Send and independent searchable mod
     await send.click();
     const pending = page.getByTestId("pending-prompt");
     await pending.locator("strong").waitFor();
+    assert.equal(await pending.locator(".pending-label").count(), 0);
+    await page.getByTestId("agent-activity").getByText("Thinking…", { exact: true }).waitFor();
     assert.equal(await pending.locator("strong").textContent(), "Pending bold");
     assert.equal(await pending.locator("code").textContent(), "pending code");
     assert.deepEqual(errors, []);

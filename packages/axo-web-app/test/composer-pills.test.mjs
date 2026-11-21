@@ -76,10 +76,7 @@ test("composer: host, actual agent, model and thinking stay separate on one tool
     // A controlled radio is confirmed by the async agent reply, not check()'s
     // immediate native-state assertion. Click once and await the acknowledged state.
     await page.getByRole("radio", { name: "High", exact: true }).click();
-    await page.waitForFunction(() => {
-      const group = document.querySelector('[role="radiogroup"][aria-label="Thinking level"]');
-      return group?.getAttribute("aria-busy") === "false" && group.querySelector('input[value="high"]')?.checked;
-    });
+    await page.getByRole("dialog", { name: "Thinking level" }).waitFor({ state: "detached" });
     await page.getByRole("button", { name: "Thinking: High", exact: true }).waitFor();
     assert.equal(await field.inputValue(), "Keep this unsent");
     assert.equal(cloud.prompts.length, 0);
