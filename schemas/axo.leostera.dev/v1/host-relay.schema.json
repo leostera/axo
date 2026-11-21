@@ -30,6 +30,9 @@
           "$ref": "#/$defs/RemoteSessionCreateCall"
         },
         {
+          "$ref": "#/$defs/RemoteSessionForkCall"
+        },
+        {
           "$ref": "#/$defs/RemoteSessionCloseCall"
         },
         {
@@ -352,6 +355,33 @@
       "required": [
         "params"
       ]
+    },
+    "RemoteSessionForkCall": {
+      "description": "Forks the confirmed snapshot of a Pi Session onto the target host. The target declines if the source agent is unknown or unsupported, or the snapshot is unavailable. If the destination folder is unavailable, the error message is 'Choose a destination folder'.",
+      "allOf": [
+        { "$ref": "#/$defs/BaseCall" },
+        {
+          "properties": {
+            "method": { "const": "axo.remote.session.fork" },
+            "params": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["target", "sourceHostId", "sessionId", "epoch", "head", "requestId"],
+              "properties": {
+                "target": { "$ref": "common.schema.json#/$defs/HostRef", "description": "The destination host and generation." },
+                "sourceHostId": { "type": "string", "format": "uuid" },
+                "sessionId": { "$ref": "common.schema.json#/$defs/SessionId", "description": "The source Session." },
+                "epoch": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+                "head": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+                "requestId": { "type": "string", "format": "uuid", "description": "The caller reuses this ID when retrying the same fork." },
+                "folder": { "type": "string", "pattern": "^/[^\\u0000]*$", "description": "An absolute destination path. If omitted, try the source path on the destination." }
+              }
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false,
+      "required": ["params"]
     },
     "RemoteSessionCloseCall": {
       "allOf": [
@@ -870,6 +900,9 @@
           "$ref": "common.schema.json#/$defs/SessionSnapshot"
         }
       }
+    },
+    "RemoteSessionForkResult": {
+      "$ref": "#/$defs/RemoteSessionCreateResult"
     },
     "RemoteSessionCloseResult": {
       "type": "object",

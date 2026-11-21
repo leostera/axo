@@ -2,6 +2,7 @@
   "required": [
     "axo.host.sessions.list",
     "axo.remote.session.create",
+    "axo.remote.session.fork",
     "axo.remote.session.close",
     "axo.remote.session.rename",
     "axo.remote.session.restart",
@@ -19,5 +20,5 @@
     "axo.remote.session.models",
     "axo.remote.session.model.set"
   ],
-  "planned": ["axo.remote.session.fork"]
+  "planned": []
 }

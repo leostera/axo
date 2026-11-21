@@ -70,7 +70,7 @@ pub const PARITY: &[Parity] = &[
     ),
     row(
         method::SESSION_FORK,
-        Remote::Planned("axo.remote.session.fork"),
+        Remote::Call("axo.remote.session.fork"),
     ),
     row(
         method::SESSION_CLOSE,

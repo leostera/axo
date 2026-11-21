@@ -187,6 +187,32 @@ assert.equal(ajv.getSchema(appsSchema("BashCall"))(relativeBash), false, "and by
 const remoteCreate = await fixture("host-session-create.call.json");
 const hostCallSchema = "https://schemas.axo.leostera.dev/v1/host-relay.schema.json#/$defs/Call";
 validateWith(hostCallSchema, remoteCreate);
+const fork = await fixture("host-session-fork.call.json");
+const forkParams = hostV1Methods[fork.method];
+for (const params of [fork.params, { ...fork.params, folder: undefined, head: 0 }]) {
+  validateWith(hostCallSchema, { ...fork, params });
+  assert.ok(forkParams.safeParse(params).success);
+}
+for (const overrides of [
+  { sourceHostId: "not-a-host" }, { target: { hostId: fork.params.target.hostId } },
+  { sessionId: 1 }, { requestId: undefined }, { requestId: "not-a-uuid" },
+  { epoch: 0 }, { head: -1 }, { head: 1.5 }, { head: Number.MAX_SAFE_INTEGER + 1 },
+  { folder: "relative/path" }, { folder: "/tmp\0bad" }, { folder: null }, { agent: "pi" },
+]) {
+  const params = { ...fork.params, ...overrides };
+  assert.equal(ajv.getSchema(hostCallSchema)({ ...fork, params }), false, JSON.stringify(overrides));
+  assert.equal(forkParams.safeParse(params).success, false, JSON.stringify(overrides));
+}
+const forkResultSchema = "https://schemas.axo.leostera.dev/v1/host-relay.schema.json#/$defs/RemoteSessionForkResult";
+const forkResult = { session: {
+  hostId: fork.params.target.hostId,
+  sessionId: "0b8f4e2a-7c1d-4e6b-9a3f-5d2c8e1b7a49",
+  shells: [], layout: null, updatedAt: "2026-10-30T00:00:00Z",
+} };
+validateWith(forkResultSchema, forkResult);
+assert.ok(hostV1Results[fork.method].safeParse(forkResult).success);
+assert.equal(ajv.getSchema(forkResultSchema)({ accepted: true }), false);
+assert.equal(hostV1Results[fork.method].safeParse({ accepted: true }).success, false);
 validateWith(hostCallSchema, await fixture("host-register.call.json"));
 validateWith(hostCallSchema, await fixture("terminal-input.call.json"));
 validateWith(hostCallSchema, await fixture("session-prompt.call.json"));

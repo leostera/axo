@@ -150,6 +150,7 @@ const appRemoteResults = {
   "axo.remote.agents.list": hostV1Results["axo.remote.agents.list"],
   "axo.remote.agents.models": remoteModelsResultSchema,
   "axo.remote.session.create": remoteSessionCreateResultSchema,
+  "axo.remote.session.fork": hostV1Results["axo.remote.session.fork"],
   "axo.remote.session.close": remoteSessionCloseResultSchema,
   "axo.remote.session.rename": remoteLayoutSetResultSchema,
   "axo.remote.session.layout.set": remoteLayoutSetResultSchema,

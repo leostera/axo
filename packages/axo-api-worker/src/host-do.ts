@@ -124,6 +124,7 @@ type AccountStub = {
   registerHost(registration: unknown, now: number): Promise<HostSnapshot>;
   touchHost(hostId: string, hostGeneration: string, now: number): Promise<{ acknowledged: true; lastSeenAt: string }>;
   appsCall(call: AppsCall): Promise<HostCommandOutcome>;
+  clientHosts(): Promise<Array<{ hostId: string }>>;
   admitShare(hostId: string, shareId: string, bytes: number, now: number): Promise<ShareAdmission>;
   confirmSignIn(signIn: SignIn, now: number, onHost?: string): Promise<boolean>;
   forgetShare(shareId: string): Promise<void>;
@@ -221,6 +222,7 @@ const hostRemoteMethods = {
   "axo.remote.agents.list": hostV1Methods["axo.remote.agents.list"],
   "axo.remote.agents.models": hostV1Methods["axo.remote.agents.models"],
   "axo.remote.session.create": hostV1Methods["axo.remote.session.create"],
+  "axo.remote.session.fork": hostV1Methods["axo.remote.session.fork"],
   "axo.remote.session.close": hostV1Methods["axo.remote.session.close"],
   "axo.remote.shell.create": hostV1Methods["axo.remote.shell.create"],
   "axo.remote.shell.close": hostV1Methods["axo.remote.shell.close"],
@@ -712,8 +714,20 @@ export class AxoHostDO extends AxoHostRelay {
     const parsed = hostRemoteMethods[remote].safeParse(params);
     if (!parsed.success) return { error: { code: -32602, message: "Invalid params" } };
     const identity = this.identity();
-    const active = identity ? this.active(identity.host_id) : undefined;
-    if (!identity || !active) return { error: { code: -32005, message: "Host offline; nothing queued" } };
+    if (!identity) return { error: { code: -32005, message: "Host offline; nothing queued" } };
+    if ("sourceHostId" in parsed.data) {
+      const { sourceHostId, target } = parsed.data;
+      if (target.hostId !== identity.host_id) return { error: { code: -32002, message: "Stale host" } };
+      if (sourceHostId === target.hostId) return { error: { code: -32602, message: "Fork requires a different destination host" } };
+      // Both hosts must still belong to this account. A paired Mac's own host is not in its
+      // follower index, so authorize against the account directory, not the client socket's list.
+      const hosts = await this.account().clientHosts().catch(() => null);
+      if (!hosts) return { error: { code: -32005, message: "Could not verify fork hosts; nothing sent" } };
+      if (!hosts.some(({ hostId }) => hostId === sourceHostId) || !hosts.some(({ hostId }) => hostId === target.hostId))
+        return { error: { code: -32602, message: "Invalid fork hosts" } };
+    }
+    const active = this.active(identity.host_id);
+    if (!active) return { error: { code: -32005, message: "Host offline; nothing queued" } };
     if (parsed.data.target.hostId !== identity.host_id || parsed.data.target.hostGeneration !== active.route.generation)
       return { error: { code: -32002, message: "Stale host" } };
     if (this.commands.size >= LIMITS.pendingPerMachine) return { error: { code: -32006, message: "Pending capacity" } };

@@ -33,6 +33,7 @@ This directory is the versioned wire-contract source for Axo clients and relays.
 | `axo.host.list` / `axo.host.sessions.list` | web app → API | none / host reference | host summaries / host-scoped snapshots |
 | `axo.host.subscribe` / `axo.host.unsubscribe` | web app → API | host reference / subscription ID | subscription ID / acknowledgement |
 | `axo.remote.session.create` / `.close` | web app → API → axod | host reference and session parameters | sanitized session result |
+| `axo.remote.session.fork` | app → API → destination axod | destination host reference; source host, Pi session, epoch and head; request UUID; optional absolute destination folder | same result as `.create` |
 | `axo.remote.shell.create` / `.close` | web app → API → axod | host, session, and optional shell IDs | sanitized shell result |
 | `axo.remote.session.layout.set` | web app → API → axod | host reference, session ID, layout tree | persistence acknowledgement |
 | `axo.remote.terminal.input` / `axo.remote.terminal.resize` | web app → API → axod | host, session, shell IDs, sequence and base64 bytes / rows and columns | accepted sequence / accepted size |

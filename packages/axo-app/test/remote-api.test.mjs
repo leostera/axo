@@ -46,6 +46,14 @@ class FakeWebSocket {
         if (request.params.method === "axo.remote.session.prompt") {
           return queueMicrotask(() => this.emit({ jsonrpc: "2.0", id: request.id, error: { code: -32005, message: "Host offline; nothing queued" } }));
         }
+        if (request.params.method === "axo.remote.session.fork") {
+          const fork = request.params.params;
+          if (!fork.folder) {
+            return queueMicrotask(() => this.emit({ jsonrpc: "2.0", id: request.id, error: { code: -32602, message: "Choose a destination folder" } }));
+          }
+          if (fork.folder === "/invalid-result") return reply({ accepted: true });
+          return reply({ session: { hostId: fork.target.hostId, sessionId: sid(3), shells: [], layout: null, updatedAt: timestamp } });
+        }
         if (request.params.method === "axo.remote.session.stop") {
           return queueMicrotask(() => this.emit({ jsonrpc: "2.0", id: request.id, result: { stopped: true } }));
         }
@@ -115,6 +123,21 @@ test("commands go to the named host, results are checked, and an offline host fa
     (error) => error.code === -32005,
   );
   connection.close();
+});
+
+test("forks address the destination and require a CreatedSession result", async (t) => {
+  const { connection, socket } = await connect();
+  t.after(() => connection.close());
+  const method = "axo.remote.session.fork";
+  const params = { target: reference, sourceHostId: sid(2), sessionId: sid(1), epoch: 1, head: 2, requestId: sid(4) };
+
+  await assert.rejects(connection.command(method, params), { code: -32602, message: "Choose a destination folder" });
+  const withFolder = { ...params, folder: "/Users/example/project" };
+  const forked = await connection.command(method, withFolder);
+  assert.equal(forked.session.hostId, hostId);
+  assert.equal(forked.session.sessionId, sid(3));
+  assert.deepEqual(socket().sent.at(-1).params, { hostId, method, params: withFolder });
+  await assert.rejects(connection.command(method, { ...params, folder: "/invalid-result" }), { name: "ZodError" });
 });
 
 test("stopping a turn reads the host's answer, as every remote method's is", async () => {

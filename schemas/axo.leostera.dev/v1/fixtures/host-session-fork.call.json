@@ -1,0 +1,17 @@
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "axo.remote.session.fork",
+  "params": {
+    "target": {
+      "hostId": "236dcf13-f476-48c4-a1a0-70b3755b8096",
+      "hostGeneration": "ccde1302-6fde-4813-a339-1c1d233c3b53"
+    },
+    "sourceHostId": "ecd70148-4bce-40fb-930c-59d76583f647",
+    "sessionId": "82cfd1e8-1cc6-4473-a16d-6f0e77476311",
+    "epoch": 1,
+    "head": 42,
+    "requestId": "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b",
+    "folder": "/Users/example/project"
+  }
+}

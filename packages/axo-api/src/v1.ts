@@ -215,6 +215,15 @@ export const hostV1Methods = {
     // The coding agent the Session runs (RFD0072); Pi when absent.
     agent: agentKindSchema.optional(),
   }).strict(),
+  // Fork a confirmed source snapshot onto the destination. The destination verifies
+  // that the source runs Pi and that the requested history and folder are available.
+  "axo.remote.session.fork": sessionTargetSchema.extend({
+    sourceHostId: hostIdSchema,
+    epoch: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER),
+    head: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
+    requestId: z.uuid(),
+    folder: z.string().regex(/^\/[^\u0000]*$/u).optional(),
+  }).strict(),
   "axo.remote.session.close": sessionTargetSchema,
   "axo.remote.shell.create": sessionTargetSchema,
   "axo.remote.shell.close": shellTargetSchema,
@@ -264,6 +273,7 @@ export const hostMutationMethods = [
   "axo.host.subscribe",
   "axo.host.unsubscribe",
   "axo.remote.session.create",
+  "axo.remote.session.fork",
   "axo.remote.session.close",
   "axo.remote.session.rename",
   "axo.remote.shell.create",
@@ -337,6 +347,7 @@ export const hostV1Results = {
   "axo.host.subscribe": hostSubscribeResultSchema,
   "axo.host.unsubscribe": hostUnsubscribeResultSchema,
   "axo.remote.session.create": remoteSessionCreateResultSchema,
+  "axo.remote.session.fork": remoteSessionCreateResultSchema,
   "axo.remote.session.close": remoteSessionCloseResultSchema,
   "axo.remote.shell.create": remoteShellCreateResultSchema,
   "axo.remote.shell.close": remoteShellCloseResultSchema,

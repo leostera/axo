@@ -90,6 +90,14 @@ node_test(
 )
 
 node_test(
+    name = "host_fork_test",
+    data = _DEPS + [":node_modules/tsx", ":test_files", "//packages/axo-api:fixtures"],
+    tests = ["tests/host-fork.test.ts"],
+    tests_in_data = True,
+    tsx = True,
+)
+
+node_test(
     name = "session_sync_test",
     concurrency = 1,
     data = _DEPS + [":node_modules/tsx", ":test_files", "//packages/axo-api:fixtures"],
