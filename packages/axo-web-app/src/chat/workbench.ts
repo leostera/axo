@@ -1048,7 +1048,7 @@ export class ChatWorkbench {
     const folder = hostV1Methods["axo.remote.session.fork"].shape.folder.safeParse(fork.needsFolder ? folderInput : undefined);
     let params = fork.params;
     if (!folder.success) {
-      fail("Enter an absolute path on the destination host, starting with /.");
+      fail("Enter an absolute path to a folder on the destination host.");
       return;
     }
     const source = this.openHost;

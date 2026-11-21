@@ -189,7 +189,8 @@ const hostCallSchema = "https://schemas.axo.leostera.dev/v1/host-relay.schema.js
 validateWith(hostCallSchema, remoteCreate);
 const fork = await fixture("host-session-fork.call.json");
 const forkParams = hostV1Methods[fork.method];
-for (const params of [fork.params, { ...fork.params, folder: undefined, head: 0 }]) {
+for (const params of [fork.params, { ...fork.params, folder: undefined, head: 0 },
+  { ...fork.params, folder: "C:\\Users\\Leo\\project" }, { ...fork.params, folder: "D:/work" }]) {
   validateWith(hostCallSchema, { ...fork, params });
   assert.ok(forkParams.safeParse(params).success);
 }
@@ -197,7 +198,7 @@ for (const overrides of [
   { sourceHostId: "not-a-host" }, { target: { hostId: fork.params.target.hostId } },
   { sessionId: 1 }, { requestId: undefined }, { requestId: "not-a-uuid" },
   { epoch: 0 }, { head: -1 }, { head: 1.5 }, { head: Number.MAX_SAFE_INTEGER + 1 },
-  { folder: "relative/path" }, { folder: "/tmp\0bad" }, { folder: null }, { agent: "pi" },
+  { folder: "C:relative" }, { folder: "\\relative" }, { folder: "relative/path" }, { folder: "/tmp\0bad" }, { folder: null }, { agent: "pi" },
 ]) {
   const params = { ...fork.params, ...overrides };
   assert.equal(ajv.getSchema(hostCallSchema)({ ...fork, params }), false, JSON.stringify(overrides));

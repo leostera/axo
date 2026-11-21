@@ -222,7 +222,7 @@ export const hostV1Methods = {
     epoch: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER),
     head: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
     requestId: z.uuid(),
-    folder: z.string().regex(/^\/[^\u0000]*$/u).optional(),
+    folder: z.string().regex(/^(?:\/|[A-Za-z]:[\\/])[^\u0000]*$/u).optional(),
   }).strict(),
   "axo.remote.session.close": sessionTargetSchema,
   "axo.remote.shell.create": sessionTargetSchema,

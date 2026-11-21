@@ -32,7 +32,7 @@ public struct SessionForkSheet: View {
           .font(.subheadline.weight(.semibold))
         Text("Enter the absolute path to an existing folder on \(machine).")
           .foregroundStyle(.secondary)
-        TextField("/absolute/path", text: $folder)
+        TextField("Absolute folder path", text: $folder)
           .textFieldStyle(.roundedBorder)
           #if os(iOS)
           .textInputAutocapitalization(.never)
@@ -57,7 +57,7 @@ public struct SessionForkSheet: View {
         Button(failure == nil ? "Fork" : "Retry Fork", action: submit)
           .buttonStyle(.borderedProminent)
           .keyboardShortcut(.defaultAction)
-          .disabled(inFlight || (needsFolder && !trimmedFolder.hasPrefix("/")))
+          .disabled(inFlight || (needsFolder && !hasAbsoluteFolder))
           .accessibilityIdentifier("session-fork-confirm")
       }
     }
@@ -73,10 +73,17 @@ public struct SessionForkSheet: View {
 
   private var trimmedFolder: String { folder.trimmingCharacters(in: .whitespacesAndNewlines) }
 
+  // Resolve the folder on the destination, not with this Apple device's path conventions.
+  private var hasAbsoluteFolder: Bool {
+    guard !trimmedFolder.utf8.contains(0) else { return false }
+    return trimmedFolder.hasPrefix("/")
+      || trimmedFolder.range(of: #"^[A-Za-z]:[\\/]"#, options: .regularExpression) != nil
+  }
+
   private func submit() {
     guard !inFlight else { return }
     if needsFolder {
-      guard trimmedFolder.hasPrefix("/") else { return }
+      guard hasAbsoluteFolder else { return }
       if submittedFolder != trimmedFolder { requestID = UUID() }
       submittedFolder = trimmedFolder
     }

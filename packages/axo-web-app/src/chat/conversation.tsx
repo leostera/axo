@@ -719,7 +719,7 @@ function HostForkDialog({ workbench, fork }: { workbench: ChatWorkbench; fork: N
             <label className="fork-folder">
               Destination folder on {fork.destination}
               <input ref={folderField} value={folder} onChange={event => setFolder(event.target.value)}
-                placeholder="/absolute/path" readOnly={fork.pending} required spellCheck={false} />
+                placeholder="Absolute folder path" readOnly={fork.pending} required spellCheck={false} />
             </label>
           ) : null}
         </div>
