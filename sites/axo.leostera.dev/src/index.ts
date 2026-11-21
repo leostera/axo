@@ -98,7 +98,7 @@ export default {
     if (pathname.startsWith("/api/public-sessions/")) {
       return await publicSessionSnapshot(request, env) ?? new Response("Not found", { status: 404 });
     }
-    if (pathname === AUTH_PATH || pathname.startsWith(`${AUTH_PATH}/`) ||
+    if (pathname === "/api/health" || pathname === AUTH_PATH || pathname.startsWith(`${AUTH_PATH}/`) ||
         pathname.startsWith("/api/v1/account/") ||
         pathname.startsWith("/api/v1/accounts/") ||
         // A connection's OAuth sign-in: Axo's start page and the provider's callback (RFD0016).
