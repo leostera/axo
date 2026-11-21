@@ -42,6 +42,26 @@ impl Codex {
         config: &[String],
         on_event: impl Fn(Value) + Send + Sync + 'static,
     ) -> io::Result<Self> {
+        Self::spawn_inner(executable, cwd, config, false, on_event)
+    }
+
+    /// Path-based rollout resume is experimental in the verified Codex app-server.
+    pub fn spawn_for_import(
+        executable: &Path,
+        cwd: &Path,
+        config: &[String],
+        on_event: impl Fn(Value) + Send + Sync + 'static,
+    ) -> io::Result<Self> {
+        Self::spawn_inner(executable, cwd, config, true, on_event)
+    }
+
+    fn spawn_inner(
+        executable: &Path,
+        cwd: &Path,
+        config: &[String],
+        experimental: bool,
+        on_event: impl Fn(Value) + Send + Sync + 'static,
+    ) -> io::Result<Self> {
         let mut command = Command::new(executable);
         for setting in config {
             command.arg("-c").arg(setting);
@@ -132,12 +152,13 @@ impl Codex {
             next_id: AtomicU64::new(1),
             alive,
         };
-        codex.request(
-            "initialize",
-            json!({"clientInfo": {
-                "name":"axo_windows", "title":"Axo", "version":env!("CARGO_PKG_VERSION")
-            }}),
-        )?;
+        let mut initialize = json!({"clientInfo": {
+            "name":"axo_windows", "title":"Axo", "version":env!("CARGO_PKG_VERSION")
+        }});
+        if experimental {
+            initialize["capabilities"] = json!({"experimentalApi":true});
+        }
+        codex.request("initialize", initialize)?;
         codex.notify("initialized", json!({}))?;
         Ok(codex)
     }

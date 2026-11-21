@@ -8,6 +8,7 @@ mod credentials;
 mod elicitation;
 #[path = "events.rs"]
 mod events;
+mod fork_import;
 mod mcp;
 mod panes;
 mod relay;
@@ -140,6 +141,7 @@ struct Backend {
     sessions: Mutex<HashMap<SessionId, Arc<LiveSession>>>,
     transcripts: Mutex<HashMap<SessionId, transcript::Fingerprint>>,
     codex: PathBuf,
+    fork_codex: bool,
     stop: tokio::sync::Notify,
     directory: PathBuf,
     relay: Mutex<Option<Arc<relay::Relay>>>,
@@ -178,6 +180,9 @@ pub fn serve(
         let mut listener = security::create_pipe(&pipe, &sid, true)?;
         let database = axo_store::open(&directory.join(axo_store::DATABASE_FILE))?;
         axo_store::coding::initialize(&database)?;
+        axo_store::coding::initialize_forks(&database)?;
+        let fork_codex =
+            fork_import::converter().is_some() && agents::import_supported(&codex).await;
         let backend = Arc::new(Backend {
             computer: computer::Computer::load(&directory)?,
             pipe: pipe.clone(),
@@ -185,6 +190,7 @@ pub fn serve(
             transcripts: Mutex::new(HashMap::new()),
             sessions: Mutex::new(HashMap::new()),
             codex,
+            fork_codex,
             stop: tokio::sync::Notify::new(),
             directory,
             relay: Mutex::new(None),
@@ -1065,6 +1071,11 @@ impl Backend {
         }
     }
 
+    fn codex_parameters(&self, cwd: &Path) -> Value {
+        let full = self.computer.settings.lock().unwrap().codex_full_access;
+        json!({"cwd":cwd,"approvalPolicy":if full {"never"} else {"on-request"},"approvalsReviewer":"user","sandbox":if full {"danger-full-access"} else {"workspace-write"},"serviceName":"axo"})
+    }
+
     fn start_agent(
         self: &Arc<Self>,
         id: SessionId,
@@ -1074,27 +1085,40 @@ impl Backend {
         let cwd = axo_store::session_initial_pwd(&self.database.lock().unwrap(), id)?;
         let weak = Arc::downgrade(self);
         let live = Arc::downgrade(session);
-        let agent = Arc::new(Codex::spawn_with_config(
-            &self.codex,
-            &cwd,
-            &self.mcp_config(id)?,
-            move |event| {
-                if let (Some(backend), Some(session)) = (weak.upgrade(), live.upgrade()) {
-                    backend.on_event(id, &session, generation, event);
-                }
-            },
-        )?);
-        let thread = axo_store::coding::thread_id(&self.database.lock().unwrap(), id)?;
-        let full = self.computer.settings.lock().unwrap().codex_full_access;
-        let mut parameters = json!({"cwd":cwd,"approvalPolicy":if full {"never"} else {"on-request"},"approvalsReviewer":"user","sandbox":if full {"danger-full-access"} else {"workspace-write"},"serviceName":"axo"});
-        let result = match thread {
-            Some(thread) => {
+        let (thread, imported) = {
+            let db = self.database.lock().unwrap();
+            (
+                axo_store::coding::thread_id(&db, id)?,
+                axo_store::coding::imported_rollout(&db, id)?,
+            )
+        };
+        let on_event = move |event| {
+            if let (Some(backend), Some(session)) = (weak.upgrade(), live.upgrade()) {
+                backend.on_event(id, &session, generation, event);
+            }
+        };
+        let config = self.mcp_config(id)?;
+        let agent = Arc::new(if imported.is_some() {
+            Codex::spawn_for_import(&self.codex, &cwd, &config, on_event)?
+        } else {
+            Codex::spawn_with_config(&self.codex, &cwd, &config, on_event)?
+        });
+        let mut parameters = self.codex_parameters(&cwd);
+        let result = match (thread, imported) {
+            (Some(thread), Some(path)) => {
+                fork_import::resume_params(&mut parameters, &thread, &path);
+                let result = agent.request("thread/resume", parameters)?;
+                fork_import::verify_resume(&result, &thread, &cwd, &path)?;
+                result
+            }
+            (Some(thread), None) => {
                 parameters["threadId"] = json!(thread);
                 parameters["excludeTurns"] = json!(true);
-                agent.request("thread/resume", parameters)
+                agent.request("thread/resume", parameters)?
             }
-            None => agent.request("thread/start", parameters),
-        }?;
+            (None, None) => agent.request("thread/start", parameters)?,
+            (None, Some(_)) => return Err(invalid("Imported Codex thread identity is missing")),
+        };
         let thread = result["thread"]["id"]
             .as_str()
             .ok_or_else(|| io::Error::other("Codex did not return a thread ID"))?;
@@ -1413,6 +1437,7 @@ mod tests {
         let mut db = axo_store::Connection::open_in_memory().unwrap();
         axo_store::initialize_database(&mut db).unwrap();
         axo_store::coding::initialize(&db).unwrap();
+        axo_store::coding::initialize_forks(&db).unwrap();
         Backend {
             computer: computer::Computer::default(),
             pipe: String::new(),
@@ -1420,6 +1445,7 @@ mod tests {
             transcripts: Mutex::new(HashMap::new()),
             sessions: Mutex::new(HashMap::new()),
             codex: PathBuf::from("codex"),
+            fork_codex: false,
             stop: tokio::sync::Notify::new(),
             directory: std::env::temp_dir(),
             relay: Mutex::new(None),

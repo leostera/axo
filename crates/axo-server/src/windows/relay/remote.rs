@@ -33,6 +33,9 @@ pub(super) fn answer(host: &Host, request: Value) -> Option<Value> {
         None
     };
     let params = request.get("params").cloned().unwrap_or_else(|| json!({}));
+    if matches!(name, super::forks::PLAN | super::forks::CREATE) {
+        return Some(super::forks::answer(host, id, name, params));
+    }
     let result = dispatch_remote_call(
         name,
         &params,
@@ -475,6 +478,8 @@ mod tests {
                 host_generation: "current".into(),
             },
             prompt_lock: std::sync::Arc::new(std::sync::Mutex::new(())),
+            fork_lock: Default::default(),
+            peers: axo_relay::peers::PeerLive::new(),
             prompts: std::sync::Arc::new(AtomicUsize::new(0)),
             assets: std::sync::Arc::new(std::sync::Mutex::new(None)),
         }

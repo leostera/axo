@@ -173,6 +173,73 @@ pub fn insert_session(
         .map_err(io::Error::other)
 }
 
+/// The request and completed reply share the catalog database. A pending receipt must never
+/// be interpreted as success or permission to create a second native child.
+pub fn initialize_forks(database: &Connection) -> io::Result<()> {
+    database.execute_batch("CREATE TABLE IF NOT EXISTS coding_fork_receipts (
+        id TEXT PRIMARY KEY, request TEXT NOT NULL, reply TEXT
+    ); CREATE TABLE IF NOT EXISTS coding_imports (session_id TEXT PRIMARY KEY, path TEXT NOT NULL);")
+        .map_err(io::Error::other)
+}
+
+pub fn fork_receipt(
+    database: &Connection,
+    id: SessionId,
+) -> io::Result<Option<(String, Option<String>)>> {
+    database
+        .query_row(
+            "SELECT request,reply FROM coding_fork_receipts WHERE id=?1",
+            [id.to_string()],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(io::Error::other)
+}
+
+pub fn claim_fork(database: &Connection, id: SessionId, request: &str) -> io::Result<bool> {
+    database.execute("INSERT INTO coding_fork_receipts(id,request) VALUES (?1,?2) ON CONFLICT(id) DO NOTHING",
+        params![id.to_string(),request]).map(|count| count == 1).map_err(io::Error::other)
+}
+
+pub fn complete_fork(
+    database: &Connection,
+    id: SessionId,
+    child: SessionId,
+    path: &Path,
+    reply: &str,
+) -> io::Result<()> {
+    database
+        .execute(
+            "INSERT INTO coding_imports(session_id,path) VALUES (?1,?2)",
+            params![
+                child.to_string(),
+                path.to_str().ok_or_else(|| io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "Invalid imported path"
+                ))?
+            ],
+        )
+        .map_err(io::Error::other)?;
+    let count = database
+        .execute(
+            "UPDATE coding_fork_receipts SET reply=?2 WHERE id=?1 AND reply IS NULL",
+            params![id.to_string(), reply],
+        )
+        .map_err(io::Error::other)?;
+    crate::expect_one_row(count, "Fork receipt was not pending")
+}
+
+pub fn imported_rollout(database: &Connection, id: SessionId) -> io::Result<Option<PathBuf>> {
+    database
+        .query_row(
+            "SELECT path FROM coding_imports WHERE session_id=?1",
+            [id.to_string()],
+            |row| row.get::<_, String>(0).map(PathBuf::from),
+        )
+        .optional()
+        .map_err(io::Error::other)
+}
+
 pub fn thread_id(database: &Connection, id: SessionId) -> io::Result<Option<String>> {
     database
         .query_row(

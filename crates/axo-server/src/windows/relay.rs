@@ -3,6 +3,7 @@
 //! projections of completed Codex messages, never a second agent or source of truth.
 use super::*;
 mod adapters;
+mod forks;
 mod remote;
 use axo_protocol::commands::{CommandId, StopTarget};
 use axo_protocol::{Event, LayoutNode, RemoteSessionSnapshot, SessionRecord, ShellId};
@@ -19,6 +20,8 @@ pub(super) struct Host {
     backend: Weak<Backend>,
     identity: HostIdentity,
     prompt_lock: Arc<Mutex<()>>,
+    fork_lock: Arc<Mutex<()>>,
+    peers: Arc<axo_relay::peers::PeerLive>,
     prompts: Arc<std::sync::atomic::AtomicUsize>,
     assets: Arc<Mutex<Option<axo_relay::assets::AssetSource>>>,
 }
@@ -71,6 +74,8 @@ impl Relay {
                 host_generation: axo_protocol::new_uuid_v4()?,
             },
             prompt_lock: Arc::new(Mutex::new(())),
+            fork_lock: Arc::new(Mutex::new(())),
+            peers: axo_relay::peers::PeerLive::new(),
             prompts: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             assets: Arc::new(Mutex::new(None)),
         });
@@ -84,7 +89,11 @@ impl Relay {
                 endpoint: endpoint.clone(),
                 links: host.clone(),
                 credentials: credentials.clone(),
-                peers: None,
+                peers: Some(axo_relay::peers::PeersPaths {
+                    sessions_directory: backend.directory.join("peer-sessions"),
+                    index: backend.directory.join("peers.json"),
+                    live: host.peers.clone(),
+                }),
                 assets_directory: Some(backend.directory.join("assets")),
             },
             tokio::runtime::Handle::current(),
@@ -286,7 +295,7 @@ impl Host {
             let id: SessionId = serde_json::from_value(row["id"].clone())?;
             let metadata: SessionMetadata = serde_json::from_value(json!({
                 "name":row["name"],"emoji":row["emoji"],"folderName":axo_protocol::folder_name(Path::new(row["folder"].as_str().unwrap_or(""))),
-                "hasAgent":true,"createdAt":row["createdAt"],"lastMessageAt":row["lastMessageAt"],"archived":row["archived"]
+                "hasAgent":true,"agent":"codex","createdAt":row["createdAt"],"lastMessageAt":row["lastMessageAt"],"archived":row["archived"]
             }))?;
             let path = b.write_transcript(id)?;
             // Runtime readers write messages while holding the runtime lock, so release DB

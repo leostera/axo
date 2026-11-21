@@ -52,6 +52,12 @@ pub(super) async fn list(codex: &Path) -> AgentsList {
     AgentsList { agents }
 }
 
+pub(super) async fn import_supported(codex: &Path) -> bool {
+    probe(codex, VERSION_TIMEOUT)
+        .await
+        .is_ok_and(|version| version.to_string() == super::fork_import::CODEX_VERSION)
+}
+
 async fn probe(executable: &Path, timeout: Duration) -> io::Result<AgentVersion> {
     if !executable.is_absolute() || !executable.is_file() {
         return Err(io::Error::new(

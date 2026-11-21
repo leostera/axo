@@ -1,6 +1,7 @@
 param(
     [string]$BazelRoot = "$($env:SystemDrive)\axo-bazel",
     [switch]$Test,
+    [switch]$ForkCodex,
     [switch]$Run
 )
 $ErrorActionPreference = 'Stop'
@@ -41,6 +42,15 @@ try {
     & $dotnet publish windows/Axo/Axo.csproj -c Release --self-contained false -o dist/Axo-Windows --nologo "-p:Version=$($buildConfig.version).0" "-p:FileVersion=$($buildConfig.version).0.$($buildConfig.builds.axod)" "-p:InformationalVersion=$($buildConfig.version).0-windows.$($buildConfig.builds.axod)+$revision" '-p:IncludeSourceRevisionInInformationalVersion=false'
     if ($LASTEXITCODE -ne 0) { throw 'The desktop client build failed.' }
     Copy-Item -LiteralPath 'bazel-bin\crates\axod\axod.exe' -Destination 'dist\Axo-Windows\axod.exe' -Force
+    if ($ForkCodex) {
+        $cargo = (Get-Command cargo -ErrorAction SilentlyContinue).Source
+        if (-not $cargo) { $cargo = Join-Path $HOME '.cargo\bin\cargo.exe' }
+        if (-not (Test-Path -LiteralPath $cargo)) { throw 'Install Rust/Cargo to bundle the published ATXF converter.' }
+        $converter = Join-Path $repo 'dist\atxf-0.2.0'
+        & $cargo install atxf --version '=0.2.0' --locked --root $converter --registry crates-io
+        if ($LASTEXITCODE) { throw 'Could not install the pinned ATXF converter.' }
+        Copy-Item -LiteralPath (Join-Path $converter 'bin\atxf.exe') -Destination 'dist\Axo-Windows\atxf-0.2.0.exe'
+    }
     New-Item -ItemType Directory -Path 'dist/Axo-Windows/licenses' -Force | Out-Null
     Copy-Item -LiteralPath 'third_party/cua/LICENSE.md' -Destination 'dist/Axo-Windows/licenses/Cua-LICENSE.md' -Force
     Copy-Item -LiteralPath 'third_party/cua/THIRD_PARTY_NOTICES.md' -Destination 'dist/Axo-Windows/licenses/Cua-THIRD_PARTY_NOTICES.md' -Force
