@@ -828,8 +828,12 @@ fn a_cross_host_fork_copies_an_exact_confirmed_snapshot_and_retries_the_same_chi
     assert_eq!(hub.call(FORK_METHOD, wrong).unwrap_err()["code"], -32004);
     assert_eq!(axod.err(FORK_METHOD, params.clone()).code, METHOD_NOT_FOUND);
 
-    let folder = axod.home().canonicalize().unwrap();
-    params["folder"] = json!(folder);
+    let folder = axod.home().join("destination");
+    std::fs::create_dir(&folder).unwrap();
+    let folder = folder.canonicalize().unwrap();
+    let alias = axod.home().join("destination-link");
+    std::os::unix::fs::symlink(&folder, &alias).unwrap();
+    params["folder"] = json!(alias);
     let created = hub.ok(FORK_METHOD, params.clone());
     assert_eq!(created["session"]["hostId"], target["hostId"]);
     let id = &created["session"]["sessionId"];
@@ -842,6 +846,24 @@ fn a_cross_host_fork_copies_an_exact_confirmed_snapshot_and_retries_the_same_chi
         let record = the_session(&axod, id);
         (record["status"] == "ready").then_some(record)
     });
+    let log = axod.pi_log();
+    assert!(!log.contains("SENT:"), "fork delivered a prompt: {log}");
+    assert!(!log.contains("TYPED:"), "fork replayed input: {log}");
+    // On Linux, check the actual working directory of the new Pi process, not just
+    // the path that the daemon wrote into the child transcript.
+    #[cfg(target_os = "linux")]
+    {
+        let pid: u32 = log
+            .lines()
+            .find_map(|line| line.strip_prefix("STARTED:"))
+            .expect("the fork started a Pi process")
+            .parse()
+            .unwrap();
+        assert_eq!(
+            std::fs::read_link(format!("/proc/{pid}/cwd")).unwrap(),
+            folder
+        );
+    }
     let text = std::fs::read_to_string(record["piSessionFile"].as_str().unwrap()).unwrap();
     let lines: Vec<Value> = text
         .lines()
@@ -885,7 +907,22 @@ fn a_cross_host_fork_copies_an_exact_confirmed_snapshot_and_retries_the_same_chi
 fn the_local_bridge_resolves_its_own_published_snapshot_and_checks_the_peer_reply() {
     let hub = fork_hub(false);
     let (axod, target) = linked(&hub, Pi::Fake);
-    let source = axod.new_session()["id"].clone();
+    let parent = axod.new_session();
+    let source = parent["id"].clone();
+    let parent_file = parent["piSessionFile"].as_str().unwrap();
+    hub.ok(
+        "axo.remote.session.prompt",
+        json!({
+            "target": target, "sessionId": source, "text": "A real parent turn",
+        }),
+    );
+    let parent_bytes = axod.wait_for("the source reply and transcript to settle", || {
+        let bytes = std::fs::read_to_string(parent_file).ok()?;
+        (bytes.contains("A real parent turn")
+            && bytes.contains("\"role\":\"assistant\"")
+            && the_session(&axod, &source)["status"] == "ready")
+            .then_some(bytes)
+    });
     let own_path = format!("/peers/{}/client", target["hostId"].as_str().unwrap());
     hub.respond_on_peer(
         &own_path,
@@ -934,6 +971,10 @@ fn the_local_bridge_resolves_its_own_published_snapshot_and_checks_the_peer_repl
     assert_eq!(answer["session"]["sessionId"], CHILD);
     assert_eq!(answer["session"]["hostId"], PEER);
     assert_eq!(axod.sessions().len(), 1);
+    assert_eq!(the_session(&axod, &source)["status"], "ready");
+    assert_eq!(std::fs::read_to_string(parent_file).unwrap(), parent_bytes);
+    assert_eq!(logged(&axod, "STARTED:"), 1, "{}", axod.pi_log());
+    assert_eq!(logged(&axod, "SENT:"), 1, "{}", axod.pi_log());
 }
 
 #[test]
