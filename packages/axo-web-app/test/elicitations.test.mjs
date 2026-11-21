@@ -41,6 +41,11 @@ test("global inbox reaches both devices and Yes followed by voice Send never int
       pages.push(page);
     }
     const [desktop, phone, otherDevice] = pages;
+    for (const [page, title] of [[desktop, "Original"], [phone, "Different"]]) {
+      const heading = page.getByRole("heading", { level: 1, name: title, exact: true });
+      await heading.waitFor();
+      assert.ok((await heading.boundingBox()).width > 30, "the active chat title is visible, not screen-reader-only");
+    }
     const emptyBell = desktop.getByTestId("elicitation-bell");
     assert.equal(await emptyBell.isDisabled(), true);
     await emptyBell.evaluate(button => button.click());

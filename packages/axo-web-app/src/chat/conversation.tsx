@@ -223,13 +223,11 @@ export function Conversation({ workbench, wide, onShowChats, onToggleInfo, onApp
   return (
     <section className="conversation" aria-label="Conversation" ref={section}>
       <header className="layer-bar top conversation-header">
-        <h1 className="visually-hidden">{chatTitle(session)}</h1>
         {wide ? <span className="circle-placeholder" /> : (
           <button className="circle-button" onClick={onShowChats} aria-label="Chats menu"><Icon name="menu" /></button>
         )}
-        <span className="spacer" />
+        <h1 className="conversation-title" title={chatTitle(session)}>{chatTitle(session)}</h1>
         {trouble ? <span className="host-trouble" role="status">{trouble}</span> : null}
-        <span className="spacer" />
         <button className="circle-button" onClick={onToggleInfo} aria-label="Chat info"><Icon name="info" /></button>
       </header>
 

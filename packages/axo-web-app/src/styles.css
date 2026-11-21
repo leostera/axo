@@ -188,6 +188,7 @@ button:disabled { cursor: default; }
 .conversation { position: relative; display: flex; height: 100%; flex-direction: column; background: var(--bg); }
 .conversation-header { position: absolute; top: 0; left: 0; right: 0; padding-top: max(12px, env(safe-area-inset-top)); }
 /* The conversation's bars float over the transcript with nothing behind them but their own controls. */
+.conversation-title { flex: 1; min-width: 0; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: center; font-size: 17px; font-weight: 600; }
 .conversation-header, .conversation-footer { background: none; pointer-events: none; }
 .conversation-header > *, .conversation-footer > * { pointer-events: auto; }
 .transcript { min-height: 0; flex: 1; overflow-y: auto; overflow-anchor: none; padding: 80px 20px calc(var(--footer-height, 72px) + 24px); }
