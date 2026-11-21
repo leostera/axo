@@ -2,7 +2,7 @@
 
 ## Mac release checklist
 
-For a Mac-only release, bump `version`, `builds.mac` and `builds.axod` in `config.json`, leave `builds.phone` unchanged, and record the change in `CHANGELOG.md`. Pin clean upstream `main` and run the gates below. Verify the annotated tag points to that exact commit before signing. Publish the stapled ZIP with the official publisher, then independently check `/cdn/latest.json` and the downloaded ZIP's size and SHA-256. The public manifest is written last, not edited by hand. Report installed app and daemon readiness separately from publication.
+For a Mac-only release, bump `version`, `builds.mac` and `builds.axod` in `config.json`, leave `builds.phone` unchanged, and record the change in `CHANGELOG.md`. Pin clean upstream `main` and run the gates below. Verify the annotated tag points to that exact commit before signing. Publish the stapled ZIP with the official publisher, then independently check `/cdn/latest.json` and the downloaded ZIP's size and SHA-256. The public manifest is written last, not edited by hand. For Mac, a request to “release” means **publish and install on the Mac Studio** unless explicitly scoped otherwise. Include both in the release approval. Use the pinned installer below, preserve busy sessions, and verify `/Applications/Axo.app` and the running daemon version/build and readiness before reporting completion. If installation is held, report the release as published, not installed.
 
 Reusable code lives here; run state, approval receipts, profiles, device inventories, signed staging copies and artifacts stay in a private directory **outside Git**. Builds and tests still use Bazel. None of these tools creates certificates, changes provisioning, exports keys, resets apps or approves its own actions.
 
