@@ -812,7 +812,7 @@ fn a_cross_host_fork_copies_an_exact_confirmed_snapshot_and_retries_the_same_chi
     let snapshot =
         json!({"target":target,"sourceHostId":PEER,"sessionId":SOURCE,"epoch":4,"head":2});
     let plan = axod.wait_for("the destination's committed peer mirror", || {
-        match hub.call(FORK_PLAN, snapshot.clone()) {
+        match hub.call("axo.remote.session.fork.plan", snapshot.clone()) {
             Ok(plan) => Some(plan),
             Err(error) if matches!(error["code"].as_i64(), Some(-32004 | -32024)) => None,
             other => panic!("unexpected fork answer: {other:?}"),
@@ -826,7 +826,9 @@ fn a_cross_host_fork_copies_an_exact_confirmed_snapshot_and_retries_the_same_chi
     assert!(axod.pi_log().is_empty());
     let mut params = snapshot.clone();
     params["requestId"] = json!(REQUEST);
-    let missing = hub.call(FORK_METHOD, params.clone()).unwrap_err();
+    let missing = hub
+        .call("axo.remote.session.fork", params.clone())
+        .unwrap_err();
     assert_eq!(missing["message"], "Choose a destination folder");
     let mut wrong = params.clone();
     wrong["target"]["hostGeneration"] = json!(PEER_GENERATION);

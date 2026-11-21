@@ -741,6 +741,11 @@ pub static OPERATIONS: &[Operation] = &[
 
 /// Deliberate exclusions, not forgotten commands. Raw RPC still enforces the daemon's caller policy.
 pub const EXCLUDED: &[(&str, &str)] = &[
+    #[cfg(unix)]
+    (
+        method::SESSION_FORK_PLAN,
+        "Native cross-host fork confirmation; the CLI forks locally",
+    ),
     (
         method::SESSION_TIMER_CREATE,
         "Agent-owned runtime timer; use the Session MCP tools",
@@ -766,7 +771,10 @@ pub const EXCLUDED: &[(&str, &str)] = &[
         "Same unavailable-pane recovery backend; use session recover",
     ),
     #[cfg(target_os = "linux")]
-    (method::CLIENT_DESKTOP_OPEN, "Native Linux workbench launch/handoff; no caller-provided command"),
+    (
+        method::CLIENT_DESKTOP_OPEN,
+        "Native Linux workbench launch/handoff; no caller-provided command",
+    ),
     (
         method::CLIENT_VIEWPORT_SET,
         "UI-owned viewport; not a CLI display",
