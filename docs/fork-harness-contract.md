@@ -2,7 +2,7 @@
 
 Before enabling confirmation, call read-only `axo.remote.session.fork.plan` on the destination with `{target, sourceHostId, sessionId, epoch, head}` (same snapshot fields and account/generation routing checks as fork). Do not accept a client assertion about the source agent or format. Resolve both against the authenticated snapshot. No child, durable request claim, folder mutation, package install or agent launch during planning.
 
-Successful result: `{sourceAgent, historyFormat, decision}`. The decision is exactly one of:
+Successful result: `{sourceAgent, historyFormat, decision}`. `historyFormat` is an opaque, nonempty string. Pi transcript version 3 is exactly `pi/3` on every platform. The decision is exactly one of:
 
 - `{kind:"keep", agent}`: agent equals sourceAgent and is runnable with a compatible importer.
 - `{kind:"choose", agents:[...]}`: nonempty, distinct compatible alternatives, no implicit default. Even one choice requires an affirmative selection.
