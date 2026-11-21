@@ -112,6 +112,38 @@ const ACCOUNT: &str = "- The person's Axo account: `apps_run` runs a JavaScript 
 
 const ACCOUNT_UNREACHABLE: &str = "- The person's Axo account, if this Mac is linked to one: it does not answer now. `apps_list` says what it reaches once it does, and `apps_run` calls it.";
 
+/// Read the host owner's Markdown, never project-local instructions. Keep ordinary tool
+/// guidance and its confirmation preamble even when a custom prompt is configured.
+pub fn configured_brief(reach: &Reach) -> String {
+    let base = brief(reach);
+    let Some(home) = std::env::home_dir() else {
+        return base;
+    };
+    with_prompt_file(base, &home.join(".axo/agent/SYSTEM_PROMPT.md"))
+}
+
+fn with_prompt_file(mut base: String, path: &std::path::Path) -> String {
+    use std::io::Read;
+    const LIMIT: u64 = 64 * 1024;
+    if !path
+        .metadata()
+        .is_ok_and(|m| m.is_file() && m.len() <= LIMIT)
+    {
+        return base;
+    }
+    let mut text = String::new();
+    if std::fs::File::open(path)
+        .and_then(|f| f.take(LIMIT + 1).read_to_string(&mut text))
+        .is_ok()
+        && text.len() <= LIMIT as usize
+        && !text.trim().is_empty()
+    {
+        base.push_str("\n\n");
+        base.push_str(&text);
+    }
+    base
+}
+
 /// The brief for `reach`, as plain text with one line per thing the agent can use.
 pub fn brief(reach: &Reach) -> String {
     let introduction = match reach.calls {
@@ -186,6 +218,33 @@ fn quoted<'a>(names: impl Iterator<Item = &'a str>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn host_markdown_is_optional_bounded_and_read_on_each_brief() {
+        let folder = std::env::temp_dir().join(format!(
+            "axo-prompt-{}-{:?}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&folder).unwrap();
+        let file = folder.join("SYSTEM_PROMPT.md");
+        let render = || with_prompt_file(USER_PRECEDENCE.to_string(), &file);
+        assert_eq!(render(), USER_PRECEDENCE);
+        std::fs::write(&file, "# Local instructions\nBe concise.").unwrap();
+        assert_eq!(
+            render(),
+            format!("{USER_PRECEDENCE}\n\n# Local instructions\nBe concise.")
+        );
+        for bytes in [vec![b' '; 5], vec![255], vec![b'x'; 65_537]] {
+            std::fs::write(&file, bytes).unwrap();
+            assert_eq!(render(), USER_PRECEDENCE);
+        }
+        std::fs::remove_file(file).unwrap();
+        std::fs::remove_dir(folder).unwrap();
+    }
     use serde_json::json;
 
     fn listed() -> Value {

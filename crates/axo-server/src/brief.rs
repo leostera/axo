@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axo_ipc::{Extension, TypedMethods};
-use axo_mcp::brief::{Account, AccountApps, Reach, brief};
+use axo_mcp::brief::{Account, AccountApps, Reach, configured_brief as brief};
 use axo_protocol::rpc::{self, method};
 use axo_relay::{HostLinkStore, Priority, RelayChannel};
 use jsonrpc_core::IoHandler;

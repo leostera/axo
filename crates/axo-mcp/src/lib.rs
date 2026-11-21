@@ -877,7 +877,7 @@ impl McpServer {
                 Some(apps) => brief::Account::Listed(apps),
                 None => brief::Account::Unreachable,
             };
-            let brief = brief::brief(&brief::Reach {
+            let brief = brief::configured_brief(&brief::Reach {
                 calls: brief::ToolCalls::Direct,
                 computer: axo_computer::AVAILABLE,
                 account,

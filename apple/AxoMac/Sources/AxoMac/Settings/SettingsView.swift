@@ -155,6 +155,8 @@ private struct AgentSettingsView: View {
 
   var body: some View {
     Form {
+      SystemPromptSection()
+
       Section("Recovery") {
         Toggle(
           "Automatically restart unavailable Pi sessions",

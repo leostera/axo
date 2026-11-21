@@ -556,7 +556,7 @@ struct ServedRequest {
 /// after every turn to keep the account's apps current; an agent configured at launch cannot,
 /// so its brief names the account without listing it and the agent asks (`apps_list`).
 fn agent_brief() -> String {
-    axo_mcp::brief::brief(&axo_mcp::brief::Reach {
+    axo_mcp::brief::configured_brief(&axo_mcp::brief::Reach {
         calls: axo_mcp::brief::ToolCalls::Direct,
         computer: axo_computer::AVAILABLE,
         account: axo_mcp::brief::Account::Unreachable,
