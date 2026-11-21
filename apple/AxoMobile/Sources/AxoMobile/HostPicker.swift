@@ -21,11 +21,12 @@ struct HostPicker: View {
 
   var body: some View {
     picker
-      .sheet(item: $fork) { operation in
+      .popover(item: $fork) { operation in
         SessionForkSheet(machine: operation.destination.label) { requestID, folder in
           try await phone.forkSession(from: operation.source, to: operation.destination.reference,
             requestID: requestID, folder: folder)
         }
+        .presentationCompactAdaptation(.popover)
       }
       .alert("Can’t fork session", isPresented: Binding(
         get: { forkError != nil }, set: { if !$0 { forkError = nil } }

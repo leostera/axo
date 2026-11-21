@@ -21,10 +21,12 @@ public struct SessionForkSheet: View {
 
   public var body: some View {
     VStack(alignment: .leading, spacing: 14) {
-      Text("Do you want to fork this session to \(machine)?")
+      Text("Fork this session to \(machine)?")
         .font(.headline)
         .accessibilityAddTraits(.isHeader)
-      Text("The new session copies the conversation history, not project files. The original session stays on its machine.")
+      Text("Copies chat history, not project files. The original session stays here.")
+        .font(.subheadline)
+        .foregroundStyle(.secondary)
       if needsFolder {
         Text("Choose a destination folder")
           .font(.subheadline.weight(.semibold))
@@ -52,7 +54,7 @@ public struct SessionForkSheet: View {
         Button("Cancel", role: .cancel) { dismiss() }
           .keyboardShortcut(.cancelAction)
           .disabled(inFlight)
-        Button(failure == nil ? "Fork Session" : "Retry Fork", action: submit)
+        Button(failure == nil ? "Fork" : "Retry Fork", action: submit)
           .buttonStyle(.borderedProminent)
           .keyboardShortcut(.defaultAction)
           .disabled(inFlight || (needsFolder && !trimmedFolder.hasPrefix("/")))
@@ -63,7 +65,8 @@ public struct SessionForkSheet: View {
     #if os(macOS)
     .frame(width: 440)
     #else
-    .presentationDetents([.medium, .large])
+    .frame(idealWidth: 320, maxWidth: 360)
+    .fixedSize(horizontal: false, vertical: true)
     #endif
     .interactiveDismissDisabled(inFlight)
   }
