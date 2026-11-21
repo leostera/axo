@@ -1,8 +1,8 @@
 using System.Diagnostics;
+using System.IO.Pipes;
 using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
-using Axo;
 using Microsoft.AspNetCore.Http;
 
 sealed partial class RelayFixture
@@ -91,6 +91,24 @@ static class ForkChecks
         Console.WriteLine("PASS: " + description);
     }
 
+    static async Task<JsonElement> CallAsync(string pipe, string method, object? parameters = null)
+    {
+        // SSH can give an elevated token whose default owner is Administrators, while the
+        // daemon deliberately assigns the current user's SID. The scratch socket is unique;
+        // do not change the installed desktop client's CurrentUserOnly transport.
+        await using var stream = new NamedPipeClientStream(".", pipe, PipeDirection.InOut, PipeOptions.Asynchronous);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        await stream.ConnectAsync(3000, timeout.Token);
+        var bytes = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(new { jsonrpc = "2.0", id = 1, method, @params = parameters ?? new { } }) + "\n");
+        await stream.WriteAsync(bytes, timeout.Token);
+        await stream.FlushAsync(timeout.Token);
+        using var reader = new StreamReader(stream, Encoding.UTF8, false, 4096, leaveOpen: true);
+        var line = await reader.ReadLineAsync(timeout.Token) ?? throw new IOException("Fixture pipe closed");
+        using var result = JsonDocument.Parse(line);
+        if (result.RootElement.TryGetProperty("error", out var error)) throw new IOException(error.GetRawText());
+        return result.RootElement.GetProperty("result").Clone();
+    }
+
     public static async Task<int> RunAsync(string daemon, string codex)
     {
         var root = Path.Combine(Path.GetTempPath(), "axo-codex-fork-test-" + Guid.NewGuid());
@@ -98,7 +116,6 @@ static class ForkChecks
         var folder = Directory.CreateDirectory(Path.Combine(root, "destination ž")).FullName;
         var home = Directory.CreateDirectory(Path.Combine(root, "codex-home")).FullName;
         var pipe = "Axo-Codex-Fork-" + Guid.NewGuid();
-        var client = new DaemonClient(pipe);
         await using var relay = await RelayFixture.StartAsync(forkFixture: true);
         File.WriteAllText(Path.Combine(home, "config.toml"), $"""
             model = "gpt-5.4"
@@ -119,10 +136,10 @@ static class ForkChecks
         {
             for (int i = 0;; i++)
             {
-                try { await client.CallAsync("axo.daemon.health"); break; }
-                catch (IOException) when (i < 30 && !process.HasExited) { await Task.Delay(100); }
+                try { await CallAsync(pipe, "axo.daemon.health"); break; }
+                catch (Exception error) when (error is IOException or TimeoutException && i < 10 && !process.HasExited) { await Task.Delay(100); }
             }
-            await client.CallAsync("axo.relay.link", new { code = "ABCD-EFGH" });
+            await CallAsync(pipe, "axo.relay.link", new { code = "ABCD-EFGH" });
             await relay.WaitAsync(() => relay.Registration.ValueKind == JsonValueKind.Object, "Daemon not registered");
             var target = new { hostId = relay.Registration.GetProperty("hostId").GetString(), hostGeneration = relay.Registration.GetProperty("hostGeneration").GetString() };
             var snapshot = new { target, sourceHostId = RelayFixture.ForkPeer, sessionId = RelayFixture.ForkSource, epoch = 4, head = 3 };
@@ -139,27 +156,27 @@ static class ForkChecks
             Require(omitted.GetProperty("error").GetProperty("data").GetProperty("created").GetBoolean() == false, "omitting agent cannot substitute Codex");
             var stale = await relay.CallAsync("axo.remote.session.fork.plan", new { target, snapshot.sourceHostId, snapshot.sessionId, snapshot.epoch, head = 2 });
             Require(!stale.TryGetProperty("result", out _), "stale snapshot is refused");
-            Require((await client.CallAsync("axo.session.list")).GetProperty("sessions").GetArrayLength() == 0, "plan and refusal leave no child");
+            Require((await CallAsync(pipe, "axo.session.list")).GetProperty("sessions").GetArrayLength() == 0, "plan and refusal leave no child");
             var request = new { target, snapshot.sourceHostId, snapshot.sessionId, snapshot.epoch, snapshot.head, folder, requestId = Guid.NewGuid(), agent = "codex" };
             var created = await relay.CallAsync("axo.remote.session.fork", request);
             var child = created.GetProperty("result").GetProperty("session");
             var id = child.GetProperty("sessionId").GetString()!;
             Require(id != snapshot.sessionId && child.GetProperty("status").GetString() == "ready", "new Windows child confirmed ready");
             var retried = await relay.CallAsync("axo.remote.session.fork", request);
-            Require(retried.GetProperty("result").GetRawText() == created.GetProperty("result").GetRawText() && (await client.CallAsync("axo.session.list")).GetProperty("sessions").GetArrayLength() == 1, "same request returns same child with one catalog row");
+            Require(retried.GetProperty("result").GetRawText() == created.GetProperty("result").GetRawText() && (await CallAsync(pipe, "axo.session.list")).GetProperty("sessions").GetArrayLength() == 1, "same request returns same child with one catalog row");
             var path = Directory.GetFiles(Path.Combine(server, "imported-codex", id), "rollout-*.jsonl").Single();
             var history = File.ReadAllText(path);
             Require(history.Contains(RelayFixture.SourceFolder) && history.Contains(RelayFixture.ForkPeer) && history.Contains("\"role\":\"developer\"") && !history.Contains("NEVER_REPLAY") && relay.ProviderInput is null, "hidden provenance and history, no prompt replay or provider call");
-            var opened = await client.CallAsync("axo.session.open", new { sessionId = id });
+            var opened = await CallAsync(pipe, "axo.session.open", new { sessionId = id });
             Require(opened.GetProperty("folder").GetString() == folder && opened.GetProperty("threadId").GetString() == id && opened.GetProperty("connected").GetBoolean(), "native client pipe opens the real Codex child in the destination folder");
-            await client.CallAsync("axo.session.prompt", new { sessionId = id, text = "AXO_FORK_FOLLOWUP" });
+            await CallAsync(pipe, "axo.session.prompt", new { sessionId = id, text = "AXO_FORK_FOLLOWUP" });
             await relay.WaitAsync(() => relay.ProviderInput is not null, "Real Codex did not issue the follow-up request");
             Require(relay.ProviderInput!.Contains(RelayFixture.HistoryMarker) && relay.ProviderInput.Contains("This conversation was forked from host") && relay.ProviderInput.Contains("AXO_FORK_FOLLOWUP"), "new Codex turn sees imported history and hidden origin");
             bool completed = false;
             for (int i = 0; i < 50 && !completed; i++)
             {
-                var messages = await client.CallAsync("axo.session.messages", new { sessionId = id, after = 0 });
-                var state = await client.CallAsync("axo.session.events.poll", new { sessionId = id, after = 0 });
+                var messages = await CallAsync(pipe, "axo.session.messages", new { sessionId = id, after = 0 });
+                var state = await CallAsync(pipe, "axo.session.events.poll", new { sessionId = id, after = 0 });
                 completed = state.GetProperty("status").GetString() == "ready"
                     && messages.GetProperty("messages").EnumerateArray().Any(m => m.GetProperty("text").GetString() == "AXO_FORK_FOLLOWUP_OK");
                 if (!completed) await Task.Delay(100);
