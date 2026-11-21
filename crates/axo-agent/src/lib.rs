@@ -140,9 +140,12 @@ fn test_pipe() -> (std::os::fd::OwnedFd, std::os::fd::OwnedFd) {
     ends
 }
 
+mod fork_history;
+pub use fork_history::PiForkHistory;
+
 mod bridge_path;
 
-// Persisted Pi addresses remain readable even though Windows cannot launch Pi.
+// The Windows backend uses stdio, not the Unix Pi bridge.
 #[cfg(windows)]
 #[path = "pi_windows.rs"]
 pub mod pi;

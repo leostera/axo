@@ -5,8 +5,9 @@
 //! local destination form omits it. Both cross-host forms return `{session: RemoteSession}`.
 //! Only protocol 3 exposes the local source's published index (on its own HostDO route).
 
+use axo_agent::PiForkHistory;
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Write};
+use std::io;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -271,16 +272,11 @@ fn retry(
     Ok(result)
 }
 
-struct Snapshot {
-    lines: Vec<String>,
-    header: Value,
-}
-
 async fn confirmed_snapshot(
     core: &Core,
     account_id: &str,
     request: SnapshotRequest,
-) -> Result<Snapshot, MethodError> {
+) -> Result<PiForkHistory, MethodError> {
     let place = Place::of(&request.source_host_id, &request.session_id.to_string())
         .filter(|place| place.host_id != core.host_id)
         .ok_or_else(unavailable)?;
@@ -305,11 +301,11 @@ async fn confirmed_snapshot(
         })
         .await
         .ok_or_else(disconnected)??;
-    let header = header(&lines)?;
+    let history = PiForkHistory::parse(lines).map_err(|_| unavailable())?;
     if account(core).await? != account_id {
         return Err(disconnected());
     }
-    Ok(Snapshot { lines, header })
+    Ok(history)
 }
 
 // This is the compatibility policy, not the generic installed-agent catalog. No
@@ -355,24 +351,23 @@ pub(crate) async fn destination_fork(
     if let Some(receipt) = load(&path)? {
         return retry(&completed, receipt, &account_id, &request);
     }
-    let Snapshot { lines, header } =
-        confirmed_snapshot(&core, &account_id, request.snapshot()).await?;
-    let source_cwd = header["cwd"].as_str().ok_or_else(unavailable)?;
+    let history = confirmed_snapshot(&core, &account_id, request.snapshot()).await?;
     let folder = destination_folder(
         request
             .folder
             .as_deref()
-            .unwrap_or_else(|| Path::new(source_cwd)),
+            .unwrap_or_else(|| Path::new(history.source_folder())),
     )?;
     let child = SessionId::new_v4().map_err(operation_failed)?;
-    let contents = transcript(
-        lines,
-        header,
-        child,
-        &folder,
-        &request.source_host_id,
-        &core.host_id,
-    )?;
+    let contents = history
+        .into_child(
+            child,
+            &folder,
+            &request.source_host_id,
+            &core.host_id,
+            &axo_relay::current_timestamp(),
+        )
+        .map_err(operation_failed)?;
     if account(&core).await? != account_id {
         return Err(disconnected());
     }
@@ -615,59 +610,4 @@ fn destination_folder(folder: &Path) -> Result<PathBuf, MethodError> {
         return Err(choose());
     }
     Ok(canonical)
-}
-
-fn header(lines: &[String]) -> Result<Value, MethodError> {
-    let header: Value =
-        serde_json::from_str(lines.first().ok_or_else(unavailable)?).map_err(|_| unavailable())?;
-    if header["type"] != "session"
-        || header["version"].as_u64() != Some(3)
-        || header["id"].as_str().is_none_or(str::is_empty)
-        || !header["cwd"]
-            .as_str()
-            .is_some_and(|cwd| Path::new(cwd).is_absolute())
-    {
-        return Err(unavailable());
-    }
-    Ok(header)
-}
-
-fn transcript(
-    lines: Vec<String>,
-    mut header: Value,
-    child: SessionId,
-    folder: &Path,
-    from: &str,
-    to: &str,
-) -> Result<Vec<u8>, MethodError> {
-    let content = format!(
-        "This conversation was forked from host {from}, working directory {:?}, to host {to}, working directory {:?}. Earlier tool outputs are historical observations of the source host, not observations of the destination. Project files were not copied. Verify destination state before acting.",
-        header["cwd"].as_str().expect("parsed header"),
-        folder
-    );
-    header["id"] = json!(child);
-    header["cwd"] = json!(folder);
-    let mut output = Vec::new();
-    writeln!(output, "{header}").map_err(operation_failed)?;
-    let mut parent = Value::Null;
-    for line in lines.into_iter().skip(1) {
-        let mut entry: Value = serde_json::from_str(&line).map_err(|_| unavailable())?;
-        if entry["id"].as_str().is_none_or(str::is_empty) {
-            return Err(unavailable());
-        }
-        parent = entry["id"].clone();
-        if entry["type"] == "custom" && entry["customType"] == "axo.command.queued" {
-            // Keep the entry ID for descendants, but do not carry a runnable prompt or its data.
-            entry["customType"] = json!("axo.fork.discarded_queue");
-            entry.as_object_mut().expect("custom entry").remove("data");
-            writeln!(output, "{entry}").map_err(operation_failed)?;
-        } else {
-            writeln!(output, "{line}").map_err(operation_failed)?;
-        }
-    }
-    writeln!(output, "{}", json!({
-        "type": "custom_message", "customType": "axo_host_fork", "id": axo_protocol::new_uuid_v4().map_err(operation_failed)?,
-        "parentId": parent, "timestamp": axo_relay::current_timestamp(), "content": content, "display": false,
-    })).map_err(operation_failed)?;
-    Ok(output)
 }
