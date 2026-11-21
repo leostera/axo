@@ -7,7 +7,7 @@ swift_library(
     srcs = ["ForkConfirmation.swift", "SessionForkSheet.swift"],
     copts = ["-swift-version", "5"],
     visibility = ["//apple:__subpackages__"],
-    deps = ["//apple/AxoClient", "//apple/AxoProtocol"],
+    deps = ["//apple/AxoClient", "//apple/AxoKit", "//apple/AxoProtocol"],
 )
 
 swift_test(

@@ -1,4 +1,5 @@
 import AxoClient
+import AxoKit
 import AxoProtocol
 import SwiftUI
 
@@ -134,8 +135,7 @@ public struct SessionForkSheet: View {
     if confirmation.plan == nil, confirmation.request == nil, !checking {
       Button("Retry Check") { Task { await checkPlan() } }
     } else {
-      Button(confirmation.request == nil ? "Fork" : "Retry Fork", action: submit)
-        .buttonStyle(.borderedProminent)
+      AxoPrimaryButton(confirmation.request == nil ? "Fork" : "Retry Fork", action: submit)
         .keyboardShortcut(.defaultAction)
         .disabled(checking || submitting || !confirmation.canSubmit(folder: folder))
         .accessibilityIdentifier("session-fork-confirm")

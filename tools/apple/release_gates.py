@@ -13,6 +13,7 @@ from common import Release, exclusive_json, git, private_directory, require, sou
 
 
 TESTS = [
+    "//apple/AxoKit:AxoKitTests", "//apple/AxoSessionUI:AxoSessionUITests",
     "//apple/AxoMac:AxoMacTests", "//apple/AxoClient:AxoClientTests", "//apple/AxoProtocol:AxoProtocolTests",
     "//apple/AxoMobile:AxoMobileModelTests", "//apple/AxoWatchModel:AxoWatchModelTests",
     "//apple/AxoCompanion:AxoCompanionTests", "//packages/pi-axo:test",
