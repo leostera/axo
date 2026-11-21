@@ -209,14 +209,14 @@ impl Drop for Codex {
 /// Every app-server and its descendants are terminated if axod exits unexpectedly. The job
 /// handle is not inherited; Windows closes it even when axod is killed or the user signs out.
 #[cfg(windows)]
-struct Job(windows_sys::Win32::Foundation::HANDLE);
+pub(crate) struct Job(windows_sys::Win32::Foundation::HANDLE);
 #[cfg(windows)]
 unsafe impl Send for Job {}
 #[cfg(windows)]
 unsafe impl Sync for Job {}
 #[cfg(windows)]
 impl Job {
-    fn for_child(child: &Child) -> io::Result<Self> {
+    pub(crate) fn for_child(child: &Child) -> io::Result<Self> {
         use std::os::windows::io::AsRawHandle;
         use windows_sys::Win32::System::JobObjects::*;
         unsafe {
