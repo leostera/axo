@@ -144,9 +144,15 @@ impl Extension for Remote {
                 let models = axo_agent::catalog::models(&core.home, request.agent)
                     .await
                     .map_err(|error| match error {
-                        CatalogError::NotInstalled => MethodError::new(NOT_FOUND, "This agent is not installed on the host"),
-                        CatalogError::Busy => MethodError::new(BUSY, "Model catalog busy; try again"),
-                        CatalogError::Failed => MethodError::new(REFUSED, "Could not read this agent's model catalog"),
+                        CatalogError::NotInstalled => {
+                            MethodError::new(NOT_FOUND, "This agent is not installed on the host")
+                        }
+                        CatalogError::Busy => {
+                            MethodError::new(BUSY, "Model catalog busy; try again")
+                        }
+                        CatalogError::Failed => {
+                            MethodError::new(REFUSED, "Could not read this agent's model catalog")
+                        }
                     })?;
                 Ok(Answer::Models { models })
             },
@@ -172,6 +178,25 @@ impl Extension for Remote {
                 Ok(Answer::Session {
                     session: remote(&core, &session),
                 })
+            },
+        );
+        add(
+            handler,
+            core,
+            crate::forks::REMOTE_METHOD,
+            |core, request: ForkSessionParams| async move {
+                crate::forks::destination_fork(
+                    core,
+                    crate::forks::Request {
+                        source_host_id: request.source_host_id,
+                        session_id: request.session_id,
+                        epoch: request.epoch,
+                        head: request.head,
+                        request_id: request.request_id,
+                        folder: request.folder,
+                    },
+                )
+                .await
             },
         );
         add(
@@ -567,6 +592,14 @@ params! {
     AgentsParams {}
     AgentModelsParams { agent: axo_agent::AgentKind }
     SessionTargetParams { session_id: SessionId }
+    ForkSessionParams {
+        source_host_id: String,
+        session_id: SessionId,
+        epoch: u64,
+        head: u64,
+        request_id: SessionId,
+        folder: Option<std::path::PathBuf>,
+    }
     CreateSessionParams {
         like: Option<SessionId> = default,
         name: Option<rpc::SessionName> = default,
@@ -659,13 +692,19 @@ mod tests {
         assert_eq!(call(&handler, method, valid).await["error"]["code"], -32601);
         let mut stale = target(&fixture);
         stale["hostGeneration"] = json!("00000000-0000-4000-8000-000000000001");
-        assert_eq!(as_account(&handler, method, json!({ "target": stale, "agent": "pi" }))
-            .await["error"]["code"], STALE_HOST);
+        assert_eq!(
+            as_account(&handler, method, json!({ "target": stale, "agent": "pi" })).await["error"]
+                ["code"],
+            STALE_HOST
+        );
         for invalid in [
             json!({ "target": target(&fixture), "agent": "arbitrary" }),
             json!({ "target": target(&fixture), "agent": "pi", "sessionId": "surprise" }),
         ] {
-            assert_eq!(as_account(&handler, method, invalid).await["error"]["code"], INVALID_PARAMS);
+            assert_eq!(
+                as_account(&handler, method, invalid).await["error"]["code"],
+                INVALID_PARAMS
+            );
         }
         assert!(fixture.core.catalog.records().is_empty());
     }

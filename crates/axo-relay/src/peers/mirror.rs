@@ -16,6 +16,13 @@ pub struct CopyState {
     pub cursor: u64,
 }
 
+#[derive(Serialize, Deserialize)]
+struct SavedState {
+    #[serde(flatten)]
+    copy: CopyState,
+    account: Option<String>,
+}
+
 #[derive(Clone, Debug, Deserialize)]
 pub struct ClientRecord {
     pub cursor: u64,
@@ -52,6 +59,7 @@ fn is_id(part: &str) -> bool {
 /// The copies on disk, under `sessions/`.
 pub struct Mirror {
     root: PathBuf,
+    account: Option<String>,
     /// Copies checked against their state since this process started.
     checked: HashSet<Place>,
 }
@@ -60,7 +68,15 @@ impl Mirror {
     pub fn new(root: PathBuf) -> Self {
         Self {
             root,
+            account: None,
             checked: HashSet::new(),
+        }
+    }
+
+    pub(super) fn scope(&mut self, account: &str) {
+        if self.account.as_deref() != Some(account) {
+            self.account = Some(account.to_owned());
+            self.checked.clear();
         }
     }
 
@@ -112,9 +128,13 @@ impl Mirror {
         let Ok(text) = fs::read_to_string(self.state_file(place)) else {
             return Ok(None);
         };
-        let Ok(state) = serde_json::from_str::<CopyState>(&text) else {
+        let Ok(saved) = serde_json::from_str::<SavedState>(&text) else {
             return Ok(None);
         };
+        if saved.account != self.account {
+            return Ok(None);
+        }
+        let state = saved.copy;
         if !self.checked.contains(place) {
             // A crash between appending and saving the state leaves lines past the cursor.
             let file = self.file(place);
@@ -137,6 +157,7 @@ impl Mirror {
         records: &[ClientRecord],
     ) -> io::Result<CopyState> {
         fs::create_dir_all(self.folder(place))?;
+        self.invalidate(place)?;
         let mut out = File::create(self.file(place))?;
         writeln!(out, "{}", one_line(header)?)?;
         out.sync_data()?;
@@ -184,11 +205,13 @@ impl Mirror {
             text.push_str(one_line(&record.line)?);
             text.push('\n');
         }
+        self.checked.remove(place);
         let mut out = OpenOptions::new().append(true).open(self.file(place))?;
         out.write_all(text.as_bytes())?;
         out.sync_data()?;
         state.cursor += fresh.len() as u64;
         self.save(place, state)?;
+        self.checked.insert(place.clone());
         Ok(state)
     }
 
@@ -198,6 +221,7 @@ impl Mirror {
             return Err(io::Error::new(io::ErrorKind::NotFound, "no copy to reset"));
         };
         let keep = keep.min(state.cursor);
+        self.invalidate(place)?;
         truncate_lines(&self.file(place), keep + 1)?;
         let state = CopyState {
             epoch,
@@ -207,10 +231,56 @@ impl Mirror {
         Ok(state)
     }
 
+    // A failed rewrite must not leave an old epoch pointing at any of the new bytes.
+    fn invalidate(&mut self, place: &Place) -> io::Result<()> {
+        self.checked.remove(place);
+        match fs::remove_file(self.state_file(place)) {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+            outcome => outcome,
+        }
+    }
+
+    /// Read a committed prefix on the follower, serialized with all mirror mutations.
+    /// The caller must independently confirm the requested epoch and head in its listing.
+    pub fn snapshot(&self, place: &Place, at: CopyState) -> io::Result<Vec<String>> {
+        use std::io::Read;
+        const MAX_BYTES: u64 = 64 * 1024 * 1024;
+        let saved: SavedState =
+            serde_json::from_slice(&fs::read(self.state_file(place))?).map_err(io::Error::other)?;
+        if saved.account != self.account
+            || saved.copy.epoch != at.epoch
+            || saved.copy.cursor < at.cursor
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "Copy has not reached the requested snapshot",
+            ));
+        }
+        let mut reader = BufReader::new(File::open(self.file(place))?.take(MAX_BYTES));
+        let mut lines = Vec::new();
+        for _ in 0..=at.cursor {
+            let mut line = String::new();
+            reader.read_line(&mut line)?;
+            if !line.ends_with('\n') {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "Snapshot is incomplete or too large",
+                ));
+            }
+            line.pop();
+            lines.push(line);
+        }
+        Ok(lines)
+    }
+
     fn save(&self, place: &Place, state: CopyState) -> io::Result<()> {
         write_atomically(
             &self.state_file(place),
-            &serde_json::to_vec(&state).map_err(io::Error::other)?,
+            &serde_json::to_vec(&SavedState {
+                copy: state,
+                account: self.account.clone(),
+            })
+            .map_err(io::Error::other)?,
         )
     }
 }
@@ -454,6 +524,30 @@ mod tests {
         );
         let elsewhere = Place::of(HOST, "8f8f8f8f-0000-4000-8000-000000000002").unwrap();
         assert!(read_copy(&scratch.0, &elsewhere, 0, 10).unwrap().is_none());
+    }
+
+    #[test]
+    fn a_snapshot_never_crosses_its_cursor_epoch_or_account() {
+        let scratch = Scratch::new();
+        let mut mirror = Mirror::new(scratch.0.clone());
+        mirror.scope("account-a");
+        mirror.start(&place(), 1, HEADER, &records(1..=3)).unwrap();
+        let at = |epoch, cursor| CopyState { epoch, cursor };
+        let lines = mirror.snapshot(&place(), at(1, 2)).unwrap();
+        assert_eq!(
+            lines,
+            vec![HEADER.to_owned(), record(1).line, record(2).line]
+        );
+        assert!(mirror.snapshot(&place(), at(1, 4)).is_err());
+        assert!(mirror.snapshot(&place(), at(2, 2)).is_err());
+        mirror.reset(&place(), 2, 2).unwrap();
+        assert!(mirror.snapshot(&place(), at(1, 2)).is_err());
+        assert_eq!(mirror.snapshot(&place(), at(2, 2)).unwrap(), lines);
+        mirror.scope("account-b");
+        assert!(mirror.state(&place()).unwrap().is_none());
+        assert!(mirror.snapshot(&place(), at(2, 2)).is_err());
+        mirror.start(&place(), 2, HEADER, &records(1..=2)).unwrap();
+        assert_eq!(mirror.snapshot(&place(), at(2, 2)).unwrap(), lines);
     }
 
     #[test]

@@ -106,6 +106,14 @@ fn pi_restart_rpc_error(session_id: SessionId, shell_id: ShellId, error: io::Err
     }
 }
 
+#[derive(serde::Deserialize)]
+#[serde(untagged)]
+enum ForkRequest {
+    Local(rpc::SessionRef),
+    Bridge(crate::forks::BridgeRequest),
+    Destination(crate::forks::Request),
+}
+
 /// Registers an async method that gets axod's core.
 fn add<P, R, F, Fut>(
     handler: &mut IoHandler,
@@ -449,11 +457,23 @@ impl Extension for Sessions {
             handler,
             core,
             method::SESSION_FORK,
-            "expected {sessionId}",
-            |core, request: rpc::SessionRef| async move {
-                crate::sessions::fork(&core, request.session_id)
-                    .await
-                    .map_err(|error| invalid_params(&error.to_string()))
+            "expected a local, peer, or destination fork request",
+            |core, request: ForkRequest| async move {
+                let cross_host = match request {
+                    ForkRequest::Local(request) => {
+                        let record = crate::sessions::fork(&core, request.session_id)
+                            .await
+                            .map_err(|error| invalid_params(&error.to_string()))?;
+                        return serde_json::to_value(record)
+                            .map_err(|error| internal_rpc_error(io::Error::other(error)));
+                    }
+                    ForkRequest::Bridge(request) => crate::forks::bridge(core, request).await,
+                    ForkRequest::Destination(request) => {
+                        crate::forks::destination_fork(core, request).await
+                    }
+                };
+                serde_json::to_value(cross_host.map_err(axo_ipc::rpc_error)?)
+                    .map_err(|error| internal_rpc_error(io::Error::other(error)))
             },
         );
         add(

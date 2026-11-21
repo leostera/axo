@@ -215,15 +215,21 @@ pub(crate) async fn create(
     request: rpc::CreateSession,
 ) -> io::Result<SessionRecord> {
     let folder = new_session_folder(core, &request)?;
-    create_in(core, folder, None, request.name, request.agent).await
+    create_in(core, folder, Transcript::New, request.name, request.agent).await
 }
 
-/// Creates a Session in `folder` (canonical, an existing directory). Its transcript is
-/// `<sessions>/<hostId>/<sessionId>.jsonl` (RFD0038); with `import`, a copy of that transcript.
-async fn create_in(
+pub(crate) enum Transcript {
+    New,
+    Import(PathBuf),
+    LocalFork(PathBuf),
+    PeerFork { id: SessionId, contents: Vec<u8> },
+}
+
+/// Creates a Session in a canonical existing folder. Writes imported history before Pi starts.
+pub(crate) async fn create_in(
     core: &Arc<Core>,
     folder: PathBuf,
-    import: Option<(PathBuf, bool)>,
+    history: Transcript,
     name: Option<rpc::SessionName>,
     agent: axo_agent::AgentKind,
 ) -> io::Result<SessionRecord> {
@@ -233,7 +239,10 @@ async fn create_in(
             "Axod is shutting down",
         ));
     }
-    let session_id = SessionId::new_v4()?;
+    let session_id = match &history {
+        Transcript::PeerFork { id, .. } => *id,
+        _ => SessionId::new_v4()?,
+    };
     let session_uuid = session_id.to_string();
     let pane_id = new_uuid_v4()?;
     let split_id = new_uuid_v4()?;
@@ -249,14 +258,27 @@ async fn create_in(
         )?),
         _ => None,
     };
-    if let Some((source, fork)) = import.clone() {
+    let has_history = !matches!(history, Transcript::New);
+    if has_history {
         let (destination, workspace) = (transcript.clone(), folder.clone());
-        tokio::task::spawn_blocking(move || {
-            if fork {
+        tokio::task::spawn_blocking(move || match history {
+            Transcript::Import(source) => copy_pi_transcript(&source, &destination, &workspace),
+            Transcript::LocalFork(source) => {
                 copy_transcript(&source, &destination, &workspace, Some(session_id))
-            } else {
-                copy_pi_transcript(&source, &destination, &workspace)
             }
+            Transcript::PeerFork { contents, .. } => {
+                let mut out = fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .mode(0o600)
+                    .open(&destination)?;
+                let result = out.write_all(&contents).and_then(|()| out.sync_all());
+                if result.is_err() {
+                    let _ = fs::remove_file(destination);
+                }
+                result
+            }
+            Transcript::New => Ok(()),
         })
         .await
         .map_err(io::Error::other)??;
@@ -288,7 +310,7 @@ async fn create_in(
     let inserted = match inserted {
         Ok(inserted) => inserted,
         Err(error) => {
-            if import.is_some() {
+            if has_history {
                 let _ = fs::remove_file(&transcript);
             }
             return Err(error);
@@ -314,7 +336,7 @@ async fn create_in(
             let _ = handle
                 .call(|session| Box::pin(session.close("pi_spawn_failed")))
                 .await;
-            if import.is_some() {
+            if has_history {
                 let _ = fs::remove_file(&transcript);
             }
             Err(error)
@@ -348,7 +370,14 @@ pub(crate) async fn fork(core: &Arc<Core>, source: SessionId) -> io::Result<Sess
     let path = parent
         .pi_session_file
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "source transcript unavailable"))?;
-    create_in(core, parent.folder, Some((path, true)), None, parent.agent).await
+    create_in(
+        core,
+        parent.folder,
+        Transcript::LocalFork(path),
+        None,
+        parent.agent,
+    )
+    .await
 }
 
 pub(crate) fn copy_pi_transcript(
@@ -488,7 +517,7 @@ async fn import_now(
     let session = create_in(
         core,
         folder,
-        Some((source, false)),
+        Transcript::Import(source),
         None,
         axo_agent::AgentKind::Pi,
     )

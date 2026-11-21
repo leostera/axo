@@ -173,6 +173,9 @@ pub(super) struct Follower<'a> {
     /// The epoch the cloud lists each of this Mac's own Sessions at.
     own_epochs: HashMap<String, u64>,
     index: PeerIndex,
+    own_sessions: PeerIndex,
+    own_inspections: Vec<super::live::Inspection>,
+    account: String,
 }
 
 impl<'a> Follower<'a> {
@@ -211,10 +214,20 @@ impl<'a> Follower<'a> {
             restore_mirror: Mirror::new(restore_directory(&dependencies.index)),
             own_epochs: HashMap::new(),
             index: PeerIndex::default(),
+            own_sessions: PeerIndex::default(),
+            own_inspections: Vec::new(),
+            account: String::new(),
         }
     }
 
-    pub(super) async fn run(mut self, sink: RelaySink, stream: RelayStream) -> Ended {
+    pub(super) async fn run(
+        mut self,
+        sink: RelaySink,
+        stream: RelayStream,
+        account: String,
+    ) -> Ended {
+        self.mirror.scope(&account);
+        self.account = account;
         self.live.connected();
         let outcome = self.follow(sink, stream).await;
         let in_flight = self
@@ -260,6 +273,26 @@ impl<'a> Follower<'a> {
                 self.follow_panes()?;
                 self.start_restores()?;
                 self.open_more()?;
+                for inspect in self.live.take_inspections() {
+                    if inspect.own
+                        && self.protocol == Protocol::Direct
+                        && !self.presence.contains_key(self.own_host_id)
+                    {
+                        // The account lists other hosts only. Reuse the authenticated route
+                        // used by restores to ask our own HostDO for the index.
+                        if self.own_inspections.len() < 16 {
+                            self.own_inspections.push(inspect);
+                        }
+                        if !self
+                            .sockets
+                            .contains_key(&Route::Host(self.own_host_id.to_owned()))
+                        {
+                            self.waiting.entry(self.own_host_id.to_owned()).or_default();
+                        }
+                    } else {
+                        self.inspect(inspect);
+                    }
+                }
                 for command in self.live.take_commands() {
                     self.forward(command)?;
                 }
@@ -339,8 +372,23 @@ impl<'a> Follower<'a> {
         })?;
         self.presence.insert(host_id.to_owned(), hello.presence);
         self.listed_sessions(&stamped(hello.sessions, Some(host_id)))?;
+        if host_id == self.own_host_id {
+            for inspect in std::mem::take(&mut self.own_inspections) {
+                self.inspect(inspect);
+            }
+        }
         self.check_ready();
         self.publish_hosts()
+    }
+
+    fn inspect(&self, inspect: super::live::Inspection) {
+        if inspect.own {
+            let mut confirmed = self.index.clone();
+            confirmed.merge(&self.own_sessions.sessions);
+            (inspect.run)(&self.account, &confirmed, self.mirror);
+        } else {
+            (inspect.run)(&self.account, &self.index, self.mirror);
+        }
     }
 
     /// Ready once no Mac followed at hello is still to answer it (protocol 3).
@@ -533,6 +581,9 @@ impl<'a> Follower<'a> {
         self.sockets.remove(&Route::Host(host_id.to_owned()));
         self.waiting.remove(host_id);
         self.presence.remove(host_id);
+        self.index
+            .sessions
+            .retain(|entry| entry["hostId"].as_str() != Some(host_id));
         let sessions: HashSet<String> = self
             .listed
             .iter()
@@ -595,6 +646,7 @@ impl<'a> Follower<'a> {
                     (session["sessionId"].as_str(), session["epoch"].as_u64())
             {
                 self.own_epochs.insert(session_id.to_owned(), epoch);
+                self.own_sessions.merge(std::slice::from_ref(session));
             }
         }
         let theirs: Vec<Value> = sessions
@@ -888,13 +940,30 @@ impl<'a> Follower<'a> {
     /// Sends a remote pane's command to the Mac it names, addressed to that Mac's current
     /// generation as the account lists it.
     fn forward(&mut self, command: PeerCommand) -> io::Result<()> {
-        let generation = self
+        let host = self
             .index
             .hosts
             .iter()
-            .find(|host| host["hostId"].as_str() == Some(command.host_id.as_str()))
-            .and_then(|host| host["hostGeneration"].as_str())
-            .map(str::to_owned);
+            .find(|host| host["hostId"].as_str() == Some(command.host_id.as_str()));
+        let generation = host.and_then(|host| host["hostGeneration"].as_str());
+        if let Some(account) = &command.account {
+            if account != &self.account
+                || host.and_then(|host| host["online"].as_bool()) != Some(true)
+            {
+                let _ = command.reply.send(Err(PeerCommandError::offline()));
+                return Ok(());
+            }
+            if !generation.is_some_and(|generation| {
+                command.params["target"]["hostGeneration"].as_str() == Some(generation)
+                    && command.params["target"]["hostId"].as_str() == Some(&command.host_id)
+            }) {
+                let _ = command.reply.send(Err(PeerCommandError {
+                    code: axo_protocol::rpc::error_code::STALE_HOST,
+                    message: "Stale host".to_owned(),
+                }));
+                return Ok(());
+            }
+        }
         let (Some(generation), Value::Object(mut params)) = (generation, command.params) else {
             let _ = command.reply.send(Err(PeerCommandError::offline()));
             return Ok(());
@@ -1118,6 +1187,7 @@ mod tests {
             .forward(PeerCommand {
                 host_id: STUDIO.to_owned(),
                 method: "axo.remote.session.prompt".to_owned(),
+                account: None,
                 params: json!({ "sessionId": SESSION, "text": "hi" }),
                 reply,
             })

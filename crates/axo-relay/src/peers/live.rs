@@ -10,7 +10,12 @@ use tokio::sync::{oneshot, watch};
 
 use serde_json::Value;
 
-use super::mirror::Place;
+use super::{Mirror, PeerIndex, Place};
+
+pub(super) struct Inspection {
+    pub(super) own: bool,
+    pub(super) run: Box<dyn FnOnce(&str, &PeerIndex, &Mirror) + Send>,
+}
 
 /// A command the cloud refused or could not settle, as JSON-RPC reports it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -54,6 +59,7 @@ pub(super) struct PeerCommand {
     pub(super) host_id: String,
     pub(super) method: String,
     pub(super) params: Value,
+    pub(super) account: Option<String>,
     pub(super) reply: oneshot::Sender<Result<Value, PeerCommandError>>,
 }
 
@@ -66,6 +72,7 @@ struct LiveState {
     /// Commands waiting for the socket to send them.
     outbox: VecDeque<PeerCommand>,
     connected: bool,
+    inspections: Vec<Inspection>,
     /// Sessions a remote pane shows: copied even when archived.
     wanted: HashSet<String>,
     /// This Mac's transcripts to fetch back from the cloud.
@@ -190,6 +197,39 @@ impl PeerLive {
             .unwrap_or_default()
     }
 
+    /// Inspects only this socket's confirmed listing and copy, on the follower itself.
+    /// No mirror write (including a reset) can interleave with the read.
+    pub async fn inspect<T: Send + 'static>(
+        &self,
+        own: bool,
+        inspect: impl FnOnce(&str, &PeerIndex, &Mirror) -> T + Send + 'static,
+    ) -> Option<T> {
+        let (reply, answer) = oneshot::channel();
+        {
+            let mut state = self.state();
+            if !state.connected || state.inspections.len() >= 16 {
+                return None;
+            }
+            state.inspections.push(Inspection {
+                own,
+                run: Box::new(move |account, index, mirror| {
+                    if !reply.is_closed() {
+                        let _ = reply.send(inspect(account, index, mirror));
+                    }
+                }),
+            });
+        }
+        self.woken.notify_one();
+        tokio::time::timeout(Duration::from_secs(4), answer)
+            .await
+            .ok()?
+            .ok()
+    }
+
+    pub(super) fn take_inspections(&self) -> Vec<Inspection> {
+        std::mem::take(&mut self.state().inspections)
+    }
+
     /// Sends `method` to the Mac `host_id` names, as a client would, and waits for its answer.
     /// With no socket nothing is sent (`offline`); a reply that does not come in time, or a socket
     /// that ends first, leaves the outcome unknown.
@@ -199,6 +239,31 @@ impl PeerLive {
         method: &str,
         params: Value,
         timeout: Duration,
+    ) -> Result<Value, PeerCommandError> {
+        self.send_command(host_id, method, params, timeout, None)
+            .await
+    }
+
+    /// Dispatch only on the account that confirmed the source and target.
+    pub async fn account_command(
+        &self,
+        account: String,
+        host_id: &str,
+        method: &str,
+        params: Value,
+        timeout: Duration,
+    ) -> Result<Value, PeerCommandError> {
+        self.send_command(host_id, method, params, timeout, Some(account))
+            .await
+    }
+
+    async fn send_command(
+        &self,
+        host_id: &str,
+        method: &str,
+        params: Value,
+        timeout: Duration,
+        account: Option<String>,
     ) -> Result<Value, PeerCommandError> {
         let (reply, answer) = oneshot::channel();
         {
@@ -210,6 +275,7 @@ impl PeerLive {
                 host_id: host_id.to_owned(),
                 method: method.to_owned(),
                 params,
+                account,
                 reply,
             });
         }
@@ -285,6 +351,7 @@ impl PeerLive {
         self.update(|state| {
             state.connected = false;
             state.progress.clear();
+            state.inspections.clear();
             unsent.extend(state.outbox.drain(..));
         });
         for command in unsent {

@@ -23,6 +23,7 @@ mod core;
 mod desktop;
 mod event_stream;
 mod events;
+mod forks;
 mod handlers;
 mod idle_pis;
 mod input_key;

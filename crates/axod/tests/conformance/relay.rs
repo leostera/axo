@@ -755,6 +755,187 @@ fn a_question_is_told_to_the_account_and_withdrawn_there_when_its_asker_leaves()
     assert_eq!(resolved["params"]["action"], "cancel", "{resolved}");
 }
 
+const FORK_METHOD: &str = "axo.remote.session.fork";
+const PEER: &str = "11111111-0000-4000-8000-000000000001";
+const PEER_GENERATION: &str = "11111111-0000-4000-8000-000000000002";
+const SOURCE: &str = "11111111-0000-4000-8000-000000000003";
+const REQUEST: &str = "11111111-0000-4000-8000-000000000004";
+const CHILD: &str = "11111111-0000-4000-8000-000000000005";
+const SOURCE_CWD: &str = "/axo-fork-test-source-only";
+
+fn fork_listing(session: Value, host: &Value) -> Value {
+    json!({ "hostId": host, "sessionId": session, "epoch": 4, "head": 2,
+        "status": "working", "metadata": { "agent": "pi", "name": "Source" } })
+}
+
+fn fork_hub(with_source: bool) -> FakeHub {
+    let hub = FakeHub::start();
+    hub.respond_on_peer("/peers", "axo.client.hello", Answer::Result(json!({
+        "hosts": [{ "hostId": PEER, "hostGeneration": PEER_GENERATION, "label": "Peer", "online": true }],
+        "sessions": [],
+    })));
+    let sessions = if with_source {
+        vec![fork_listing(json!(SOURCE), &json!(PEER))]
+    } else {
+        vec![]
+    };
+    let peer = format!("/peers/{PEER}/client");
+    hub.respond_on_peer(
+        &peer,
+        "axo.client.hello",
+        Answer::Result(json!({
+            "online": true, "hostGeneration": PEER_GENERATION, "sessions": sessions,
+        })),
+    );
+    if with_source {
+        hub.respond_on_peer(&peer, "axo.client.session.open", Answer::Result(json!({
+            "epoch": 4,
+            "header": json!({"type":"session", "version":3, "id":SOURCE, "cwd":SOURCE_CWD}).to_string(),
+            "records": [
+                { "cursor": 1, "line": json!({"type":"message", "id":"m1", "parentId":null,
+                    "message":{"role":"user","content":[{"type":"text","text":"Keep me"}],"timestamp":1}
+                }).to_string() },
+                { "cursor": 2, "line": json!({"type":"custom", "id":"m2", "parentId":"m1",
+                    "customType":"axo.command.queued", "data":{"text":"Do not replay me"}
+                }).to_string() },
+            ]
+        })));
+    }
+    hub
+}
+
+#[test]
+fn a_cross_host_fork_copies_an_exact_confirmed_snapshot_and_retries_the_same_child() {
+    let hub = fork_hub(true);
+    let (axod, target) = linked(&hub, Pi::Fake);
+    let mut params = json!({"target":target,"sourceHostId":PEER,"sessionId":SOURCE,"epoch":4,"head":2,"requestId":REQUEST});
+    axod.wait_for("the destination's committed peer mirror", || {
+        match hub.call(FORK_METHOD, params.clone()) {
+            Err(error) if error["message"] == "Choose a destination folder" => Some(()),
+            Err(error) if matches!(error["code"].as_i64(), Some(-32004 | -32024)) => None,
+            other => panic!("unexpected fork answer: {other:?}"),
+        }
+    });
+    assert!(axod.sessions().is_empty());
+    let mut wrong = params.clone();
+    wrong["target"]["hostGeneration"] = json!(PEER_GENERATION);
+    assert_eq!(
+        hub.call(FORK_METHOD, wrong).unwrap_err()["code"],
+        STALE_HOST
+    );
+    wrong = params.clone();
+    wrong["head"] = json!(1);
+    assert_eq!(hub.call(FORK_METHOD, wrong).unwrap_err()["code"], -32004);
+    assert_eq!(axod.err(FORK_METHOD, params.clone()).code, METHOD_NOT_FOUND);
+
+    let folder = axod.home().canonicalize().unwrap();
+    params["folder"] = json!(folder);
+    let created = hub.ok(FORK_METHOD, params.clone());
+    assert_eq!(created["session"]["hostId"], target["hostId"]);
+    let id = &created["session"]["sessionId"];
+    assert_ne!(id, SOURCE);
+    assert!(matches!(
+        created["session"]["status"].as_str(),
+        Some("starting" | "ready")
+    ));
+    let record = axod.wait_for("the child Pi to be idle", || {
+        let record = the_session(&axod, id);
+        (record["status"] == "ready").then_some(record)
+    });
+    let text = std::fs::read_to_string(record["piSessionFile"].as_str().unwrap()).unwrap();
+    let lines: Vec<Value> = text
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(lines.len(), 4, "{lines:?}");
+    assert_eq!(
+        (lines[0]["id"].clone(), lines[0]["cwd"].clone()),
+        (id.clone(), json!(folder))
+    );
+    assert_eq!(lines[1]["message"]["content"][0]["text"], "Keep me");
+    assert_ne!(lines[2]["customType"], "axo.command.queued");
+    assert!(!text.contains("Do not replay me"));
+    assert_eq!(lines[3]["type"], "custom_message");
+    assert_eq!(lines[3]["parentId"], "m2");
+    assert_eq!(lines[3]["display"], false);
+    let notice = lines[3]["content"].as_str().unwrap();
+    for expected in [
+        PEER,
+        SOURCE_CWD,
+        target["hostId"].as_str().unwrap(),
+        folder.to_str().unwrap(),
+    ] {
+        assert!(notice.contains(expected), "{notice}");
+    }
+    params.as_object_mut().unwrap().remove("target");
+    assert_eq!(
+        axod.ok("axo.session.fork", params)["session"]["sessionId"],
+        *id
+    );
+    assert_eq!(axod.sessions().len(), 1);
+
+    let inbound_bridge = axod.ok("axo.session.fork", json!({
+        "sessionId": SOURCE, "destinationHostId": target["hostId"], "requestId": CHILD, "folder": folder,
+    }));
+    assert_eq!(inbound_bridge["session"]["hostId"], target["hostId"]);
+    assert_ne!(inbound_bridge["session"]["sessionId"], *id);
+}
+
+#[test]
+fn the_local_bridge_resolves_its_own_published_snapshot_and_checks_the_peer_reply() {
+    let hub = fork_hub(false);
+    let (axod, target) = linked(&hub, Pi::Fake);
+    let source = axod.new_session()["id"].clone();
+    let own_path = format!("/peers/{}/client", target["hostId"].as_str().unwrap());
+    hub.respond_on_peer(
+        &own_path,
+        "axo.client.hello",
+        Answer::Result(json!({
+            "online": true, "hostGeneration": target["hostGeneration"],
+            "sessions": [fork_listing(source.clone(), &target["hostId"])],
+        })),
+    );
+    axod.wait_for("the online destination", || {
+        axod.ok("axo.peer.sessions.list", json!({}))["hosts"]
+            .as_array()?
+            .iter()
+            .any(|h| h["hostId"] == PEER && h["online"] == true)
+            .then_some(())
+    });
+    let path = format!("/peers/{PEER}/client");
+    let params = json!({"sessionId":source,"destinationHostId":PEER,"requestId":REQUEST});
+    hub.respond_on_peer(
+        &path,
+        "axo.client.command",
+        Answer::Error(-32602, "Choose a destination folder".to_owned()),
+    );
+    let error = axod.err("axo.session.fork", params.clone());
+    assert_eq!(error.message, "Choose a destination folder");
+    let forwarded = hub.wait_for_request("axo.client.command");
+    assert_eq!(
+        forwarded["params"],
+        json!({ "hostId": PEER, "method": FORK_METHOD, "params": {
+            "target":{"hostId":PEER,"hostGeneration":PEER_GENERATION}, "sourceHostId":target["hostId"],
+            "sessionId":source,"epoch":4,"head":2,"requestId":REQUEST
+        }})
+    );
+    let wrong = json!({ "session": { "hostId": target["hostId"], "sessionId": CHILD, "name":"Fork", "status":"ready",
+        "hasAgent":true, "shells":[], "updatedAt":"2026-11-21T00:00:00Z" } });
+    hub.respond_on_peer(&path, "axo.client.command", Answer::Result(wrong.clone()));
+    assert!(
+        axod.err("axo.session.fork", params.clone())
+            .message
+            .contains("outcome unknown")
+    );
+    let mut right = wrong;
+    right["session"]["hostId"] = json!(PEER);
+    hub.respond_on_peer(&path, "axo.client.command", Answer::Result(right));
+    let answer = axod.ok("axo.session.fork", params);
+    assert_eq!(answer["session"]["sessionId"], CHILD);
+    assert_eq!(answer["session"]["hostId"], PEER);
+    assert_eq!(axod.sessions().len(), 1);
+}
+
 #[test]
 fn the_account_drives_a_sessions_panes_keys_and_layout() {
     let hub = FakeHub::start();

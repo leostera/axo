@@ -199,6 +199,7 @@ async fn follow(
             };
         }
     };
+    let account_id = account.account_id().to_owned();
     // Each Mac's HostDO, in protocol 3, signed in with the same credential.
     let connect_host: follower::Connect = {
         let dependencies = Arc::clone(dependencies);
@@ -216,7 +217,7 @@ async fn follow(
         })
     };
     Follower::new(mirror, dependencies, stop, protocol, connect_host)
-        .run(sink, stream)
+        .run(sink, stream, account_id)
         .await
 }
 

@@ -62,6 +62,7 @@ struct State {
     /// Everything axod sent on its daemon socket, in order.
     received: Vec<Value>,
     answers: HashMap<String, Answer>,
+    peer_answers: HashMap<(String, String), Answer>,
     /// Where the hub's messages to the current daemon socket go.
     outbox: Option<Sender<String>>,
     /// Which daemon socket is current: each new one, and each drop, moves it on.
@@ -114,6 +115,12 @@ impl FakeHub {
 
     pub fn respond(&self, method: &str, answer: Answer) {
         self.lock().answers.insert(method.to_owned(), answer);
+    }
+
+    pub fn respond_on_peer(&self, path_suffix: &str, method: &str, answer: Answer) {
+        self.lock()
+            .peer_answers
+            .insert((path_suffix.to_owned(), method.to_owned()), answer);
     }
 
     pub fn hold(&self, method: &str) {
@@ -408,7 +415,8 @@ fn daemon_socket(stream: TcpStream, shared: Arc<Shared>) {
     );
     let Ok(mut socket) = socket else { return };
     let Some(seen) = seen else { return };
-    let is_daemon = seen.path.ends_with("/daemon");
+    let path = seen.path.clone();
+    let is_daemon = path.ends_with("/daemon");
     let (outbox, outgoing) = channel();
     let generation = {
         let mut state = shared.state.lock().unwrap();
@@ -425,7 +433,7 @@ fn daemon_socket(stream: TcpStream, shared: Arc<Shared>) {
     stream
         .set_read_timeout(Some(Duration::from_millis(1)))
         .unwrap();
-    converse(&mut socket, generation, &outgoing, &shared, is_daemon);
+    converse(&mut socket, generation, &outgoing, &shared, &path);
     let _ = socket.close(None);
 }
 
@@ -434,8 +442,9 @@ fn converse(
     generation: u64,
     outgoing: &Receiver<String>,
     shared: &Shared,
-    is_daemon: bool,
+    path: &str,
 ) {
+    let is_daemon = path.ends_with("/daemon");
     loop {
         if shared.stop.load(Ordering::Relaxed) {
             return;
@@ -457,10 +466,7 @@ fn converse(
                 let reply = if is_daemon {
                     reply_to(&message, shared)
                 } else {
-                    // Other sockets (following other Macs) get an empty answer and no record.
-                    message
-                        .get("id")
-                        .map(|id| json!({ "jsonrpc": "2.0", "id": id, "result": {} }))
+                    peer_reply(path, &message, shared)
                 };
                 if let Some(reply) = reply
                     && socket
@@ -482,6 +488,23 @@ fn converse(
     }
 }
 
+fn peer_reply(path: &str, message: &Value, shared: &Shared) -> Option<Value> {
+    let mut state = shared.state.lock().unwrap();
+    let id = message.get("id")?;
+    let method = message["method"].as_str()?;
+    let answer = state
+        .peer_answers
+        .iter()
+        .find_map(|((suffix, name), answer)| {
+            (path.ends_with(suffix) && name == method).then(|| answer.clone())
+        });
+    if answer.is_some() {
+        state.received.push(message.clone());
+        shared.changed.notify_all();
+    }
+    respond(id, answer.unwrap_or(Answer::Result(json!({}))))
+}
+
 /// Records `message` and, if it is a request, answers it as the test said.
 fn reply_to(message: &Value, shared: &Shared) -> Option<Value> {
     let mut state = shared.state.lock().unwrap();
@@ -489,12 +512,18 @@ fn reply_to(message: &Value, shared: &Shared) -> Option<Value> {
     shared.changed.notify_all();
     let id = message.get("id")?;
     let method = message.get("method")?.as_str()?;
-    match state
-        .answers
-        .get(method)
-        .cloned()
-        .unwrap_or(Answer::Result(json!({})))
-    {
+    respond(
+        id,
+        state
+            .answers
+            .get(method)
+            .cloned()
+            .unwrap_or(Answer::Result(json!({}))),
+    )
+}
+
+fn respond(id: &Value, answer: Answer) -> Option<Value> {
+    match answer {
         Answer::Result(result) => Some(json!({ "jsonrpc": "2.0", "id": id, "result": result })),
         Answer::Error(code, text) => {
             Some(json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": text } }))
