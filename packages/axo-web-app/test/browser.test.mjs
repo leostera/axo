@@ -124,6 +124,7 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
   let finishOnStop = null;
   let sessionCreateCount = 0;
   const forks = [];
+  let forkDecision = { kind: "keep", agent: "pi" };
   let authenticated = false;
   let pairingRequestCount = 0;
   const tokenRequests = [];
@@ -425,7 +426,9 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
       }
       const { method, params } = call.params;
       methods.push(method);
-      if (method === "axo.remote.session.fork") {
+      if (method === "axo.remote.session.fork.plan") {
+        reply({ sourceAgent: "pi", historyFormat: "pi/3", decision: forkDecision });
+      } else if (method === "axo.remote.session.fork") {
         forks.push(call.params);
         if (!params.folder) {
           socket.send(JSON.stringify({ jsonrpc: "2.0", id: call.id, error: { code: -32000, message: "Choose a destination folder" } }));
@@ -679,10 +682,21 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     const forkDialog = page.getByRole("dialog", { name: "Do you want to fork this session to Mac Studio?" });
     await chooseStudio();
     await expect(forkDialog.getByText(/Project files are not copied/));
+    await expect(forkDialog.getByText("Continue with Pi."));
     await forkDialog.getByRole("button", { name: "Cancel" }).click();
     assert.equal(forks.length, 0);
     assert.equal(await parentDraft.inputValue(), "Unsent on the parent");
+    forkDecision = { kind: "unavailable" };
     await chooseStudio();
+    await expect(forkDialog.getByText(/No compatible coding agent/));
+    assert.equal(await forkDialog.getByRole("button", { name: "Fork session" }).count(), 0);
+    await forkDialog.getByRole("button", { name: "Cancel" }).click();
+    forkDecision = { kind: "choose", agents: ["codex"] };
+    await chooseStudio();
+    const agentChoice = forkDialog.getByLabel("Choose a coding agent on Mac Studio");
+    await expect(agentChoice);
+    assert.equal(await forkDialog.getByRole("button", { name: "Fork session" }).isDisabled(), true);
+    await agentChoice.selectOption("codex");
     await forkDialog.getByRole("button", { name: "Fork session" }).click();
     await expect(forkDialog.getByRole("alert").getByText("Choose a destination folder"));
     assert.equal(new URL(page.url()).pathname, parentPath);
@@ -692,9 +706,9 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     await expect(page.getByRole("heading", { name: "Forked chat" }));
     await expect(page.getByText("Review the latest changes.", { exact: true }));
     assert.equal(new URL(page.url()).pathname, `/__tests__/chat/${studioHost.hostId}/${sid(8)}`);
-    assert.deepEqual(forks.map(({ hostId, params }) => [hostId, params.sourceHostId, params.sessionId, params.epoch, params.head, params.folder]), [
-      [studioHost.hostId, hostId, sid(1), 1, 4, undefined],
-      [studioHost.hostId, hostId, sid(1), 1, 4, "/projects/copy"],
+    assert.deepEqual(forks.map(({ hostId, params }) => [hostId, params.sourceHostId, params.sessionId, params.epoch, params.head, params.folder, params.agent]), [
+      [studioHost.hostId, hostId, sid(1), 1, 4, undefined, "codex"],
+      [studioHost.hostId, hostId, sid(1), 1, 4, "/projects/copy", "codex"],
     ]);
     await chats.getByRole("button", { name: /^Browser Agent/ }).click();
     assert.equal(await parentDraft.inputValue(), "Unsent on the parent");

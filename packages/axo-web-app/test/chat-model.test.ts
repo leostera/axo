@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import type { AccountEvents, ClientRecord, ClientSession, OpenRequest } from "@axo/app";
+import { AxoRpcError, type AccountEvents, type ClientRecord, type ClientSession, type OpenRequest } from "@axo/app";
 import { inlineSpans, parseMarkdown } from "../src/chat/markdown.ts";
 import { attachmentsIn, canAnswerQuestionHere, ChatTranscript, toolInput, type ToolActivity } from "../src/chat/transcript.ts";
 import { toolGroupTitle } from "../src/chat/tool-groups.ts";
@@ -599,11 +599,17 @@ async function workbenchWith(account = new FakeAccount(), retryDelay = 60_000, u
   return { workbench, account, connects: () => connects };
 }
 
+const forkPlanMethod = "axo.remote.session.fork.plan";
+const planFor = (decision: object) => ({ sourceAgent: "pi", historyFormat: "pi/3", decision });
+const keepPi = planFor({ kind: "keep", agent: "pi" });
+const forkCalls = (account: FakeAccount) => account.commands.filter(call => call.method === forkMethod);
+const plans = (account: FakeAccount) => account.commands.filter(call => call.method === forkPlanMethod);
 const forkMethod = "axo.remote.session.fork";
 const forkTarget = { hostId: sid(31), hostGeneration: sid(32) };
 
 async function forkWorkbench(agent: Session["agent"] = "pi") {
   const account = new FakeAccount();
+  account.answers.set(forkPlanMethod, keepPi);
   const source = account.hello.sessions[0];
   source.metadata.agent = agent;
   source.head = 4;
@@ -616,105 +622,147 @@ async function forkWorkbench(agent: Session["agent"] = "pi") {
   return { workbench, account };
 }
 
-test("fork: cancellation is local, and only a destination reply opens the independent child", async () => {
+test("fork: cancel a pending plan; keep omits agent and opens only the returned child", async () => {
   const { workbench, account } = await forkWorkbench();
-  const sourceSelection = workbench.selection;
+  const selection = workbench.selection;
+  const stale = Promise.withResolvers<unknown>();
+  account.answers.set(forkPlanMethod, stale.promise);
   workbench.chooseHost(forkTarget.hostId);
-  assert.equal(workbench.hostFork?.destination, "Laptop");
+  await workbench.confirmHostFork("");
+  assert.equal(workbench.hostFork?.stage.kind, "planning");
   workbench.cancelHostFork();
   assert.equal(workbench.hostFork, null);
-  assert.equal(workbench.selection, sourceSelection);
+  assert.equal(workbench.selection, selection);
   assert.equal(workbench.draft(), "Keep my draft");
-  assert.deepEqual(account.commands, []);
+  assert.deepEqual(forkCalls(account), []);
 
-  const reply = Promise.withResolvers<{ session: { sessionId: string; name: string } }>();
-  account.answers.set(forkMethod, reply.promise);
+  account.answers.set(forkPlanMethod, keepPi);
   workbench.chooseHost(forkTarget.hostId);
+  await tick();
+  stale.resolve(planFor({ kind: "unavailable" }));
+  await tick();
   account.push(sid(1), [said(2, "assistant", "Parent continued while choosing")]);
+  const child = Promise.withResolvers<unknown>();
+  account.answers.set(forkMethod, child.promise);
   const confirming = workbench.confirmHostFork("");
-  await workbench.confirmHostFork(""); // No duplicate command while the first is pending.
-  assert.equal(workbench.selection, sourceSelection);
-  assert.equal(account.commands.length, 1);
-  const [{ method, params: { requestId, ...params } }] = account.commands;
-  assert.equal(method, forkMethod);
+  await workbench.confirmHostFork("");
+  assert.equal(workbench.selection, selection);
+  assert.equal(forkCalls(account).length, 1);
+  const [{ params: { requestId, ...params } }] = forkCalls(account);
   assert.match(String(requestId), /^[\da-f]{8}-[\da-f]{4}-4[\da-f]{3}-[89ab][\da-f]{3}-[\da-f]{12}$/);
   assert.deepEqual(params, { target: forkTarget, sourceHostId: hostId, sessionId: sid(1), epoch: 1, head: 1 });
-  reply.resolve({ session: { sessionId: sid(7), name: "Child" } });
+  assert.deepEqual(plans(account).at(-1)?.params, params);
+  child.resolve({ session: { sessionId: sid(7) } });
   await confirming;
   assert.equal(workbench.hostFork, null);
   assert.equal(workbench.openHostId, forkTarget.hostId);
   assert.equal(workbench.selectedSession?.sessionId, sid(7));
-  assert.equal(workbench.draft(), "");
+  assert.equal(workbench.selectedSession?.agent, "pi");
   assert.deepEqual(account.opens.at(-1)?.hostId, forkTarget.hostId);
-  assert.equal(account.opens.at(-1)?.sessionId, sid(7));
   workbench.selectChat(hostId, sid(1));
   assert.equal(workbench.draft(), "Keep my draft");
   assert.deepEqual(rowsOf(workbench, sid(1)), ["user: Parent history", "assistant: Parent continued while choosing"]);
   workbench.stop();
 });
 
-test("fork: a missing directory needs a separately confirmed absolute path, and retries reuse the request", async () => {
+test("fork: even a single alternative requires a choice; stale harness rejection re-plans and clears it", async () => {
   const { workbench, account } = await forkWorkbench();
+  account.answers.set(forkPlanMethod, planFor({ kind: "choose", agents: ["codex"] }));
   workbench.chooseHost(forkTarget.hostId);
-  account.failNext = new Error("Choose a destination folder");
+  await tick();
+  workbench.chooseHostForkAgent("claude-code");
   await workbench.confirmHostFork("");
-  assert.equal(workbench.hostFork?.needsFolder, true);
+  assert.deepEqual(forkCalls(account), []);
+  workbench.chooseHostForkAgent("codex");
+  account.failNext = new AxoRpcError("Harness unavailable", -32000, { kind: "forkHarnessUnavailable", created: false });
+  await workbench.confirmHostFork("");
+  assert.equal(plans(account).length, 2, "refresh information, never retry creation automatically");
+  assert.equal(forkCalls(account).length, 1);
+  await workbench.confirmHostFork("");
+  assert.equal(forkCalls(account).length, 1, "the previous choice was cleared");
   assert.equal(workbench.openHostId, hostId);
   assert.equal(workbench.draft(), "Keep my draft");
+  workbench.chooseHostForkAgent("codex");
+  account.answers.set(forkMethod, { session: { sessionId: sid(7) } });
+  await workbench.confirmHostFork("");
+  const [first, second] = forkCalls(account);
+  assert.equal(first.params.agent, "codex");
+  assert.equal(second.params.agent, "codex");
+  assert.notEqual(first.params.requestId, second.params.requestId);
+  assert.equal(workbench.selectedSession?.agent, "codex");
+  workbench.stop();
+});
+
+test("fork: no compatible agent or an old host without planning never sends a create", async () => {
+  const { workbench, account } = await forkWorkbench("codex");
+  account.answers.set(forkPlanMethod, planFor({ kind: "unavailable" }));
+  workbench.chooseHost(forkTarget.hostId);
+  await tick();
+  await workbench.confirmHostFork("");
+  assert.equal(workbench.hostFork?.stage.kind, "ready");
+  workbench.cancelHostFork();
+  account.failNext = Object.assign(new Error("Method not found"), { code: -32601 });
+  workbench.chooseHost(forkTarget.hostId);
+  await tick();
+  assert.equal(workbench.hostFork?.stage.kind, "planFailed");
+  await workbench.confirmHostFork("");
+  assert.deepEqual(forkCalls(account), []);
+  assert.equal(workbench.draft(), "Keep my draft");
+  workbench.stop();
+});
+
+test("fork: missing folder needs reconfirmation; an uncertain reply retains the exact agent, folder and request ID", async () => {
+  const { workbench, account } = await forkWorkbench();
+  account.answers.set(forkPlanMethod, planFor({ kind: "choose", agents: ["codex", "claude-code"] }));
+  workbench.chooseHost(forkTarget.hostId);
+  await tick();
+  workbench.chooseHostForkAgent("codex");
+  account.failNext = new AxoRpcError("Choose a destination folder", -32000);
+  await workbench.confirmHostFork("");
+  assert.equal(workbench.hostFork?.needsFolder, true);
   await workbench.confirmHostFork("relative/path");
   assert.match(workbench.hostFork?.error ?? "", /absolute path/);
-  assert.equal(account.commands.length, 1);
+  assert.equal(forkCalls(account).length, 1);
 
-  account.failNext = new Error("Request timed out");
-  await workbench.confirmHostFork("/other/project");
-  assert.match(workbench.hostFork?.error ?? "", /timed out/);
-  assert.equal(workbench.selectedSession?.sessionId, sid(1));
+  // Misleading text and attached data cannot turn an unknown outcome into a definitive rejection.
+  account.failNext = new AxoRpcError("Choose a destination folder", -32004, { kind: "forkHarnessUnavailable", created: false });
+  await workbench.confirmHostFork("C:\\Projects\\Copy");
+  assert.equal(workbench.hostFork?.stage.kind, "uncertain");
   assert.equal(workbench.draft(), "Keep my draft");
+  workbench.cancelHostFork();
+  workbench.chooseHost(forkTarget.hostId);
+  workbench.chooseHostForkAgent("claude-code");
   account.answers.set(forkMethod, { session: { sessionId: sid(7) } });
-  await workbench.confirmHostFork("/other/project");
-  assert.notEqual(account.commands[0].params.requestId, account.commands[1].params.requestId);
-  assert.deepEqual(account.commands[1], account.commands[2]);
-  assert.equal(account.commands[2].params.folder, "/other/project");
+  await workbench.confirmHostFork("/different/path");
+  const [initial, unavailable, retried] = forkCalls(account);
+  assert.equal(plans(account).length, 1, "do not re-plan an unresolved request");
+  assert.notEqual(initial.params.requestId, unavailable.params.requestId);
+  assert.deepEqual(unavailable, retried);
+  assert.equal(retried.params.folder, "C:\\Projects\\Copy");
+  assert.equal(retried.params.agent, "codex");
   assert.equal(workbench.selectedSession?.sessionId, sid(7));
   workbench.stop();
 });
 
-test("fork: unsupported and unknown agents, an offline destination, and the original session ID are not successes", async () => {
-  for (const agent of ["codex", "unknown"] as const) {
-    const { workbench, account } = await forkWorkbench(agent === "unknown" ? undefined : agent);
-    if (agent === "unknown") {
-      const source = account.hello.sessions[0];
-      delete source.metadata.agent;
-      account.events.sessions?.(hostId, [source]);
-    }
-    workbench.chooseHost(forkTarget.hostId);
-    assert.match(workbench.failure ?? "", /Only Pi/);
-    assert.equal(workbench.hostFork, null);
-    assert.deepEqual(account.commands, []);
-    workbench.stop();
-  }
+test("fork: a stale destination generation prevents confirmation", async () => {
   const { workbench, account } = await forkWorkbench();
   workbench.chooseHost(forkTarget.hostId);
-  account.hello.hosts[1].online = false;
+  await tick();
+  account.hello.hosts[1].hostGeneration = sid(33);
   account.events.hosts?.(account.hello.hosts);
   await workbench.confirmHostFork("");
-  assert.match(workbench.hostFork?.error ?? "", /offline/);
-  assert.deepEqual(account.commands, []);
-  account.hello.hosts[1].online = true;
-  account.events.hosts?.(account.hello.hosts);
-  account.answers.set(forkMethod, { session: { sessionId: sid(1) } });
-  await workbench.confirmHostFork("");
-  assert.match(workbench.hostFork?.error ?? "", /independent session/);
-  assert.equal(workbench.openHostId, hostId);
+  assert.match(workbench.hostFork?.error ?? "", /host has changed/);
+  assert.deepEqual(forkCalls(account), []);
   assert.equal(workbench.draft(), "Keep my draft");
   workbench.stop();
 });
 
 test("fork: a late success does not override newer navigation", async () => {
   const { workbench, account } = await forkWorkbench();
-  const reply = Promise.withResolvers<{ session: { sessionId: string } }>();
+  const reply = Promise.withResolvers<unknown>();
   account.answers.set(forkMethod, reply.promise);
   workbench.chooseHost(forkTarget.hostId);
+  await tick();
   const confirming = workbench.confirmHostFork("");
   workbench.newChat();
   reply.resolve({ session: { sessionId: sid(7) } });

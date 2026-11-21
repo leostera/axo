@@ -2,6 +2,7 @@ import { ConversationFeed } from "./feed.ts";
 import { ChatCache, type ChatSnapshot } from "./cache.ts";
 import type {
   AccountEvents,
+  AppRemoteResult,
   ClientHello,
   ClientHost,
   ClientOpenResult,
@@ -13,12 +14,12 @@ import type {
   OpenRequest,
   SessionStatus,
 } from "@axo/app";
-import { sealInput, type DeviceProof } from "@axo/app";
-import { ASSET_LIMITS, ELICITATION_ERRORS, assetTypeOf, hostV1Methods, type Attachment, type HostMethodParams, type HostModel, type PiCommand, type PiModel, type PiRuntime, type Sealed, type ThinkingLevel } from "@axo/protocol";
+import { AxoRpcError, sealInput, type DeviceProof } from "@axo/app";
+import { ASSET_LIMITS, ELICITATION_ERRORS, assetTypeOf, forkHarnessUnavailableSchema, hostV1Methods, type AgentKind, type Attachment, type HostMethodParams, type HostModel, type PiCommand, type PiModel, type PiRuntime, type Sealed, type ThinkingLevel } from "@axo/protocol";
 import { safeFileName, type UploadAsset } from "./assets.ts";
 
 /** The coding agents a chat can run, as a Mac names them (RFD0072). */
-export type CodingAgent = "pi" | "codex" | "opencode" | "claude-code";
+export type CodingAgent = AgentKind;
 export const CODING_AGENTS: readonly { agent: CodingAgent; label: string }[] = [
   { agent: "pi", label: "Pi" },
   { agent: "codex", label: "Codex" },
@@ -76,16 +77,34 @@ type CreatedSession = {
   createdAt?: number;
 };
 
+type ForkSnapshot = HostMethodParams<"axo.remote.session.fork.plan">;
+type ForkPlan = AppRemoteResult<"axo.remote.session.fork.plan">;
 type ForkParams = HostMethodParams<"axo.remote.session.fork">;
+type ForkAttempt = { params: ForkParams; agent: CodingAgent };
+
+type ForkStage =
+  | { kind: "planning" }
+  | { kind: "planFailed" }
+  | { kind: "ready"; plan: ForkPlan; chosen?: CodingAgent }
+  | { kind: "sending" | "uncertain"; attempt: ForkAttempt };
 
 interface HostFork {
   readonly destination: string;
   readonly source: HostRef;
   readonly selection: Extract<Selection, { kind: "chat" }>;
-  readonly params: ForkParams;
+  readonly snapshot: ForkSnapshot;
   readonly needsFolder: boolean;
-  readonly pending: boolean;
+  readonly stage: ForkStage;
   readonly error?: string;
+}
+
+function forkHarnessRejected(error: unknown): boolean {
+  return error instanceof AxoRpcError && error.code !== -32004
+    && forkHarnessUnavailableSchema.safeParse(error.data).success;
+}
+
+function forkKey(source: HostRef, snapshot: ForkSnapshot): string {
+  return [source.hostId, source.hostGeneration, snapshot.sessionId, snapshot.target.hostId, snapshot.target.hostGeneration].join("/");
 }
 
 const chooseDestinationFolder = "Choose a destination folder";
@@ -103,6 +122,7 @@ export interface AccountLink {
   command(method: "axo.remote.agents.list", params: { target: HostRef }): Promise<{ agents: CodingAgent[] }>;
   command(method: "axo.remote.agents.models", params: { target: HostRef; agent: CodingAgent }): Promise<{ models: PiModel[] }>;
   command(method: "axo.remote.session.create", params: { target: HostRef; agent?: CodingAgent }): Promise<{ session: CreatedSession }>;
+  command(method: "axo.remote.session.fork.plan", params: ForkSnapshot): Promise<ForkPlan>;
   command(method: "axo.remote.session.fork", params: ForkParams): Promise<{ session: CreatedSession }>;
   command(method: "axo.remote.session.prompt", params: { target: HostRef; sessionId: string; text: string; commandId: string; attachments?: Attachment[]; delivery?: Delivery }): Promise<unknown>;
   command(method: "axo.remote.session.restart", params: { target: HostRef; sessionId: string }): Promise<unknown>;
@@ -409,6 +429,8 @@ export class ChatWorkbench {
   isSending = false;
   private submittingSelection: Selection | null = null;
   private fork: HostFork | null = null;
+  /** Keep exact unresolved operations if the dialog is dismissed and reopened during this visit. */
+  private readonly forkAttempts = new Map<string, { attempt: ForkAttempt; sending: boolean }>();
 
   get hostFork(): HostFork | null {
     const fork = this.fork;
@@ -1011,76 +1033,153 @@ export class ChatWorkbench {
     const source = this.openHost;
     if (!source || !this.ready()) return;
     if (target.status !== "online") { this.report(`${target.label} is offline.`); return; }
-    if (this.selectedSession?.agent !== "pi") { this.report("Only Pi sessions can be forked to another host."); return; }
     const chat = this.chats.get(selection.sessionId);
     if (!chat || chat.cached || chat.epoch === null || !chat.transcript || this.opened?.sessionId !== selection.sessionId
       || (chat.history.kind !== "loaded" && chat.history.kind !== "loadingOlder")) {
       this.report("The live history is not ready to fork yet.");
       return;
     }
+    const sourceRef = this.reference(source);
+    const snapshot = { target: this.reference(target), sourceHostId: source.hostId,
+      sessionId: selection.sessionId, epoch: chat.epoch, head: chat.transcript.lastCursor };
+    const previous = this.forkAttempts.get(forkKey(sourceRef, snapshot));
+    if (previous?.sending) { this.report("The fork is still awaiting a reply from the destination."); return; }
+
     this.failure = null;
-    this.fork = {
-      destination: target.label,
-      source: this.reference(source),
-      selection,
-      // Pin the history shown when the user chose the destination, including on retries.
-      params: { target: this.reference(target), sourceHostId: source.hostId, sessionId: selection.sessionId,
-        epoch: chat.epoch, head: chat.transcript.lastCursor, requestId: crypto.randomUUID() },
-      needsFolder: false,
-      pending: false,
-    };
+    const fork: HostFork = { destination: target.label, source: sourceRef, selection, snapshot,
+      needsFolder: false, stage: { kind: "planning" } };
+    if (previous) {
+      this.setHostFork({ ...fork, stage: { kind: "uncertain", attempt: previous.attempt } });
+    } else {
+      void this.planHostFork(fork);
+    }
+  }
+
+  private setHostFork(fork: HostFork | null): void {
+    this.fork = fork;
     this.changed();
   }
 
   cancelHostFork(): void {
-    if (!this.hostFork || this.hostFork.pending) return;
-    this.fork = null;
-    this.changed();
+    if (!this.hostFork || this.hostFork.stage.kind === "sending") return;
+    this.setHostFork(null);
+  }
+
+  retryHostForkPlan(): void {
+    const fork = this.hostFork;
+    if (fork?.stage.kind === "planFailed") void this.planHostFork(fork);
+  }
+
+  chooseHostForkAgent(agent: CodingAgent): void {
+    const fork = this.hostFork;
+    if (fork?.stage.kind !== "ready") return;
+    const decision = fork.stage.plan.decision;
+    if (decision.kind === "choose" && decision.agents.includes(agent)) {
+      this.setHostFork({ ...fork, stage: { ...fork.stage, chosen: agent } });
+    }
+  }
+
+  private hostForkRoute(fork: HostFork, snapshot = fork.snapshot): { error: string } | { target: Host; connection: AccountLink } {
+    const target = this.hosts.find(host => host.hostId === snapshot.target.hostId);
+    if (this.openHost?.hostGeneration !== fork.source.hostGeneration
+      || (target && target.hostGeneration !== snapshot.target.hostGeneration)) {
+      return { error: "A host has changed. Cancel and choose the destination again." };
+    }
+    if (!target || target.status !== "online") return { error: `${fork.destination} is offline.` };
+    const connection = this.connection;
+    if (!connection?.active || !this.canSendToSelection) {
+      return { error: "Not connected to the source session. Try again when it is online." };
+    }
+    return { target, connection };
+  }
+
+  private forkSnapshotCurrent(fork: HostFork): boolean {
+    return this.chats.get(fork.snapshot.sessionId)?.epoch === fork.snapshot.epoch;
+  }
+
+  private async planHostFork(fork: HostFork, notice?: string): Promise<void> {
+    const fail = (error: string) => this.setHostFork({ ...fork, stage: { kind: "planFailed" }, error });
+    const route = this.hostForkRoute(fork);
+    if ("error" in route) { fail(route.error); return; }
+    if (!this.forkSnapshotCurrent(fork)) { fail("The source history changed. Cancel and choose the destination again."); return; }
+
+    const pending: HostFork = { ...fork, stage: { kind: "planning" }, error: notice };
+    this.setHostFork(pending);
+    try {
+      const plan = await route.connection.command("axo.remote.session.fork.plan", fork.snapshot);
+      if (this.hostFork !== pending) return;
+      const current = this.hostForkRoute(fork);
+      if ("error" in current) { fail(current.error); return; }
+      if (current.connection !== route.connection || !this.forkSnapshotCurrent(fork)) {
+        fail("The source connection or history changed. Check compatible agents again.");
+        return;
+      }
+      this.setHostFork({ ...fork, stage: { kind: "ready", plan }, error: notice });
+    } catch (error) {
+      if (this.hostFork === pending) fail(`Could not check compatible agents: ${describe(error)}`);
+    }
   }
 
   async confirmHostFork(folderInput: string): Promise<void> {
     const fork = this.hostFork;
-    if (!fork || fork.pending) return;
-    const fail = (error: string, needsFolder = fork.needsFolder) => {
-      this.fork = { ...fork, params, error, needsFolder };
-      this.changed();
-    };
+    if (!fork) return;
+    if (fork.stage.kind === "uncertain") {
+      await this.sendHostFork(fork, fork.stage.attempt);
+      return;
+    }
+    if (fork.stage.kind !== "ready") return;
+    const { decision } = fork.stage.plan;
+    const agent = decision.kind === "keep" ? decision.agent : fork.stage.chosen;
+    if (decision.kind === "unavailable" || !agent) return;
+    if (!this.forkSnapshotCurrent(fork)) {
+      this.setHostFork({ ...fork, stage: { kind: "planFailed" }, error: "The source history changed. Cancel and choose the destination again." });
+      return;
+    }
     const folder = hostV1Methods["axo.remote.session.fork"].shape.folder.safeParse(fork.needsFolder ? folderInput : undefined);
-    let params = fork.params;
     if (!folder.success) {
-      fail("Enter an absolute path to a folder on the destination host.");
+      this.setHostFork({ ...fork, error: "Enter an absolute path to a folder on the destination host." });
       return;
     }
-    const source = this.openHost;
-    const target = this.hosts.find(host => host.hostId === params.target.hostId);
-    const connection = this.connection;
-    if (source?.hostGeneration !== fork.source.hostGeneration || (target && target.hostGeneration !== params.target.hostGeneration)) {
-      fail("A host has changed. Cancel and choose the destination again.");
-      return;
-    }
-    if (!target || target.status !== "online") { fail(`${fork.destination} is offline.`); return; }
-    if (!connection?.active || !this.canSendToSelection) { fail("Not connected to the source session. Try again when it is online."); return; }
-    if (this.selectedSession?.agent !== "pi") { fail("Only Pi sessions can be forked to another host."); return; }
+    await this.sendHostFork(fork, { agent, params: { ...fork.snapshot, requestId: crypto.randomUUID(),
+      ...(folder.data !== undefined ? { folder: folder.data } : {}), ...(decision.kind === "choose" ? { agent } : {}) } });
+  }
 
-    // A retry of the same request must not create a second child. A changed folder is a new request.
-    if (folder.data !== params.folder) params = { ...params, folder: folder.data, requestId: crypto.randomUUID() };
-    const pending = this.fork = { ...fork, params, pending: true, error: undefined };
-    this.changed();
+  private async sendHostFork(fork: HostFork, attempt: ForkAttempt): Promise<void> {
+    const route = this.hostForkRoute(fork, attempt.params);
+    if ("error" in route) { this.setHostFork({ ...fork, error: route.error }); return; }
+    const { params } = attempt;
+    const key = forkKey(fork.source, params);
+    const pending: HostFork = { ...fork, stage: { kind: "sending", attempt }, error: undefined };
+    this.forkAttempts.set(key, { attempt, sending: true });
+    this.setHostFork(pending);
     try {
-      const { session } = await connection.command("axo.remote.session.fork", params);
-      if (this.hostFork !== pending) return;
+      const { session } = await route.connection.command("axo.remote.session.fork", params);
       if (session.sessionId === params.sessionId) throw new Error("The destination did not return an independent session.");
-      if (!this.hosts.some(host => host.hostId === target.hostId && host.hostGeneration === target.hostGeneration)) {
-        throw new Error("The destination host changed before the fork was opened.");
+      this.forkAttempts.delete(key);
+      if (this.hostFork !== pending) return;
+      if (!this.hosts.some(host => host.hostId === route.target.hostId && host.hostGeneration === route.target.hostGeneration)) {
+        this.setHostFork({ ...fork, stage: { kind: "planFailed" }, error: "The destination host changed before the fork was opened." });
+        return;
       }
       this.fork = null;
-      this.addCreatedSession(target, session, "pi");
-      this.selectChat(target.hostId, session.sessionId);
+      this.addCreatedSession(route.target, session, attempt.agent);
+      this.selectChat(route.target.hostId, session.sessionId);
     } catch (error) {
-      if (this.hostFork !== pending) return;
       const message = describe(error);
-      const needsFolder = message === chooseDestinationFolder;
-      fail(needsFolder ? message : `Could not fork the session: ${message}`, fork.needsFolder || needsFolder);
+      const rejected = forkHarnessRejected(error);
+      const needsFolder = error instanceof AxoRpcError && error.code !== -32004 && message === chooseDestinationFolder;
+      if (rejected || needsFolder) this.forkAttempts.delete(key);
+      else this.forkAttempts.set(key, { attempt, sending: false });
+      if (this.hostFork !== pending) return;
+      if (rejected) {
+        await this.planHostFork(fork, "The selected coding agent is no longer available. Review the new plan.");
+      } else if (needsFolder && fork.stage.kind === "ready") {
+        this.setHostFork({ ...fork, needsFolder: true, error: message });
+      } else if (needsFolder) {
+        await this.planHostFork({ ...fork, needsFolder: true }, message);
+      } else {
+        this.setHostFork({ ...fork, stage: { kind: "uncertain", attempt }, error: `Could not confirm the fork: ${message}` });
+      }
     }
   }
 

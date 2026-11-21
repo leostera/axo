@@ -701,12 +701,19 @@ function HostForkDialog({ workbench, fork }: { workbench: ChatWorkbench; fork: N
   const titleId = useId();
   const detailId = useId();
   const [folder, setFolder] = useState("");
+  const stage = fork.stage;
+  const sending = stage.kind === "sending";
+  const decision = stage.kind === "ready" ? stage.plan.decision : null;
+  const chosen = stage.kind === "ready" ? stage.chosen : undefined;
+  const canConfirm = stage.kind === "uncertain" || decision?.kind === "keep" || (decision?.kind === "choose" && chosen !== undefined);
+  const agentLabel = (agent: string) => CODING_AGENTS.find(choice => choice.agent === agent)?.label ?? agent;
   useLayoutEffect(() => {
     const element = dialog.current;
     element?.showModal();
     return () => element?.close();
   }, []);
-  useLayoutEffect(() => { if (fork.needsFolder && !fork.pending) folderField.current?.focus(); }, [fork.needsFolder, fork.pending]);
+  const showFolder = fork.needsFolder && stage.kind === "ready" && decision?.kind !== "unavailable";
+  useLayoutEffect(() => { if (showFolder) folderField.current?.focus(); }, [showFolder]);
   return (
     <dialog ref={dialog} className="alert fork-dialog" aria-labelledby={titleId} aria-describedby={detailId}
       onCancel={event => { event.preventDefault(); workbench.cancelHostFork(); }}>
@@ -715,17 +722,41 @@ function HostForkDialog({ workbench, fork }: { workbench: ChatWorkbench; fork: N
           <h2 id={titleId}>Do you want to fork this session to {fork.destination}?</h2>
           <p id={detailId}>This copies the chat history into a separate session. Project files are not copied.</p>
           {fork.error ? <p className="fork-error" role="alert">{fork.error}</p> : null}
-          {fork.needsFolder ? (
+          {stage.kind === "planning" ? <p className="fork-plan" role="status">Checking compatible coding agents…</p> : null}
+          {decision?.kind === "keep" ? <p className="fork-plan">Continue with {agentLabel(decision.agent)}.</p> : null}
+          {decision?.kind === "choose" ? (
+            <label className="fork-folder">
+              Choose a coding agent on {fork.destination}
+              <select value={chosen ?? ""} onChange={event => {
+                const choice = decision.agents.find(agent => agent === event.target.value);
+                if (choice) workbench.chooseHostForkAgent(choice);
+              }}>
+                <option value="" disabled>Select a coding agent</option>
+                {decision.agents.map(agent => <option key={agent} value={agent}>{agentLabel(agent)}</option>)}
+              </select>
+            </label>
+          ) : null}
+          {decision?.kind === "unavailable" ? (
+            <p className="fork-plan">No compatible coding agent is available on {fork.destination}. Cancel and choose another host.</p>
+          ) : null}
+          {stage.kind === "uncertain" ? (
+            <p className="fork-plan">The destination may already have created the fork. Retry the same request to confirm.</p>
+          ) : null}
+          {showFolder ? (
             <label className="fork-folder">
               Destination folder on {fork.destination}
               <input ref={folderField} value={folder} onChange={event => setFolder(event.target.value)}
-                placeholder="Absolute folder path" readOnly={fork.pending} required spellCheck={false} />
+                placeholder="Absolute folder path" required spellCheck={false} />
             </label>
           ) : null}
         </div>
         <div className="alert-buttons">
-          <button type="button" autoFocus disabled={fork.pending} onClick={() => workbench.cancelHostFork()}>Cancel</button>
-          <button type="submit" disabled={fork.pending}>{fork.pending ? "Forking…" : "Fork session"}</button>
+          <button type="button" autoFocus disabled={sending} onClick={() => workbench.cancelHostFork()}>Cancel</button>
+          {stage.kind === "planFailed" ? (
+            <button type="button" onClick={() => workbench.retryHostForkPlan()}>Check again</button>
+          ) : decision?.kind !== "unavailable" ? (
+            <button type="submit" disabled={!canConfirm}>{sending ? "Forking…" : stage.kind === "uncertain" ? "Retry fork" : "Fork session"}</button>
+          ) : null}
         </div>
       </form>
     </dialog>
