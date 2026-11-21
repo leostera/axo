@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ClipboardEvent, type KeyboardEvent, type TouchEvent, type WheelEvent } from "react";
+import { memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ClipboardEvent, type KeyboardEvent, type TouchEvent, type WheelEvent } from "react";
 import { flushSync } from "react-dom";
 import { AxoMascot } from "../axo-mascot.tsx";
 import { BrandIcon } from "./brand-icon.tsx";
@@ -298,6 +298,7 @@ export function Conversation({ workbench, wide, onShowChats, onToggleInfo, onApp
             <Icon name="arrowDown" size={18} />{hasNew ? <span>Jump to new message</span> : null}
           </button>
         ) : null}
+        {workbench.hostFork ? <HostForkDialog workbench={workbench} fork={workbench.hostFork} /> : null}
         <Composer
           workbench={workbench}
           voice={voice}
@@ -647,7 +648,7 @@ function HostPicker({ workbench }: { workbench: ChatWorkbench }) {
   const root = useRef<HTMLDivElement>(null);
   const host = workbench.openHost;
   const drafting = workbench.selection?.kind === "new";
-  useEffect(() => { if (!drafting) setOpen(false); }, [drafting]);
+  useEffect(() => { setOpen(false); }, [workbench.selection]);
   useEffect(() => {
     if (!open) return;
     const close = (event: PointerEvent) => { if (!root.current?.contains(event.target as Node)) setOpen(false); };
@@ -664,21 +665,25 @@ function HostPicker({ workbench }: { workbench: ChatWorkbench }) {
       <span className={`mac-dot ${host.status}`} aria-hidden="true" />
     </>
   );
-  if (!drafting) return <div className="host-picker">
+  if (!drafting && !workbench.hosts.some(candidate => candidate.hostId !== host.hostId && candidate.status === "online")) return <div className="host-picker">
     <span className="host-picker-button static" role="img" aria-label={`Host: ${host.label}`} title={host.label}>{face}</span>
   </div>;
   return (
     <div className="host-picker" ref={root}>
       <button type="button" className="host-picker-button" aria-haspopup="menu" aria-expanded={open}
-        aria-label={`Host: ${host.label}`} title="Choose the computer to start this chat on" onClick={() => setOpen(!open)}>
+        aria-label={`Host: ${host.label}`} title={drafting ? "Choose the computer to start this chat on" : "Fork to another computer"} onClick={() => setOpen(!open)}>
         {face}<Icon name="arrowDown" size={11} />
       </button>
       {open ? (
-        <div className="host-menu" role="menu" aria-label="Start on">
+        <div className="host-menu" role="menu" aria-label={drafting ? "Start on" : "Fork to"}>
           {workbench.hosts.map(candidate => (
             <button key={candidate.hostId} type="button" role="menuitemradio" aria-checked={candidate.hostId === host.hostId}
               className="host-menu-item" disabled={candidate.status !== "online"}
-              onClick={() => { workbench.chooseHost(candidate.hostId); setOpen(false); }}>
+              onClick={() => {
+                root.current?.querySelector("button")?.focus();
+                workbench.chooseHost(candidate.hostId);
+                setOpen(false);
+              }}>
               <Icon name={candidate.hostId === host.hostId ? "check" : hostIcon(candidate)} size={15} />
               <span className="host-picker-label">{candidate.label}</span>
               <small>{candidate.status === "online" ? "Online" : "Offline"}</small>
@@ -687,6 +692,43 @@ function HostPicker({ workbench }: { workbench: ChatWorkbench }) {
         </div>
       ) : null}
     </div>
+  );
+}
+
+function HostForkDialog({ workbench, fork }: { workbench: ChatWorkbench; fork: NonNullable<ChatWorkbench["hostFork"]> }) {
+  const dialog = useRef<HTMLDialogElement>(null);
+  const folderField = useRef<HTMLInputElement>(null);
+  const titleId = useId();
+  const detailId = useId();
+  const [folder, setFolder] = useState("");
+  useLayoutEffect(() => {
+    const element = dialog.current;
+    element?.showModal();
+    return () => element?.close();
+  }, []);
+  useLayoutEffect(() => { if (fork.needsFolder && !fork.pending) folderField.current?.focus(); }, [fork.needsFolder, fork.pending]);
+  return (
+    <dialog ref={dialog} className="alert fork-dialog" aria-labelledby={titleId} aria-describedby={detailId}
+      onCancel={event => { event.preventDefault(); workbench.cancelHostFork(); }}>
+      <form onSubmit={event => { event.preventDefault(); void workbench.confirmHostFork(folder); }}>
+        <div className="alert-copy">
+          <h2 id={titleId}>Do you want to fork this session to {fork.destination}?</h2>
+          <p id={detailId}>This copies the chat history into a separate session. Project files are not copied.</p>
+          {fork.error ? <p className="fork-error" role="alert">{fork.error}</p> : null}
+          {fork.needsFolder ? (
+            <label className="fork-folder">
+              Destination folder on {fork.destination}
+              <input ref={folderField} value={folder} onChange={event => setFolder(event.target.value)}
+                placeholder="/absolute/path" readOnly={fork.pending} required spellCheck={false} />
+            </label>
+          ) : null}
+        </div>
+        <div className="alert-buttons">
+          <button type="button" autoFocus disabled={fork.pending} onClick={() => workbench.cancelHostFork()}>Cancel</button>
+          <button type="submit" disabled={fork.pending}>{fork.pending ? "Forking…" : "Fork session"}</button>
+        </div>
+      </form>
+    </dialog>
   );
 }
 

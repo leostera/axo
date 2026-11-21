@@ -599,6 +599,132 @@ async function workbenchWith(account = new FakeAccount(), retryDelay = 60_000, u
   return { workbench, account, connects: () => connects };
 }
 
+const forkMethod = "axo.remote.session.fork";
+const forkTarget = { hostId: sid(31), hostGeneration: sid(32) };
+
+async function forkWorkbench(agent: Session["agent"] = "pi") {
+  const account = new FakeAccount();
+  const source = account.hello.sessions[0];
+  source.metadata.agent = agent;
+  source.head = 4;
+  account.hello.hosts.push({ ...account.hello.hosts[0], ...forkTarget, label: "Laptop" });
+  account.records.set(sid(1), [said(1, "user", "Parent history")]);
+  const { workbench } = await workbenchWith(account);
+  workbench.selectChat(hostId, sid(1));
+  await tick();
+  workbench.setDraft("Keep my draft");
+  return { workbench, account };
+}
+
+test("fork: cancellation is local, and only a destination reply opens the independent child", async () => {
+  const { workbench, account } = await forkWorkbench();
+  const sourceSelection = workbench.selection;
+  workbench.chooseHost(forkTarget.hostId);
+  assert.equal(workbench.hostFork?.destination, "Laptop");
+  workbench.cancelHostFork();
+  assert.equal(workbench.hostFork, null);
+  assert.equal(workbench.selection, sourceSelection);
+  assert.equal(workbench.draft(), "Keep my draft");
+  assert.deepEqual(account.commands, []);
+
+  const reply = Promise.withResolvers<{ session: { sessionId: string; name: string } }>();
+  account.answers.set(forkMethod, reply.promise);
+  workbench.chooseHost(forkTarget.hostId);
+  account.push(sid(1), [said(2, "assistant", "Parent continued while choosing")]);
+  const confirming = workbench.confirmHostFork("");
+  await workbench.confirmHostFork(""); // No duplicate command while the first is pending.
+  assert.equal(workbench.selection, sourceSelection);
+  assert.equal(account.commands.length, 1);
+  const [{ method, params: { requestId, ...params } }] = account.commands;
+  assert.equal(method, forkMethod);
+  assert.match(String(requestId), /^[\da-f]{8}-[\da-f]{4}-4[\da-f]{3}-[89ab][\da-f]{3}-[\da-f]{12}$/);
+  assert.deepEqual(params, { target: forkTarget, sourceHostId: hostId, sessionId: sid(1), epoch: 1, head: 1 });
+  reply.resolve({ session: { sessionId: sid(7), name: "Child" } });
+  await confirming;
+  assert.equal(workbench.hostFork, null);
+  assert.equal(workbench.openHostId, forkTarget.hostId);
+  assert.equal(workbench.selectedSession?.sessionId, sid(7));
+  assert.equal(workbench.draft(), "");
+  assert.deepEqual(account.opens.at(-1)?.hostId, forkTarget.hostId);
+  assert.equal(account.opens.at(-1)?.sessionId, sid(7));
+  workbench.selectChat(hostId, sid(1));
+  assert.equal(workbench.draft(), "Keep my draft");
+  assert.deepEqual(rowsOf(workbench, sid(1)), ["user: Parent history", "assistant: Parent continued while choosing"]);
+  workbench.stop();
+});
+
+test("fork: a missing directory needs a separately confirmed absolute path, and retries reuse the request", async () => {
+  const { workbench, account } = await forkWorkbench();
+  workbench.chooseHost(forkTarget.hostId);
+  account.failNext = new Error("Choose a destination folder");
+  await workbench.confirmHostFork("");
+  assert.equal(workbench.hostFork?.needsFolder, true);
+  assert.equal(workbench.openHostId, hostId);
+  assert.equal(workbench.draft(), "Keep my draft");
+  await workbench.confirmHostFork("relative/path");
+  assert.match(workbench.hostFork?.error ?? "", /absolute path/);
+  assert.equal(account.commands.length, 1);
+
+  account.failNext = new Error("Request timed out");
+  await workbench.confirmHostFork("/other/project");
+  assert.match(workbench.hostFork?.error ?? "", /timed out/);
+  assert.equal(workbench.selectedSession?.sessionId, sid(1));
+  assert.equal(workbench.draft(), "Keep my draft");
+  account.answers.set(forkMethod, { session: { sessionId: sid(7) } });
+  await workbench.confirmHostFork("/other/project");
+  assert.notEqual(account.commands[0].params.requestId, account.commands[1].params.requestId);
+  assert.deepEqual(account.commands[1], account.commands[2]);
+  assert.equal(account.commands[2].params.folder, "/other/project");
+  assert.equal(workbench.selectedSession?.sessionId, sid(7));
+  workbench.stop();
+});
+
+test("fork: unsupported and unknown agents, an offline destination, and the original session ID are not successes", async () => {
+  for (const agent of ["codex", "unknown"] as const) {
+    const { workbench, account } = await forkWorkbench(agent === "unknown" ? undefined : agent);
+    if (agent === "unknown") {
+      const source = account.hello.sessions[0];
+      delete source.metadata.agent;
+      account.events.sessions?.(hostId, [source]);
+    }
+    workbench.chooseHost(forkTarget.hostId);
+    assert.match(workbench.failure ?? "", /Only Pi/);
+    assert.equal(workbench.hostFork, null);
+    assert.deepEqual(account.commands, []);
+    workbench.stop();
+  }
+  const { workbench, account } = await forkWorkbench();
+  workbench.chooseHost(forkTarget.hostId);
+  account.hello.hosts[1].online = false;
+  account.events.hosts?.(account.hello.hosts);
+  await workbench.confirmHostFork("");
+  assert.match(workbench.hostFork?.error ?? "", /offline/);
+  assert.deepEqual(account.commands, []);
+  account.hello.hosts[1].online = true;
+  account.events.hosts?.(account.hello.hosts);
+  account.answers.set(forkMethod, { session: { sessionId: sid(1) } });
+  await workbench.confirmHostFork("");
+  assert.match(workbench.hostFork?.error ?? "", /independent session/);
+  assert.equal(workbench.openHostId, hostId);
+  assert.equal(workbench.draft(), "Keep my draft");
+  workbench.stop();
+});
+
+test("fork: a late success does not override newer navigation", async () => {
+  const { workbench, account } = await forkWorkbench();
+  const reply = Promise.withResolvers<{ session: { sessionId: string } }>();
+  account.answers.set(forkMethod, reply.promise);
+  workbench.chooseHost(forkTarget.hostId);
+  const confirming = workbench.confirmHostFork("");
+  workbench.newChat();
+  reply.resolve({ session: { sessionId: sid(7) } });
+  await confirming;
+  assert.equal(workbench.hostFork, null);
+  assert.equal(workbench.openHostId, hostId);
+  assert.deepEqual(workbench.selection, { kind: "new" });
+  workbench.stop();
+});
+
 test("cache ownership comes from a parsed authenticated identity, never a malformed profile", () => {
   const session = { authenticated: true, accountId: hostId, profile: { name: null, email: "fixture@example.test" }, expiresAt: "2026-11-14T12:00:00Z" };
   assert.deepEqual(parseAuthenticatedSession(session), session);

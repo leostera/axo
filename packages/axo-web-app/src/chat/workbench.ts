@@ -14,7 +14,7 @@ import type {
   SessionStatus,
 } from "@axo/app";
 import { sealInput, type DeviceProof } from "@axo/app";
-import { ASSET_LIMITS, ELICITATION_ERRORS, assetTypeOf, type Attachment, type HostModel, type PiCommand, type PiModel, type PiRuntime, type Sealed, type ThinkingLevel } from "@axo/protocol";
+import { ASSET_LIMITS, ELICITATION_ERRORS, assetTypeOf, hostV1Methods, type Attachment, type HostMethodParams, type HostModel, type PiCommand, type PiModel, type PiRuntime, type Sealed, type ThinkingLevel } from "@axo/protocol";
 import { safeFileName, type UploadAsset } from "./assets.ts";
 
 /** The coding agents a chat can run, as a Mac names them (RFD0072). */
@@ -76,6 +76,20 @@ type CreatedSession = {
   createdAt?: number;
 };
 
+type ForkParams = HostMethodParams<"axo.remote.session.fork">;
+
+interface HostFork {
+  readonly destination: string;
+  readonly source: HostRef;
+  readonly selection: Extract<Selection, { kind: "chat" }>;
+  readonly params: ForkParams;
+  readonly needsFolder: boolean;
+  readonly pending: boolean;
+  readonly error?: string;
+}
+
+const chooseDestinationFolder = "Choose a destination folder";
+
 /** What the workbench needs of the account's socket (`AccountConnection`). */
 export interface AccountLink {
   readonly hello: ClientHello;
@@ -89,6 +103,7 @@ export interface AccountLink {
   command(method: "axo.remote.agents.list", params: { target: HostRef }): Promise<{ agents: CodingAgent[] }>;
   command(method: "axo.remote.agents.models", params: { target: HostRef; agent: CodingAgent }): Promise<{ models: PiModel[] }>;
   command(method: "axo.remote.session.create", params: { target: HostRef; agent?: CodingAgent }): Promise<{ session: CreatedSession }>;
+  command(method: "axo.remote.session.fork", params: ForkParams): Promise<{ session: CreatedSession }>;
   command(method: "axo.remote.session.prompt", params: { target: HostRef; sessionId: string; text: string; commandId: string; attachments?: Attachment[]; delivery?: Delivery }): Promise<unknown>;
   command(method: "axo.remote.session.restart", params: { target: HostRef; sessionId: string }): Promise<unknown>;
   command(method: "axo.remote.session.commands", params: { target: HostRef; sessionId: string }): Promise<{ commands: PiCommand[] }>;
@@ -393,6 +408,12 @@ export class ChatWorkbench {
   failure: string | null = null;
   isSending = false;
   private submittingSelection: Selection | null = null;
+  private fork: HostFork | null = null;
+
+  get hostFork(): HostFork | null {
+    const fork = this.fork;
+    return fork && fork.selection === this.selection && fork.source.hostId === this.openHostId ? fork : null;
+  }
   get showingSubmittedDraft(): boolean {
     return this.isSending && this.selection === this.submittingSelection && this.canSendDraft;
   }
@@ -966,12 +987,15 @@ export class ChatWorkbench {
     this.changed();
   }
 
-  /**
-   * The Mac a new chat starts on, chosen by the message box: what is typed comes along.
-   */
+  /** A new draft moves to the chosen host; an existing chat asks before forking. */
   chooseHost(hostId: string): void {
     const selection = this.selection;
-    if (selection?.kind !== "new" || hostId === this.openHostId || !this.hosts.some(host => host.hostId === hostId)) return;
+    const target = this.hosts.find(host => host.hostId === hostId);
+    if (!selection || !target || hostId === this.openHostId || this.hostFork) return;
+    if (selection.kind === "chat") {
+      this.offerHostFork(selection, target);
+      return;
+    }
     this.navigationRevision += 1;
     const text = this.draft(selection);
     const files = this.attachments(selection);
@@ -981,6 +1005,83 @@ export class ChatWorkbench {
     if (text) this.setDraft(text);
     this.setAttachments(files);
     this.changed();
+  }
+
+  private offerHostFork(selection: Extract<Selection, { kind: "chat" }>, target: Host): void {
+    const source = this.openHost;
+    if (!source || !this.ready()) return;
+    if (target.status !== "online") { this.report(`${target.label} is offline.`); return; }
+    if (this.selectedSession?.agent !== "pi") { this.report("Only Pi sessions can be forked to another host."); return; }
+    const chat = this.chats.get(selection.sessionId);
+    if (!chat || chat.cached || chat.epoch === null || !chat.transcript || this.opened?.sessionId !== selection.sessionId
+      || (chat.history.kind !== "loaded" && chat.history.kind !== "loadingOlder")) {
+      this.report("The live history is not ready to fork yet.");
+      return;
+    }
+    this.failure = null;
+    this.fork = {
+      destination: target.label,
+      source: this.reference(source),
+      selection,
+      // Pin the history shown when the user chose the destination, including on retries.
+      params: { target: this.reference(target), sourceHostId: source.hostId, sessionId: selection.sessionId,
+        epoch: chat.epoch, head: chat.transcript.lastCursor, requestId: crypto.randomUUID() },
+      needsFolder: false,
+      pending: false,
+    };
+    this.changed();
+  }
+
+  cancelHostFork(): void {
+    if (!this.hostFork || this.hostFork.pending) return;
+    this.fork = null;
+    this.changed();
+  }
+
+  async confirmHostFork(folderInput: string): Promise<void> {
+    const fork = this.hostFork;
+    if (!fork || fork.pending) return;
+    const fail = (error: string, needsFolder = fork.needsFolder) => {
+      this.fork = { ...fork, params, error, needsFolder };
+      this.changed();
+    };
+    const folder = hostV1Methods["axo.remote.session.fork"].shape.folder.safeParse(fork.needsFolder ? folderInput : undefined);
+    let params = fork.params;
+    if (!folder.success) {
+      fail("Enter an absolute path on the destination host, starting with /.");
+      return;
+    }
+    const source = this.openHost;
+    const target = this.hosts.find(host => host.hostId === params.target.hostId);
+    const connection = this.connection;
+    if (source?.hostGeneration !== fork.source.hostGeneration || (target && target.hostGeneration !== params.target.hostGeneration)) {
+      fail("A host has changed. Cancel and choose the destination again.");
+      return;
+    }
+    if (!target || target.status !== "online") { fail(`${fork.destination} is offline.`); return; }
+    if (!connection?.active || !this.canSendToSelection) { fail("Not connected to the source session. Try again when it is online."); return; }
+    if (this.selectedSession?.agent !== "pi") { fail("Only Pi sessions can be forked to another host."); return; }
+
+    // A retry of the same request must not create a second child. A changed folder is a new request.
+    if (folder.data !== params.folder) params = { ...params, folder: folder.data, requestId: crypto.randomUUID() };
+    const pending = this.fork = { ...fork, params, pending: true, error: undefined };
+    this.changed();
+    try {
+      const { session } = await connection.command("axo.remote.session.fork", params);
+      if (this.hostFork !== pending) return;
+      if (session.sessionId === params.sessionId) throw new Error("The destination did not return an independent session.");
+      if (!this.hosts.some(host => host.hostId === target.hostId && host.hostGeneration === target.hostGeneration)) {
+        throw new Error("The destination host changed before the fork was opened.");
+      }
+      this.fork = null;
+      this.addCreatedSession(target, session, "pi");
+      this.selectChat(target.hostId, session.sessionId);
+    } catch (error) {
+      if (this.hostFork !== pending) return;
+      const message = describe(error);
+      const needsFolder = message === chooseDestinationFolder;
+      fail(needsFolder ? message : `Could not fork the session: ${message}`, fork.needsFolder || needsFolder);
+    }
   }
 
   /** The coding agent the new chat starts with. */
@@ -1123,25 +1224,7 @@ export class ChatWorkbench {
       }
       if (this.navigationRevision !== revision || this.selection !== draft || this.connection !== connection
         || this.draftCatalogScope !== scope || !this.ready()) return { kind: "failed" };
-      // Listed at once; don't overwrite a real listing that arrived during creation.
-      if (!this.openHost?.sessions.some(session => session.sessionId === created.sessionId)) this.storeSession({
-        hostId: host.hostId,
-        sessionId: created.sessionId,
-        epoch: null,
-        head: 0,
-        status: "starting",
-        metadata: {
-          name: created.name ?? null,
-          emoji: created.emoji ?? null,
-          folderName: created.folderName ?? null,
-          hasAgent: true,
-          agent,
-          createdAt: created.createdAt ?? Math.floor(Date.now() / 1000),
-          lastMessageAt: null,
-          archived: false,
-        },
-      });
-      this.rebuildHosts();
+      this.addCreatedSession(host, created, agent);
       // The words move to the chat they started; a refusal leaves them in its box.
       const chat: Selection = { kind: "chat", sessionId: created.sessionId };
       this.preparedChats.delete(scope);
@@ -1155,6 +1238,28 @@ export class ChatWorkbench {
       void this.openChat(created.sessionId);
       return this.prompt(chat);
     });
+  }
+
+  private addCreatedSession(host: Host, created: CreatedSession, agent: CodingAgent): void {
+    // Listed at once; don't overwrite a real listing that arrived during creation.
+    if (!this.sessions.get(host.hostId)?.has(created.sessionId)) this.storeSession({
+      hostId: host.hostId,
+      sessionId: created.sessionId,
+      epoch: null,
+      head: 0,
+      status: "starting",
+      metadata: {
+        name: created.name ?? null,
+        emoji: created.emoji ?? null,
+        folderName: created.folderName ?? null,
+        hasAgent: true,
+        agent,
+        createdAt: created.createdAt ?? Math.floor(Date.now() / 1000),
+        lastMessageAt: null,
+        archived: false,
+      },
+    });
+    this.rebuildHosts();
   }
 
   private async sending(work: () => Promise<SendOutcome>): Promise<SendOutcome> {

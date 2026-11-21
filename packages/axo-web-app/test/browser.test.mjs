@@ -82,6 +82,7 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     sessionId: sid(1),
     folderName: "browser-project",
     name: "Browser Agent",
+    agent: "pi",
     emoji: "🦀",
     head: 4,
     pi: { model: { provider: "anthropic", id: "claude-opus-4-1", name: "Opus 4.1" }, thinkingLevel: "high" },
@@ -122,6 +123,7 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
   const answers = [];
   let finishOnStop = null;
   let sessionCreateCount = 0;
+  const forks = [];
   let authenticated = false;
   let pairingRequestCount = 0;
   const tokenRequests = [];
@@ -423,7 +425,19 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
       }
       const { method, params } = call.params;
       methods.push(method);
-      if (method === "axo.remote.session.create") {
+      if (method === "axo.remote.session.fork") {
+        forks.push(call.params);
+        if (!params.folder) {
+          socket.send(JSON.stringify({ jsonrpc: "2.0", id: call.id, error: { code: -32000, message: "Choose a destination folder" } }));
+          return;
+        }
+        const createdAt = Math.floor(Date.now() / 1000);
+        const child = { ...listed({ sessionId: sid(8), folderName: "copy", name: "Forked chat", agent: "pi", createdAt, head: params.head }), hostId: studioHost.hostId };
+        sessions.push(child);
+        transcripts.set(child.sessionId, transcripts.get(params.sessionId).slice(0, params.head));
+        reply({ session: { hostId: child.hostId, sessionId: child.sessionId, name: child.metadata.name, folderName: child.metadata.folderName,
+          createdAt, hasAgent: true, status: child.status, shells: [], layout: null, updatedAt: new Date().toISOString() } });
+      } else if (method === "axo.remote.session.create") {
         sessionCreateCount++;
         assert.equal(params.like, undefined, "a new chat starts in the Mac's home folder");
         const createdAt = Math.floor(Date.now() / 1000);
@@ -653,6 +667,38 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     await expect(tool.getByLabel("Input").getByText("$ git status"));
     await expect(tool.getByText("On branch main"));
     await shot("history");
+
+    // The host picker asks about a fork (not a move), and a missing folder needs another confirmation.
+    const parentPath = new URL(page.url()).pathname;
+    const parentDraft = page.getByLabel("Message", { exact: true });
+    await parentDraft.fill("Unsent on the parent");
+    const chooseStudio = async () => {
+      await composer.getByRole("button", { name: "Host: Browser fixture Mac" }).click();
+      await page.getByRole("menu", { name: "Fork to" }).getByRole("menuitemradio", { name: /Mac Studio/ }).click();
+    };
+    const forkDialog = page.getByRole("dialog", { name: "Do you want to fork this session to Mac Studio?" });
+    await chooseStudio();
+    await expect(forkDialog.getByText(/Project files are not copied/));
+    await forkDialog.getByRole("button", { name: "Cancel" }).click();
+    assert.equal(forks.length, 0);
+    assert.equal(await parentDraft.inputValue(), "Unsent on the parent");
+    await chooseStudio();
+    await forkDialog.getByRole("button", { name: "Fork session" }).click();
+    await expect(forkDialog.getByRole("alert").getByText("Choose a destination folder"));
+    assert.equal(new URL(page.url()).pathname, parentPath);
+    await forkDialog.getByLabel("Destination folder on Mac Studio").fill("/projects/copy");
+    assert.equal(forks.length, 1);
+    await forkDialog.getByRole("button", { name: "Fork session" }).click();
+    await expect(page.getByRole("heading", { name: "Forked chat" }));
+    await expect(page.getByText("Review the latest changes.", { exact: true }));
+    assert.equal(new URL(page.url()).pathname, `/__tests__/chat/${studioHost.hostId}/${sid(8)}`);
+    assert.deepEqual(forks.map(({ hostId, params }) => [hostId, params.sourceHostId, params.sessionId, params.epoch, params.head, params.folder]), [
+      [studioHost.hostId, hostId, sid(1), 1, 4, undefined],
+      [studioHost.hostId, hostId, sid(1), 1, 4, "/projects/copy"],
+    ]);
+    await chats.getByRole("button", { name: /^Browser Agent/ }).click();
+    assert.equal(await parentDraft.inputValue(), "Unsent on the parent");
+    await parentDraft.fill("");
 
     // The open chat is in the URL: a reload opens it again, and Back goes to where it was before.
     assert.equal(new URL(page.url()).pathname, `/__tests__/chat/${hostId}/${sid(1)}`);

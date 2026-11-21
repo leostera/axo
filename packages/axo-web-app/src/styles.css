@@ -654,6 +654,12 @@ button.host-picker-button:hover { background-color: var(--fill-strong); color: v
 .alert-buttons button:hover { background: var(--fill-strong); }
 .alert-buttons .destructive { color: #fff; background: var(--red); font-weight: 600; }
 .alert-buttons .destructive:hover { background: var(--red); opacity: 0.88; }
+.fork-dialog { width: min(340px, calc(100% - 32px)); padding: 0; border: 0; color: var(--text); }
+.fork-dialog::backdrop { background: rgba(0, 0, 0, 0.3); }
+.fork-dialog .fork-error { margin-top: 10px; color: var(--red); }
+.fork-dialog button:disabled { opacity: 0.55; }
+.fork-folder { display: grid; gap: 5px; margin-top: 12px; text-align: left; font-size: 13px; }
+.fork-folder input { width: 100%; padding: 8px; border: 1px solid var(--separator); border-radius: 8px; background: var(--surface); color: inherit; font-size: 16px; }
 
 /* Sheets' inset groups, as the phone's lists. */
 .grouped { overflow: hidden; border-radius: 12px; background: var(--surface); }
