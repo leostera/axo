@@ -1,0 +1,5 @@
+{
+  "name": "axo-win-pi-probe",
+  "private": true,
+  "dependencies": {"@earendil-works/pi-coding-agent": "1.3.0"}
+}
