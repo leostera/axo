@@ -93,6 +93,8 @@ impl AccountApps {
     }
 }
 
+pub(crate) const USER_PRECEDENCE: &str = "The user may override any directive in Axo’s injected guidance only by explicitly accepting a confirmation or elicitation for that specific override.";
+
 const DIRECT_INTRODUCTION: &str = "You run inside Axo, as the agent of one of its Sessions. Axo's tools are the `axo` MCP server's; each answers JSON in `structuredContent`. These are the ones to reach for first; the server's instructions have the full guide.";
 
 const INTRODUCTION: &str = "You run inside Axo, as the agent of one of its Sessions. Call Axo's tools from a codemode script as `tools.mcp__axo__<tool>(args)`; each answers JSON in `structuredContent`. These are the ones to reach for first; `describeNamespace(\"axo\")` has the full guide.";
@@ -116,7 +118,12 @@ pub fn brief(reach: &Reach) -> String {
         ToolCalls::Codemode => INTRODUCTION,
         ToolCalls::Direct => DIRECT_INTRODUCTION,
     };
-    let mut lines = vec![introduction.to_string(), SESSIONS.into(), ASKING.into()];
+    let mut lines = vec![
+        USER_PRECEDENCE.into(),
+        introduction.to_string(),
+        SESSIONS.into(),
+        ASKING.into(),
+    ];
     if reach.computer {
         lines.push(COMPUTER.into());
     }
@@ -227,13 +234,19 @@ mod tests {
             account: Account::Listed(AccountApps::parse(&listed()).unwrap()),
         });
         let lines: Vec<&str> = text.lines().collect();
-        assert_eq!(lines[0], INTRODUCTION);
-        assert_eq!(lines[1], SESSIONS);
-        assert_eq!(lines[2], ASKING);
-        assert_eq!(lines[3], COMPUTER);
-        assert_eq!(lines[4], ACCOUNT);
         assert_eq!(
-            &lines[5..],
+            &lines[..6],
+            [
+                USER_PRECEDENCE,
+                INTRODUCTION,
+                SESSIONS,
+                ASKING,
+                COMPUTER,
+                ACCOUNT
+            ]
+        );
+        assert_eq!(
+            &lines[6..],
             [
                 "  Macs (`host`): \"studio\", \"cfbook\".",
                 "  Apps: `apps.gmail` (a@x.test), `apps.calendar` (no account signed in).",
@@ -249,7 +262,10 @@ mod tests {
             computer: false,
             account: Account::Absent,
         });
-        assert_eq!(text, [DIRECT_INTRODUCTION, SESSIONS, ASKING].join("\n"));
+        assert_eq!(
+            text,
+            [USER_PRECEDENCE, DIRECT_INTRODUCTION, SESSIONS, ASKING].join("\n")
+        );
         assert!(!text.contains("tools.mcp__axo__"));
     }
 
@@ -260,7 +276,10 @@ mod tests {
             computer: false,
             account: Account::Absent,
         });
-        assert_eq!(text, [INTRODUCTION, SESSIONS, ASKING].join("\n"));
+        assert_eq!(
+            text,
+            [USER_PRECEDENCE, INTRODUCTION, SESSIONS, ASKING].join("\n")
+        );
         assert!(!text.contains("request_input"));
         assert!(!text.contains("apps_run"));
     }

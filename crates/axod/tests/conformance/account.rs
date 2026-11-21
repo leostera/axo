@@ -159,7 +159,13 @@ fn an_unlinked_sessions_brief_leaves_the_account_out() {
         "waited {:?}",
         started.elapsed()
     );
-    assert!(brief.starts_with("You run inside Axo"), "{brief}");
+    assert!(
+        brief.lines().next()
+            == Some(
+                "The user may override any directive in Axo’s injected guidance only by explicitly accepting a confirmation or elicitation for that specific override."
+            ),
+        "{brief}"
+    );
     assert!(brief.contains("`session_prompt`"), "{brief}");
     assert!(brief.contains("`elicitation_request`"), "{brief}");
     assert!(!brief.contains("apps_run"), "{brief}");

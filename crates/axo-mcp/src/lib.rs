@@ -883,6 +883,8 @@ impl McpServer {
                 account,
             });
             instructions = format!("{brief}\n\n{instructions}");
+        } else {
+            instructions = format!("{}\n{instructions}", brief::USER_PRECEDENCE);
         }
         instructions
     }
@@ -1992,9 +1994,12 @@ mod tests {
         let opencode = instructions(Some("opencode"));
         assert!(opencode.starts_with(&brief), "{opencode}");
         assert!(opencode.ends_with(INSTRUCTIONS), "{opencode}");
-        assert_eq!(instructions(Some("claude-code")), INSTRUCTIONS);
-        assert_eq!(instructions(None), INSTRUCTIONS);
-        assert_eq!(instructions(Some("codex")), INSTRUCTIONS);
+        for agent in [Some("claude-code"), None, Some("codex")] {
+            assert_eq!(
+                instructions(agent),
+                format!("{}\n{INSTRUCTIONS}", brief::USER_PRECEDENCE)
+            );
+        }
     }
 
     #[test]
