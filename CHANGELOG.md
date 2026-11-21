@@ -10,6 +10,10 @@ What changed in each published version of Axo. Every publish raises the minor ve
 
 ## Unreleased
 
+## 0.92 (Mac app build 364, axod 108)
+
+- Wake a dormant local Pi session without sending a prompt using `axo session ping --sid <session-id>` or the `session_ping` codemode tool. Pinging an already-running session is a no-op.
+
 ## 0.91 (Mac app build 363, axod 107)
 
 - Edit host-local agent guidance in Settings → Agent → System Prompt or `~/.axo/agent/SYSTEM_PROMPT.md`. Both edit the same Markdown file; a blank file keeps Axo’s defaults.
