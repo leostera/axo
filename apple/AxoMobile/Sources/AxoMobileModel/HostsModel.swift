@@ -84,6 +84,13 @@ public final class HostsModel {
     rebuild()
   }
 
+  /// Acknowledged by the destination; don’t replace a listing that already arrived.
+  func registerFork(_ session: RemoteSession) {
+    guard sessions[session.hostId]?[session.sessionId] == nil else { return }
+    sessions[session.hostId, default: [:]][session.sessionId] = session
+    rebuild()
+  }
+
   private func rebuild() {
     let built = listed.map { host in
       RemoteHost(host, sessions: (sessions[host.hostId]?.values).map { Array($0) } ?? [])

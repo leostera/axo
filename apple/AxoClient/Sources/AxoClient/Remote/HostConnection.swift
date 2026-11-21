@@ -9,6 +9,12 @@ extension AccountConnection {
   public func availableCodingAgents(on host: RemoteHostRef) async throws -> [CodingAgent] {
     try await HostConnection(account: self, host: host).availableCodingAgents()
   }
+
+  public func forkSession(
+    from snapshot: SessionForkSnapshot, to host: RemoteHostRef, requestID: UUID, folder: String?
+  ) async throws -> RemoteSession {
+    try await HostConnection(account: self, host: host).forkSession(from: snapshot, requestID: requestID, folder: folder)
+  }
 }
 
 public struct HostConnection: Sendable {
@@ -55,6 +61,18 @@ public struct HostConnection: Sendable {
       from: call(
         "axo.remote.session.create",
         SessionCreateTarget(target: host, like: sessionID, name: nil, agent: agent == .pi ? nil : agent)))
+  }
+
+  /// Forks a confirmed snapshot onto this host without changing the source Session.
+  public func forkSession(
+    from snapshot: SessionForkSnapshot, requestID: UUID, folder: String? = nil
+  ) async throws -> RemoteSession {
+    try await session(from: call(
+      "axo.remote.session.fork",
+      SessionForkTarget(target: host, sourceHostId: snapshot.hostID.uuidString.lowercased(),
+        sessionId: snapshot.sessionID, epoch: snapshot.epoch, head: snapshot.head,
+        requestId: requestID.uuidString.lowercased(), folder: folder)))
+      .forkChild(of: snapshot.sessionID, on: host.hostId)
   }
 
   /// Closes a Session; nothing opens in its place.
@@ -252,6 +270,15 @@ private struct SessionCreateTarget: Encodable, Sendable {
   let name: String?
   var agent: CodingAgent? = nil
 }
+private struct SessionForkTarget: Encodable, Sendable {
+  let target: RemoteHostRef
+  let sourceHostId: String
+  let sessionId: SessionID
+  let epoch: Int64
+  let head: Int64
+  let requestId: String
+  let folder: String?
+}
 private struct SessionTarget: Encodable, Sendable {
   let target: RemoteHostRef
   let sessionId: SessionID
@@ -356,7 +383,7 @@ private struct ResizeTarget: Encodable, Sendable {
   let columns: Int
 }
 
-private struct CreatedSession: Decodable, Sendable { let session: RemoteSession }
+struct CreatedSession: Decodable, Sendable { let session: RemoteSession }
 private struct ClosedSession: Decodable, Sendable {
   let closed: Bool
   let sessionId: SessionID

@@ -682,6 +682,58 @@ final class AccountConnectionTests: XCTestCase {
     XCTAssertEqual(session.sessionId, 7)
   }
 
+  func testCrossHostForkWireNamesSourceSnapshotAndDestination() async throws {
+    let (account, channel) = try await connect()
+    let source = RemoteSession(hostId: UUID(), sessionId: 3, agent: .pi, epoch: 4, head: 19)
+    let snapshot = try SessionForkSnapshot(source)
+    let requestID = UUID()
+    async let fork = account.forkSession(from: snapshot, to: host, requestID: requestID, folder: nil)
+    let sent = try await request(channel, 0)
+    XCTAssertEqual(sent["method"] as? String, "axo.client.command")
+    let params = try XCTUnwrap(sent["params"] as? [String: Any])
+    XCTAssertEqual(params["hostId"] as? String, host.hostId.uuidString.lowercased())
+    XCTAssertEqual(params["method"] as? String, "axo.remote.session.fork")
+    let inner = try XCTUnwrap(params["params"] as? [String: Any])
+    XCTAssertEqual(Set(inner.keys), ["target", "sourceHostId", "sessionId", "epoch", "head", "requestId"])
+    XCTAssertEqual(inner["target"] as? [String: String], [
+      "hostId": host.hostId.uuidString.lowercased(), "hostGeneration": host.hostGeneration.uuidString.lowercased(),
+    ])
+    XCTAssertEqual(inner["sourceHostId"] as? String, source.hostId.uuidString.lowercased())
+    XCTAssertEqual(inner["sessionId"] as? String, source.sessionId.rawValue)
+    XCTAssertEqual(inner["epoch"] as? Int, 4)
+    XCTAssertEqual(inner["head"] as? Int, 19)
+    XCTAssertEqual(inner["requestId"] as? String, requestID.uuidString.lowercased())
+    channel.reply(to: try XCTUnwrap(sent["id"] as? Int), result: createdForkReply(host: host.hostId, session: 7))
+    let child = try await fork
+    XCTAssertEqual(child.sessionId, 7)
+  }
+
+  func testMacForkUsesLocalBridgeAndRejectsOriginalAsChild() async throws {
+    let transport = FakeTransport()
+    let client = AxodConnection(transport: transport)
+    let target = host.hostId
+    let requestID = UUID()
+    async let fork = client.forkSession(3, to: target, requestID: requestID, folder: "/repos/site")
+    let channel = try await transport.channel(0)
+    let sent = try await request(channel, 0)
+    XCTAssertEqual(sent["method"] as? String, "axo.session.fork")
+    XCTAssertEqual(sent["params"] as? [String: String], [
+      "sessionId": SessionID.fixture(3).rawValue, "destinationHostId": target.uuidString.lowercased(),
+      "requestId": requestID.uuidString.lowercased(), "folder": "/repos/site",
+    ])
+    channel.reply(to: try XCTUnwrap(sent["id"] as? Int), result: createdForkReply(host: target, session: 3))
+    do {
+      _ = try await fork
+      XCTFail("the source session is not a child")
+    } catch {
+      guard case .invalidResponse = error as? AxoClientError else { return XCTFail("\(error)") }
+    }
+  }
+
+  private func createdForkReply(host: UUID, session: SessionID) -> String {
+    #"{"session":{"hostId":"\#(host.uuidString.lowercased())","sessionId":"\#(session.rawValue)","shells":[],"updatedAt":""}}"#
+  }
+
   func testAMacIsRenamedOnTheAccountSocketByItsLowercaseIdAndAnswersItsName() async throws {
     let (account, channel) = try await connect()
     async let renamed = account.renameHost(UUID(uuidString: "ABCDEF00-95FD-4C93-8586-A71A8A52BF73")!, to: "Studio")

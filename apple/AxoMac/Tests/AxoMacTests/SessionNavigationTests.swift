@@ -604,6 +604,36 @@ final class TerminalSessionsModelPublishingTests: XCTestCase {
     XCTAssertEqual(model.sidebarMacs, .all)
   }
 
+  func testForkWaitsForPeerListingBeforeShowingChildAndKeepsSourceOnFailure() async throws {
+    let client = FakeAxodClient()
+    client.methods.append(AxodMethodName.peerSessionsList.rawValue)
+    client.sessions = [TerminalSession(id: 1, folder: "/", shells: [])]
+    let hostID = UUID()
+    let host = PeerHost(hostId: hostID.uuidString.lowercased(), label: "Mac Studio", online: true)
+    client.peers = PeerSessionList(connected: true, hosts: [host], sessions: [])
+    let model = TerminalSessionsModel(client: client)
+    await model.refresh()
+    model.showSession(1)
+
+    do {
+      try await model.forkSession(1, to: host, requestID: UUID(), folder: nil)
+      XCTFail("a rejected fork cannot navigate")
+    } catch {}
+    XCTAssertEqual(model.selectedSessionID, 1)
+
+    client.forkResult = .success(RemoteSession(hostId: hostID, sessionId: 9))
+    try await model.forkSession(1, to: host, requestID: UUID(), folder: "/project")
+    XCTAssertEqual(model.selectedSessionID, 1, "the peer's pane target has not been listed yet")
+
+    client.peers = PeerSessionList(connected: true, hosts: [host], sessions: [
+      PeerSession(hostId: host.hostId, session: TerminalSession(id: 9, folder: "/project", shells: []))
+    ])
+    _ = await model.apply(.peerSessionsChanged)
+    XCTAssertEqual(model.selectedSessionID, 9)
+    XCTAssertEqual(model.sidebarMacs, .mac(host.hostId))
+    XCTAssertNotNil(model.session(for: 1))
+  }
+
   func testOtherMacsSessionsAreListedByMacAndShowingOneOpensAPaneOnIt() async throws {
     let suiteName = "axo-sidebar-macs-\(UUID().uuidString)"
     let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))

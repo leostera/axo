@@ -63,6 +63,10 @@ public struct RemoteSession: Decodable, Equatable, Sendable {
   /// The model and thinking level the Session's Pi runs (RFD0033); nil until it has said.
   public let pi: PiRuntime?
 
+  /// The published transcript boundary, present in the account listing, not in create replies.
+  public let epoch: Int64?
+  public let head: Int64?
+
   public var displayName: String { name ?? "Session" }
 
   public init(
@@ -70,7 +74,7 @@ public struct RemoteSession: Decodable, Equatable, Sendable {
     name: String? = nil, emoji: String? = nil, status: RemoteSessionStatus? = nil, hasAgent: Bool? = nil, agent: CodingAgent? = nil,
     shells: [RemoteShell] = [], layout: SessionLayout? = nil, updatedAt: String = "",
     lastMessageAt: Int64? = nil, createdAt: Int64? = nil, workspaceState: WorkspaceState? = nil,
-    pi: PiRuntime? = nil
+    pi: PiRuntime? = nil, epoch: Int64? = nil, head: Int64? = nil
   ) {
     self.hostId = hostId
     self.sessionId = sessionId
@@ -87,6 +91,8 @@ public struct RemoteSession: Decodable, Equatable, Sendable {
     self.createdAt = createdAt
     self.workspaceState = workspaceState
     self.pi = pi
+    self.epoch = epoch
+    self.head = head
   }
 
   /// A Session as the account's client lists it (RFD0018): what the host says of it, without
@@ -97,7 +103,7 @@ public struct RemoteSession: Decodable, Equatable, Sendable {
       name: listed.metadata.name, emoji: listed.metadata.emoji,
       status: listed.status, hasAgent: listed.metadata.hasAgent, agent: listed.metadata.agent,
       lastMessageAt: listed.metadata.lastMessageAt, createdAt: listed.metadata.createdAt,
-      workspaceState: listed.metadata.workspaceState, pi: listed.metadata.pi)
+      workspaceState: listed.metadata.workspaceState, pi: listed.metadata.pi, epoch: listed.epoch, head: listed.head)
   }
 }
 

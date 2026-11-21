@@ -19,6 +19,13 @@ struct SessionCreateRequest: Encodable {
   var agent: CodingAgent? = nil
 }
 
+struct CrossHostSessionForkRequest: Encodable {
+  let sessionId: SessionID
+  let destinationHostId: String
+  let requestId: String
+  let folder: String?
+}
+
 struct SessionRenameRequest: Encodable {
   let sessionId: SessionID
   let name: String
@@ -118,6 +125,7 @@ enum AxodMethods {
   static let configSet = AxodMethod<ConfigSetRequest, AxoConfigValue>(.configSet)
   static let sessionList = AxodMethod<NoParams, TerminalSessionListSnapshot>(.sessionList)
   static let sessionCreate = AxodMethod<SessionCreateRequest, TerminalSession>(.sessionCreate)
+  static let crossHostSessionFork = AxodMethod<CrossHostSessionForkRequest, CreatedSession>(.sessionFork, timeout: .seconds(40))
   static let sessionClose = AxodMethod<CloseTerminalSessionRequest, ClosedTerminalSession>(.sessionClose)
   static let sessionRename = AxodMethod<SessionRenameRequest, TerminalSession>(.sessionRename)
   static let peerSessionsList = AxodMethod<NoParams, PeerSessionList>(.peerSessionsList)

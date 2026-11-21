@@ -124,6 +124,10 @@ final class FakeAxodClient: AxodClient {
   func createSession(agent: CodingAgent, like sessionID: SessionID?) async throws -> TerminalSession {
     throw Unsupported()
   }
+  var forkResult: Result<RemoteSession, Error> = .failure(Unsupported())
+  func forkSession(_ sessionID: SessionID, to destinationHostID: UUID, requestID: UUID, folder: String?) async throws -> RemoteSession {
+    try forkResult.get()
+  }
   func closeSession(_ sessionID: SessionID) async throws -> ClosedTerminalSession {
     throw Unsupported()
   }

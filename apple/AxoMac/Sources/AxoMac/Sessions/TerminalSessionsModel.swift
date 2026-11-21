@@ -117,6 +117,9 @@ final class TerminalSessionsModel {
   private let capabilities: AxodCapabilities?
   /// Other Macs' Sessions as last listed; also in `catalog`, so they select and show like any.
   @ObservationIgnored private var peerSessions: [SessionID: PeerSession] = [:]
+  /// The destination acknowledged creation; wait for the peer catalog to publish its pane target.
+  @ObservationIgnored private var pendingForkChild: (id: SessionID, host: UUID)?
+  @ObservationIgnored private var navigationRevision = 0
   /// Panes on other Macs' Sessions being opened, so a Session is opened once.
   @ObservationIgnored private var openingPeers: Set<SessionID> = []
   /// The open Sessions: the single source of truth for `sessions` and its projections.
@@ -387,6 +390,10 @@ final class TerminalSessionsModel {
   /// layout writes to the writer.
   private func projectSelection(persisting writes: [SessionID: SessionLayout]) {
     for (sessionID, layout) in writes { layoutWriter.schedule(layout, for: sessionID) }
+    if selectedSessionID != selection.selectedSessionID {
+      navigationRevision += 1
+      pendingForkChild = nil
+    }
     assign(\.selectedSessionID, selection.selectedSessionID)
     assign(\.focusedShellID, selection.focusedShellID)
     markSelectionSeen()
@@ -482,7 +489,14 @@ final class TerminalSessionsModel {
       setSidebarMacs(.thisMac)
     }
     applyCatalog(SessionCatalog(local + next.values.map(\.session)), focusing: nil)
-    if let selected = selectedSessionID { openPeerPaneIfNeeded(selected) }
+    if let pending = pendingForkChild,
+      let host = next[pending.id]?.hostId, UUID(uuidString: host) == pending.host
+    {
+      pendingForkChild = nil
+      showSession(pending.id)
+    } else if let selected = selectedSessionID {
+      openPeerPaneIfNeeded(selected)
+    }
   }
 
   /// Another Mac's Session has no pane here until it is shown: then this Mac starts one.
@@ -657,6 +671,27 @@ final class TerminalSessionsModel {
 
   /// Opens a new Session in `folder` (RFD0038). A failure is kept for whoever asked, in
   /// `sessionCreationError`, as a folder chosen by hand can be gone or unreadable.
+  func forkDestinations(for source: SessionID) -> [PeerHost] {
+    peerHosts.filter { $0.hostId != peerHostBySession[source] && UUID(uuidString: $0.hostId) != nil }
+  }
+
+  func forkSession(_ source: SessionID, to destination: PeerHost, requestID: UUID, folder: String?) async throws {
+    guard session(for: source) != nil else { throw SessionForkError.selectionChanged }
+    guard let destinationID = UUID(uuidString: destination.hostId),
+      forkDestinations(for: source).contains(where: { $0.hostId == destination.hostId && $0.online })
+    else { throw SessionForkError.destinationUnavailable }
+    let revision = navigationRevision
+    // The daemon is authoritative about the source agent, owner and published history boundary.
+    let child = try await requireClient().forkSession(source, to: destinationID, requestID: requestID, folder: folder)
+    guard navigationRevision == revision else { return }
+    if let host = peerHostBySession[child.sessionId], UUID(uuidString: host) == destinationID {
+      showSession(child.sessionId)
+    } else {
+      pendingForkChild = (child.sessionId, destinationID)
+      await refreshPeerSessions()
+    }
+  }
+
   func createSession(inFolder folder: String) async {
     let interval = AxoTrace.beginInterval("command.session.create")
     defer { AxoTrace.endInterval(interval) }

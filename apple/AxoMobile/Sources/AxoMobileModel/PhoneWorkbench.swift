@@ -8,6 +8,7 @@ public protocol AccountFeed: ChatFeed {
   var events: AsyncStream<AccountEvent> { get }
   var connectionLost: AsyncStream<Void> { get }
   func availableCodingAgents(on host: RemoteHostRef) async throws -> [CodingAgent]
+  func forkSession(from snapshot: SessionForkSnapshot, to host: RemoteHostRef, requestID: UUID, folder: String?) async throws -> RemoteSession
   func connect() async throws
   func disconnect() async
   func refresh() async throws -> ClientHello
@@ -559,6 +560,33 @@ public final class PhoneWorkbench {
     draftFiles[draft] = nil
     select(host: hostID, session: nil)
     if !files.isEmpty { draftFiles[Selection(host: hostID, session: nil)] = files }
+  }
+
+  /// Freeze the cloud listing the person is about to confirm, not any subsequently arriving turn.
+  public func forkSnapshot() throws -> SessionForkSnapshot {
+    guard let selection, let id = selection.session,
+      let source = hosts.hosts.first(where: { $0.hostId == selection.host })?.sessions.first(where: { $0.sessionId == id })
+    else { throw SessionForkError.selectionChanged }
+    return try SessionForkSnapshot(source)
+  }
+
+  public func forkSession(
+    from snapshot: SessionForkSnapshot, to target: RemoteHostRef, requestID: UUID, folder: String?
+  ) async throws {
+    guard selection == Selection(host: snapshot.hostID, session: snapshot.sessionID) else {
+      throw SessionForkError.selectionChanged
+    }
+    guard target.hostId != snapshot.hostID, hosts.hosts.contains(where: { $0.reference == target && $0.status == .online }) else {
+      throw SessionForkError.destinationUnavailable
+    }
+    let navigation = navigationRevision
+    let credential = account.credentialRevision
+    let child = try await feed.forkSession(from: snapshot, to: target, requestID: requestID, folder: folder)
+    guard account.credentialRevision == credential else { return }
+    hosts.registerFork(child)
+    if navigationRevision == navigation {
+      select(host: child.hostId, session: child.sessionId)
+    }
   }
 
   /// The Mac a new chat goes to: the open one if it is online, else the first Mac that is.

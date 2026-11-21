@@ -140,6 +140,49 @@ final class PhoneWorkbenchTests: XCTestCase {
       "sessionId": session.rawValue, "requestId": UUID().uuidString]]))
   }
 
+  func testForkRetriesWithAnExplicitDestinationFolderAndPreservesSourceDraft() async throws {
+    let first = Mac("First", online: true, sessions: [1])
+    let second = Mac("Second", online: true)
+    let world = PhoneWorld([first, second])
+    world.transport.responder = { request in
+      switch request.method {
+      case "axo.client.session.open":
+        return .result(Wire.opened(epoch: nil, []))
+      case "axo.remote.session.fork":
+        guard request.params["folder"] as? String == "/src/project" else {
+          return .error(-32602, "Choose a destination folder")
+        }
+        return .result(#"{"session":\#(sessionJSON(host: second.id, id: 7, name: "Fork", shells: []))}"#)
+      default: return nil
+      }
+    }
+    try await world.start()
+    let phone = world.workbench!
+    phone.select(host: first.id, session: 1)
+    let origin = try XCTUnwrap(phone.selection)
+    phone.setDraft("A’s unsent draft", for: origin)
+    XCTAssertThrowsError(try phone.forkSnapshot(), "unknown agents cannot fork")
+    let boundary = ClientSession(hostId: first.id, sessionId: 1, metadata: .init(agent: .pi), epoch: 2, head: 55)
+    phone.hosts.update(sessions: [boundary], of: first.id)
+    let snapshot = try phone.forkSnapshot()
+    let target = try XCTUnwrap(phone.hosts.hosts.first { $0.hostId == second.id }).reference
+    XCTAssertEqual(snapshot.head, 55)
+    do {
+      try await phone.forkSession(from: snapshot, to: target, requestID: UUID(), folder: nil)
+      XCTFail("a missing destination folder must not create a session")
+    } catch {
+      XCTAssertTrue(SessionForkError.needsDestinationFolder(error))
+    }
+    XCTAssertEqual(phone.selection, origin)
+    XCTAssertEqual(phone.draft(for: origin), "A’s unsent draft")
+
+    try await phone.forkSession(from: snapshot, to: target, requestID: UUID(), folder: "/src/project")
+    XCTAssertEqual(phone.selection, .init(host: second.id, session: 7))
+    XCTAssertEqual(phone.current?.selectedSession?.displayName, "Fork")
+    XCTAssertEqual(phone.draft(for: origin), "A’s unsent draft")
+    XCTAssertEqual(phone.draft(for: try XCTUnwrap(phone.selection)), "")
+  }
+
   func testNotificationOpensOriginatingConversationAndPreservesDraftWithoutSending() async throws {
     let first = Mac("First", online: true, sessions: [1])
     let second = Mac("Second", online: true, sessions: [2])

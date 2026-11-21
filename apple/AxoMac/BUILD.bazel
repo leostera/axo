@@ -24,6 +24,7 @@ AXO_MAC_DEPS = [
     "//apple/AxoClient:AxoClient",
     "//apple/AxoMascot",
     "//apple/AxoSearch:AxoSearch",
+    "//apple/AxoSessionUI",
     "@ghostty//:GhosttyKit",
 ]
 

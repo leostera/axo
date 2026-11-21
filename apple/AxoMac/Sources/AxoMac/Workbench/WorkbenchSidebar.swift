@@ -1,4 +1,5 @@
 import AxoProtocol
+import AxoSessionUI
 import SwiftUI
 
 /// The Session list, latest activity first, of this Mac, another Mac, or all of them (RFD0024);
@@ -11,12 +12,26 @@ struct WorkbenchSidebar: View {
   @State private var renameDraft = ""
   @State private var hoveredSessionID: SessionID?
   @State private var sidebarActionError: String?
+  @State private var fork: Fork?
+
+  private struct Fork: Identifiable {
+    let id = UUID()
+    let sessionID: SessionID
+    let destination: PeerHost
+  }
 
   var body: some View {
-    if isSidebarCollapsed {
-      collapsedSidebar
-    } else {
-      expandedSidebar
+    Group {
+      if isSidebarCollapsed {
+        collapsedSidebar
+      } else {
+        expandedSidebar
+      }
+    }
+    .sheet(item: $fork) { operation in
+      SessionForkSheet(machine: operation.destination.label) { requestID, folder in
+        try await sessions.forkSession(operation.sessionID, to: operation.destination, requestID: requestID, folder: folder)
+      }
     }
   }
 
@@ -206,6 +221,18 @@ struct WorkbenchSidebar: View {
     .accessibilityIdentifier("copy-session-id-\(session.id.rawValue)")
     Button("Copy Session Info") {
       SessionInfo.copy(session, hostLabel: sessions.hostLabel(for: session.id))
+    }
+    let destinations = sessions.forkDestinations(for: session.id)
+    if !destinations.isEmpty {
+      Menu("Fork Session to…") {
+        ForEach(destinations) { host in
+          Button(host.online ? host.label : "\(host.label) (offline)") {
+            fork = Fork(sessionID: session.id, destination: host)
+          }
+          .disabled(!host.online)
+        }
+      }
+      .accessibilityIdentifier("session-fork-destination")
     }
     Divider()
     if let host = sessions.hostLabel(for: session.id) {

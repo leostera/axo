@@ -80,6 +80,7 @@ swift_library(
         "//apple/AxoCompanion",
         "//apple/AxoMigrationUI",
         "//apple/AxoVoiceUI",
+        "//apple/AxoSessionUI",
         "//apple/AxoMascot",
         "//apple/AxoProtocol",
         "@swiftpkg_rive_ios//:RiveRuntime",

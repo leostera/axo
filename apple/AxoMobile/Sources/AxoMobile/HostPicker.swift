@@ -1,21 +1,58 @@
+import AxoClient
 import AxoMobileModel
 import AxoProtocol
+import AxoSessionUI
 import SwiftUI
 
-/// An existing Session shows its host; only a new chat can choose one.
+/// New chats switch their draft destination; existing chats can fork to another host.
 struct HostPicker: View {
   let phone: PhoneWorkbench
   var voice: VoicePrompt?
   var showName = false
   @Environment(\.horizontalSizeClass) private var sizeClass
+  @State private var fork: Fork?
+  @State private var forkError: String?
+
+  private struct Fork: Identifiable {
+    let id = UUID()
+    let source: SessionForkSnapshot
+    let destination: RemoteHost
+  }
 
   var body: some View {
+    picker
+      .sheet(item: $fork) { operation in
+        SessionForkSheet(machine: operation.destination.label) { requestID, folder in
+          try await phone.forkSession(from: operation.source, to: operation.destination.reference,
+            requestID: requestID, folder: folder)
+        }
+      }
+      .alert("Can’t fork session", isPresented: Binding(
+        get: { forkError != nil }, set: { if !$0 { forkError = nil } }
+      )) {
+        Button("OK", role: .cancel) {}
+      } message: {
+        Text(forkError ?? "")
+      }
+  }
+
+  @ViewBuilder
+  private var picker: some View {
     if let host = openHost {
-      if phone.isDrafting {
+      let candidates = phone.hosts.hosts.filter { phone.isDrafting || $0.hostId != host.hostId }
+      if phone.isDrafting || !candidates.isEmpty {
         Menu {
-          ForEach(phone.hosts.hosts, id: \.hostId) { candidate in
+          ForEach(candidates, id: \.hostId) { candidate in
             Button {
-              phone.chooseHost(candidate.hostId, voice: voice)
+              if phone.isDrafting {
+                phone.chooseHost(candidate.hostId, voice: voice)
+              } else {
+                do {
+                  fork = Fork(source: try phone.forkSnapshot(), destination: candidate)
+                } catch {
+                  forkError = error.localizedDescription
+                }
+              }
             } label: {
               let name = "\(candidate.label)\(candidate.status == .online ? "" : ", offline")"
               if let logo = HostPresentation.logoName(candidate) {
@@ -30,7 +67,7 @@ struct HostPicker: View {
           badge(host, selectable: true)
         }
         .accessibilityLabel("Host: \(host.label)")
-        .accessibilityHint("Chooses where to start this chat")
+        .accessibilityHint(phone.isDrafting ? "Chooses where to start this chat" : "Forks this session to another machine")
         .accessibilityIdentifier("host-picker")
       } else {
         badge(host, selectable: false)
