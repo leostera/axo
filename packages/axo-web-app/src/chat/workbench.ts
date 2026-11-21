@@ -392,6 +392,10 @@ export class ChatWorkbench {
   }
   failure: string | null = null;
   isSending = false;
+  private submittingSelection: Selection | null = null;
+  get showingSubmittedDraft(): boolean {
+    return this.isSending && this.selection === this.submittingSelection && this.canSendDraft;
+  }
   /** Bumped on every change, for `useSyncExternalStore`. */
   version = 0;
   /** Whether the page is seen (see `setVisible`). */
@@ -1146,6 +1150,7 @@ export class ChatWorkbench {
       this.setDraft("", draft);
       this.setAttachments(this.attachments(draft), chat);
       this.setAttachments([], draft);
+      this.submittingSelection = chat;
       this.selection = chat;
       void this.openChat(created.sessionId);
       return this.prompt(chat);
@@ -1153,11 +1158,13 @@ export class ChatWorkbench {
   }
 
   private async sending(work: () => Promise<SendOutcome>): Promise<SendOutcome> {
+    this.submittingSelection = this.selection;
     this.isSending = true;
     this.changed();
     try {
       return await work();
     } finally {
+      this.submittingSelection = null;
       this.isSending = false;
       this.changed();
     }

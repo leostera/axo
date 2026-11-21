@@ -17,7 +17,6 @@ export function ModelPicker({ workbench, session, disabled }: { workbench: ChatW
   const root = useRef<HTMLDivElement>(null);
   const panel = useRef<HTMLDivElement>(null);
   const trigger = useRef<HTMLButtonElement>(null);
-  const modelRow = useRef<HTMLButtonElement>(null);
   const search = useRef<HTMLInputElement>(null);
   const scope = session?.sessionId ?? workbench.draftCatalogScope;
   const activeScope = useRef(scope);
@@ -72,7 +71,7 @@ export function ModelPicker({ workbench, session, disabled }: { workbench: ChatW
   useEffect(() => {
     if (!open) return;
     if (page === "models") search.current?.focus({ preventScroll: true });
-    else modelRow.current?.focus({ preventScroll: true });
+    else panel.current?.focus({ preventScroll: true });
   }, [open, page]);
   useEffect(() => {
     if (open && page === "models" && choices.length)
@@ -84,8 +83,7 @@ export function ModelPicker({ workbench, session, disabled }: { workbench: ChatW
     const escape = (event: globalThis.KeyboardEvent) => {
       if (event.key !== "Escape" || event.defaultPrevented) return;
       event.preventDefault();
-      if (page === "models") setPage("settings");
-      else { setOpen(false); trigger.current?.focus({ preventScroll: true }); }
+      setOpen(false); trigger.current?.focus({ preventScroll: true });
     };
     window.addEventListener("pointerdown", outside);
     window.addEventListener("keydown", escape);
@@ -98,7 +96,7 @@ export function ModelPicker({ workbench, session, disabled }: { workbench: ChatW
       const model = choice.kind === "model" ? choice.model : draft?.model;
       const level = choice.kind === "thinking" ? choice.level
         : draft?.thinkingLevel && model?.thinkingLevels.includes(draft.thinkingLevel) ? draft.thinkingLevel : undefined;
-      if (workbench.chooseDraftModel(scope, model, level)) setPage("settings");
+      if (workbench.chooseDraftModel(scope, model, level)) setOpen(false);
       return;
     }
     setPending(choice);
@@ -108,14 +106,14 @@ export function ModelPicker({ workbench, session, disabled }: { workbench: ChatW
         ? { model: { provider: choice.model.provider, id: choice.model.id } }
         : { thinkingLevel: choice.level });
       if (activeScope.current !== scope) return;
-      if (applied) setPage("settings");
+      if (applied) setOpen(false);
       else setError(workbench.failure ?? "Could not update this agent. Try again.");
     } finally {
       if (activeScope.current === scope) setPending(null);
     }
   };
   const chooseModel = (model: PiModel) => {
-    if (current?.provider === model.provider && current.id === model.id) setPage("settings");
+    if (current?.provider === model.provider && current.id === model.id) setOpen(false);
     else void choose({ kind: "model", model });
   };
   const searchKeys = (event: KeyboardEvent<HTMLInputElement>) => {
@@ -152,15 +150,9 @@ export function ModelPicker({ workbench, session, disabled }: { workbench: ChatW
         <span className="model-picker-label"><span className="thinking-full">{thinking ? levelName(thinking) : "Thinking"}</span><span className="thinking-short">{thinking === "medium" ? "Med" : thinking === "minimal" ? "Min" : thinking === "xhigh" ? "XHigh" : thinking ? levelName(thinking) : "Think"}</span></span><Icon name="chevronDown" size={11} />
       </button>
       {open ? (
-        <div ref={panel} className="host-menu model-menu" role="dialog" aria-label="Model settings" aria-busy={Boolean(pending)}>
+        <div ref={panel} className="host-menu model-menu" role="dialog" tabIndex={-1} aria-label={page === "models" ? "Choose model" : "Thinking level"} aria-busy={Boolean(pending)}>
           {page === "settings" ? (
             <>
-              <button ref={modelRow} type="button" className="model-setting-row" aria-label="Choose model" aria-describedby={`${listId}-current`} disabled={Boolean(pending)}
-                onClick={() => { setQuery(""); setHighlighted(0); setPage("models"); }}>
-                <span className="model-setting-name">Model</span>
-                <span className="model-setting-value" id={`${listId}-current`}><strong title={current?.id}>{current?.name ?? label}</strong><small>{current?.provider}</small></span>
-                <Icon name="chevronRight" size={14} />
-              </button>
               <div className="thinking-setting">
                 <p className="model-setting-heading">Thinking</p>
                 {state?.kind === "loaded" ? levels.length > 1 ? (
@@ -181,7 +173,6 @@ export function ModelPicker({ workbench, session, disabled }: { workbench: ChatW
           ) : (
             <>
               <div className="model-search-header">
-                <button type="button" className="plain-icon-button" aria-label="Back to model settings" onClick={() => setPage("settings")}><Icon name="chevronLeft" size={18} /></button>
                 <input ref={search} type="search" role="combobox" aria-label="Search models" placeholder="Search model or provider"
                   aria-autocomplete="list" aria-expanded="true" aria-controls={listId} aria-activedescendant={choices.length ? optionId(active) : undefined}
                   autoComplete="off" autoCapitalize="off" spellCheck={false} maxLength={128} value={query}
@@ -189,7 +180,7 @@ export function ModelPicker({ workbench, session, disabled }: { workbench: ChatW
               </div>
               {catalogOnly ? <p className="menu-note">Claude Code’s advertised models. Choose the model in Claude Code.</p> : null}
               {!session && !catalogOnly ? <button type="button" className="model-setting-row" onClick={() => {
-                if (workbench.chooseDraftModel(scope)) setPage("settings");
+                if (workbench.chooseDraftModel(scope)) setOpen(false);
               }}>Use host default</button> : null}
               <div className="model-results" role="listbox" aria-label="Models" id={listId}>
                 {state?.kind === "loaded" ? groups.length ? groups.map(group => (

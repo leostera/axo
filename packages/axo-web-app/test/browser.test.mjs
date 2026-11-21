@@ -819,15 +819,17 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     // The model and thinking level, beside Send: picking either asks Pi, and the box names what Pi then says it runs.
     const model = page.getByRole("button", { name: "Thinking: High" });
     await model.click();
-    const modelMenu = page.getByRole("dialog", { name: "Model settings" });
+    const modelMenu = page.locator(".model-menu[role=dialog]");
     await expect(modelMenu.getByRole("radiogroup", { name: "Thinking level" }));
     await shot("composer-model-menu");
-    await modelMenu.getByRole("button", { name: "Choose model" }).click();
+    assert.equal(await modelMenu.getByRole("combobox").count(), 0);
+    await page.getByRole("button", { name: /^Model:/ }).click();
     await expect(modelMenu.getByRole("option", { name: /GPT-5/ }));
     assert.equal(await modelMenu.getByRole("option", { name: /Opus 4.1/ }).getAttribute("aria-selected"), "true");
     assert.deepEqual(await modelMenu.locator(".menu-section").allTextContents(), ["anthropic", "openai"]);
     await modelMenu.getByRole("option", { name: /GPT-5/ }).click();
     await expect(page.getByRole("button", { name: "Model: GPT-5" }));
+    await page.getByRole("button", { name: /^Thinking:/ }).click();
     await modelMenu.getByText("Low", { exact: true }).click();
     await expect(page.getByRole("button", { name: "Thinking: Low" }));
     assert.deepEqual(modelSets.map(({ model, thinkingLevel }) => [model?.id, thinkingLevel]), [["gpt-5", undefined], [undefined, "low"]]);

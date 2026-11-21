@@ -45,12 +45,13 @@ test("web polish: user Markdown, contrasting Send and independent searchable mod
       await page.screenshot({ path: output(`web-polish-${theme}.png`) });
     }
     await page.getByRole("button", { name: "Thinking: Medium", exact: true }).click();
-    const dialog = page.getByRole("dialog", { name: "Model settings" });
+    const dialog = page.locator(".model-menu[role=dialog]");
     await dialog.waitFor();
     await dialog.getByRole("radio", { name: "Medium", exact: true }).waitFor({ timeout: 5000 });
     assert.equal(await dialog.getByRole("option").count(), 0, "the model catalog does not push thinking down the popup");
     await page.screenshot({ path: output("web-polish-model-settings.png") });
-    await dialog.getByRole("button", { name: "Choose model", exact: true }).click();
+    assert.equal(await dialog.getByRole("button", { name: "Choose model" }).count(), 0);
+    await page.getByRole("button", { name: /^Model:/ }).click();
     const search = dialog.getByRole("combobox", { name: "Search models" });
     await search.waitFor();
     assert.equal(await dialog.getByRole("option").count(), 300);
@@ -65,6 +66,7 @@ test("web polish: user Markdown, contrasting Send and independent searchable mod
     assert.equal(cloud.modelSets.length, 1);
     assert.equal(cloud.modelSets[0].model.id, "model-242");
     assert.equal("thinkingLevel" in cloud.modelSets[0], false);
+    await page.getByRole("button", { name: /^Thinking:/ }).click();
     const medium = dialog.getByRole("radio", { name: "Medium", exact: true });
     await medium.focus();
     await medium.press("ArrowRight");
@@ -73,7 +75,7 @@ test("web polish: user Markdown, contrasting Send and independent searchable mod
     assert.equal("model" in cloud.modelSets[1], false, "thinking is a separate API selection");
     // Failure does not change the selected model or hide the error in a closed menu.
     cloud.rejectNextModelChange();
-    await dialog.getByRole("button", { name: "Choose model", exact: true }).click();
+    await page.getByRole("button", { name: /^Model:/ }).click();
     await search.fill("model-241");
     await search.press("Enter");
     await dialog.getByRole("alert").waitFor();
@@ -83,8 +85,7 @@ test("web polish: user Markdown, contrasting Send and independent searchable mod
     await dialog.waitFor({ state: "detached" });
     // Both modes remain inside a phone viewport, including the long-catalog search page.
     await page.setViewportSize({ width: 390, height: 844 });
-    await page.getByRole("button", { name: "Thinking: High", exact: true }).click();
-    await dialog.getByRole("button", { name: "Choose model", exact: true }).click();
+    await page.getByRole("button", { name: /^Model:/ }).click();
     const mobileBounds = await dialog.boundingBox();
     assert.ok(mobileBounds.x >= 0 && mobileBounds.x + mobileBounds.width <= 391, JSON.stringify(mobileBounds));
     await page.screenshot({ path: output("web-polish-model-search-mobile.png") });

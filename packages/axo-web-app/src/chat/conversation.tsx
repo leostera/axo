@@ -199,6 +199,8 @@ export function Conversation({ workbench, wide, onShowChats, onToggleInfo, onApp
     await workbench.send(delivery);
   };
 
+  const preview = workbench.showingSubmittedDraft;
+  const awaitingReply = preview || chat?.pending.some(p => p.state === "sending" || p.state === "sent");
   const working = Boolean(transcript?.working);
   const canStop = online && !chat?.cached && working && !chat?.stopping;
   // A stop goes at once, without asking: interrupting has to be quick, and a reply stopped by
@@ -245,7 +247,7 @@ export function Conversation({ workbench, wide, onShowChats, onToggleInfo, onApp
           ) : null}
           {history.kind === "loading" && empty ? <p className="history-note">Loading the chat…</p> : null}
 
-          {empty && history.kind !== "loading" ? (
+          {empty && !preview && history.kind !== "loading" ? (
             <div className="empty-chat">
               <AxoMascot className="empty-chat-mascot" />
               <h2>What are we working on?</h2>
@@ -254,7 +256,8 @@ export function Conversation({ workbench, wide, onShowChats, onToggleInfo, onApp
           ) : null}
 
           <HoldRow.Provider value={holdRow}><ConversationRows feed={feed} dismiss={dismiss} /></HoldRow.Provider>
-          {session && working ? (
+          {preview ? <PendingView prompt={{ id: "submitting", text: workbench.draft(), files: workbench.attachments().map(file => file.name), state: "sending", mine: true, delivery: "interrupt" }} onDismiss={() => {}} /> : null}
+          {(working || awaitingReply) ? (
             <div className="agent-activity" data-testid="agent-activity">
               <span className="agent-activity-icon"><Icon name="sparkles" size={18} /></span>
               <span className="agent-activity-title">{activityTitle}</span>
@@ -488,7 +491,7 @@ function Composer({ workbench, voice, placeholder, canCompose, canSend, onSend, 
           <textarea
             ref={field}
             rows={1}
-            value={draft}
+            value={workbench.showingSubmittedDraft ? "" : draft}
             placeholder={placeholder}
             aria-label="Message"
             aria-controls={slashOpen ? "slash-menu" : undefined}
