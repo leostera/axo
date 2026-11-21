@@ -10,6 +10,11 @@ What changed in each published version of Axo. Every publish raises the minor ve
 
 ## Unreleased
 
+## 0.93 (Mac app build 365, mobile build 91, axod 109)
+
+- Answer pending web requests directly in their chat. The global inbox remains available.
+- Make Fork and Retry Fork legible on Mac, iPhone and iPad with a shared contrast-tested AxoKit button.
+
 ## 0.92 (Mac app build 364, axod 108)
 
 - Wake a dormant local Pi session without sending a prompt using `axo session ping --sid <session-id>` or the `session_ping` codemode tool. Pinging an already-running session is a no-op.
