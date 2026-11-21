@@ -10,6 +10,10 @@ What changed in each published version of Axo. Every publish raises the minor ve
 
 ## Unreleased
 
+### 0.89 candidate (Mac app build 361, iPhone build 89, axod 105)
+
+- In an existing Pi chat, choosing another host asks whether to fork the conversation there. The fork copies history, not files, and opens idle; the original session stays on its host. If the source folder does not exist on the destination, choose a folder there instead.
+
 ## 0.88 (Mac app build 360, axod 104)
 
 - Fork an open local Pi session into an independent conversation in the same folder with `session_fork({})` or `axo session fork --sid <session-id>`.
