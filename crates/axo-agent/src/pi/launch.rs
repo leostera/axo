@@ -148,6 +148,13 @@ pub fn spawn_remote_view(
     process::spawn(command, size, &[launch.lifeline.reader()])
 }
 
+/// Read-only check of the same local command and extension resolved again at launch.
+pub fn check_launch_paths(agent_command: &AgentCommand) -> io::Result<()> {
+    resolve_executable(&agent_command.command().executable)?;
+    resolve_extension_path()?;
+    Ok(())
+}
+
 fn resolve_executable(program: &str) -> io::Result<PathBuf> {
     axo_pty::command::resolve_executable(program, Some("AXO_PI_EXECUTABLE"), "agent")
 }

@@ -453,6 +453,7 @@ impl Settings {
                         Err(Error::Rejected {
                             code: -32602,
                             message,
+                            ..
                         })
                         | Err(Error::Input(message)) => Ok(SaveResult::Invalid(message)),
                         Err(error) => Err(error),

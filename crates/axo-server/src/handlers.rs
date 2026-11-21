@@ -456,6 +456,17 @@ impl Extension for Sessions {
         add(
             handler,
             core,
+            method::SESSION_FORK_PLAN,
+            "expected {sessionId, destinationHostId}",
+            |core, request: crate::forks::BridgePlanRequest| async move {
+                crate::forks::bridge_plan(core, request)
+                    .await
+                    .map_err(axo_ipc::rpc_error)
+            },
+        );
+        add(
+            handler,
+            core,
             method::SESSION_FORK,
             "expected a local, peer, or destination fork request",
             |core, request: ForkRequest| async move {

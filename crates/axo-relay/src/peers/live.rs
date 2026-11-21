@@ -22,6 +22,7 @@ pub(super) struct Inspection {
 pub struct PeerCommandError {
     pub code: i64,
     pub message: String,
+    pub data: Option<Value>,
 }
 
 impl PeerCommandError {
@@ -30,6 +31,7 @@ impl PeerCommandError {
         Self {
             code: -32005,
             message: "Host offline; nothing queued".to_owned(),
+            data: None,
         }
     }
 
@@ -38,6 +40,7 @@ impl PeerCommandError {
         Self {
             code: -32004,
             message: "Outcome unknown; reconcile commandId".to_owned(),
+            data: None,
         }
     }
 }

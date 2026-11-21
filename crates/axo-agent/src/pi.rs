@@ -10,6 +10,8 @@ pub mod protocol;
 mod socket;
 mod transcript_file;
 
-pub use launch::{PiLaunch, PiProcess, RemoteViewLaunch, STOP_GRACE, spawn, spawn_remote_view};
+pub use launch::{
+    PiLaunch, PiProcess, RemoteViewLaunch, STOP_GRACE, check_launch_paths, spawn, spawn_remote_view,
+};
 pub use socket::{BridgeSocketPath, MAX_SOCKET_PATH_BYTES, SocketCleanup};
 pub use transcript_file::{LineRange, LineSpan, TranscriptFile, transcript_chain};

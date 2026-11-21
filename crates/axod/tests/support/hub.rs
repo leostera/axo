@@ -32,6 +32,7 @@ const WAIT: Duration = Duration::from_secs(15);
 pub enum Answer {
     Result(Value),
     Error(i64, String),
+    StructuredError(Value),
     /// Kept unanswered; the test answers it with [`FakeHub::answer`].
     Hold,
 }
@@ -527,6 +528,9 @@ fn respond(id: &Value, answer: Answer) -> Option<Value> {
         Answer::Result(result) => Some(json!({ "jsonrpc": "2.0", "id": id, "result": result })),
         Answer::Error(code, text) => {
             Some(json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": text } }))
+        }
+        Answer::StructuredError(error) => {
+            Some(json!({ "jsonrpc": "2.0", "id": id, "error": error }))
         }
         Answer::Hold => None,
     }

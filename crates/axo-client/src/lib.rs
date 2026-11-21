@@ -23,13 +23,17 @@ const MAX_REQUEST: usize = 8 * 1024 * 1024;
 pub enum Error {
     Input(String),
     Transport(String),
-    Rejected { code: i64, message: String },
+    Rejected {
+        code: i64,
+        message: String,
+        data: Option<Value>,
+    },
 }
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Input(message) | Self::Transport(message) => f.write_str(message),
-            Self::Rejected { code, message } => write!(f, "{message} (RPC {code})"),
+            Self::Rejected { code, message, .. } => write!(f, "{message} (RPC {code})"),
         }
     }
 }
@@ -161,6 +165,7 @@ impl Client {
             Err(Error::Rejected {
                 code,
                 message: message.into(),
+                data: error.get("data").cloned(),
             })
         } else {
             Ok(value["result"].clone())

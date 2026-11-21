@@ -35,6 +35,8 @@
         {
           "$ref": "#/$defs/SessionCreateCall"
         },
+        { "$ref": "#/$defs/SessionForkPlanCall" },
+        { "$ref": "#/$defs/SessionForkCall" },
         {
           "$ref": "#/$defs/SessionCloseCall"
         },
@@ -298,6 +300,73 @@
       ],
       "unevaluatedProperties": false
     },
+    "SessionForkPlanCall": {
+      "allOf": [
+        { "$ref": "#/$defs/BaseCall" },
+        {
+          "properties": {
+            "method": { "const": "axo.session.fork.plan" },
+            "params": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["sessionId", "destinationHostId"],
+              "properties": {
+                "sessionId": { "$ref": "common.schema.json#/$defs/SessionId" },
+                "destinationHostId": { "$ref": "common.schema.json#/$defs/SessionId" }
+              }
+            }
+          }
+        }
+      ],
+      "required": ["params"],
+      "unevaluatedProperties": false
+    },
+    "SessionForkCall": {
+      "allOf": [
+        { "$ref": "#/$defs/BaseCall" },
+        {
+          "properties": {
+            "method": { "const": "axo.session.fork" },
+            "params": {
+              "oneOf": [
+                { "$ref": "#/$defs/SessionIdParams" },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["sessionId", "destinationHostId", "requestId"],
+                  "properties": {
+                    "sessionId": { "$ref": "common.schema.json#/$defs/SessionId" },
+                    "destinationHostId": { "$ref": "common.schema.json#/$defs/SessionId" },
+                    "requestId": { "$ref": "common.schema.json#/$defs/SessionId" },
+                    "folder": { "type": "string", "minLength": 1 },
+                    "agent": { "$ref": "host-relay.schema.json#/$defs/ForkAgent" }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["sourceHostId", "sessionId", "epoch", "head", "requestId"],
+                  "properties": {
+                    "sourceHostId": { "$ref": "common.schema.json#/$defs/SessionId" },
+                    "sessionId": { "$ref": "common.schema.json#/$defs/SessionId" },
+                    "epoch": { "type": "integer", "minimum": 1 },
+                    "head": { "type": "integer", "minimum": 0 },
+                    "requestId": { "$ref": "common.schema.json#/$defs/SessionId" },
+                    "folder": { "type": "string", "minLength": 1 },
+                    "agent": { "$ref": "host-relay.schema.json#/$defs/ForkAgent" }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "required": ["params"],
+      "unevaluatedProperties": false
+    },
+    "SessionForkPlanResult": { "$ref": "host-relay.schema.json#/$defs/RemoteSessionForkPlanResult" },
+    "CrossHostForkResult": { "$ref": "host-relay.schema.json#/$defs/RemoteSessionForkResult" },
+    "ForkHarnessUnavailable": { "$ref": "host-relay.schema.json#/$defs/ForkHarnessUnavailable" },
     "SessionCloseCall": {
       "allOf": [
         {

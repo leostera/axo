@@ -756,6 +756,7 @@ fn a_question_is_told_to_the_account_and_withdrawn_there_when_its_asker_leaves()
 }
 
 const FORK_METHOD: &str = "axo.remote.session.fork";
+const FORK_PLAN: &str = "axo.remote.session.fork.plan";
 const PEER: &str = "11111111-0000-4000-8000-000000000001";
 const PEER_GENERATION: &str = "11111111-0000-4000-8000-000000000002";
 const SOURCE: &str = "11111111-0000-4000-8000-000000000003";
@@ -808,15 +809,25 @@ fn fork_hub(with_source: bool) -> FakeHub {
 fn a_cross_host_fork_copies_an_exact_confirmed_snapshot_and_retries_the_same_child() {
     let hub = fork_hub(true);
     let (axod, target) = linked(&hub, Pi::Fake);
-    let mut params = json!({"target":target,"sourceHostId":PEER,"sessionId":SOURCE,"epoch":4,"head":2,"requestId":REQUEST});
-    axod.wait_for("the destination's committed peer mirror", || {
-        match hub.call(FORK_METHOD, params.clone()) {
-            Err(error) if error["message"] == "Choose a destination folder" => Some(()),
+    let snapshot =
+        json!({"target":target,"sourceHostId":PEER,"sessionId":SOURCE,"epoch":4,"head":2});
+    let plan = axod.wait_for("the destination's committed peer mirror", || {
+        match hub.call(FORK_PLAN, snapshot.clone()) {
+            Ok(plan) => Some(plan),
             Err(error) if matches!(error["code"].as_i64(), Some(-32004 | -32024)) => None,
             other => panic!("unexpected fork answer: {other:?}"),
         }
     });
+    assert_eq!(
+        plan,
+        json!({"sourceAgent":"pi","historyFormat":"pi/3","decision":{"kind":"keep","agent":"pi"}})
+    );
     assert!(axod.sessions().is_empty());
+    assert!(axod.pi_log().is_empty());
+    let mut params = snapshot.clone();
+    params["requestId"] = json!(REQUEST);
+    let missing = hub.call(FORK_METHOD, params.clone()).unwrap_err();
+    assert_eq!(missing["message"], "Choose a destination folder");
     let mut wrong = params.clone();
     wrong["target"]["hostGeneration"] = json!(PEER_GENERATION);
     assert_eq!(
@@ -834,7 +845,20 @@ fn a_cross_host_fork_copies_an_exact_confirmed_snapshot_and_retries_the_same_chi
     let alias = axod.home().join("destination-link");
     std::os::unix::fs::symlink(&folder, &alias).unwrap();
     params["folder"] = json!(alias);
+    let mut unsupported = params.clone();
+    unsupported["agent"] = json!("codex");
+    let refusal = hub.call(FORK_METHOD, unsupported.clone()).unwrap_err();
+    assert_eq!(
+        refusal["data"],
+        json!({"kind":"forkHarnessUnavailable","created":false})
+    );
+    assert!(axod.sessions().is_empty());
+    assert!(axod.pi_log().is_empty());
     let created = hub.ok(FORK_METHOD, params.clone());
+    assert_eq!(
+        hub.call(FORK_METHOD, unsupported).unwrap_err()["code"],
+        INVALID_PARAMS
+    );
     assert_eq!(created["session"]["hostId"], target["hostId"]);
     let id = &created["session"]["sessionId"];
     assert_ne!(id, SOURCE);
@@ -904,6 +928,36 @@ fn a_cross_host_fork_copies_an_exact_confirmed_snapshot_and_retries_the_same_chi
 }
 
 #[test]
+fn a_fork_neither_installs_nor_falls_back_when_pi_goes_missing_after_planning() {
+    let hub = fork_hub(true);
+    let executable = std::env::temp_dir().join(format!(
+        "axo-fork-pi-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    std::os::unix::fs::symlink(support::runfile("AXO_TEST_FAKE_PI"), &executable).unwrap();
+    let (axod, target) = linked(&hub, Pi::Path(executable.clone()));
+    let mut snapshot =
+        json!({"target":target,"sourceHostId":PEER,"sessionId":SOURCE,"epoch":4,"head":2});
+    let plan = axod.wait_for("a compatible destination", || {
+        hub.call(FORK_PLAN, snapshot.clone()).ok()
+    });
+    assert_eq!(plan["decision"]["kind"], "keep");
+    std::fs::remove_file(&executable).unwrap();
+    let unavailable = hub.ok(FORK_PLAN, snapshot.clone());
+    assert_eq!(unavailable["decision"], json!({"kind":"unavailable"}));
+    snapshot["requestId"] = json!(REQUEST);
+    snapshot["folder"] = json!(axod.home());
+    let refused = hub.call(FORK_METHOD, snapshot).unwrap_err();
+    assert_eq!(
+        refused["data"],
+        json!({"kind":"forkHarnessUnavailable","created":false})
+    );
+    assert!(axod.sessions().is_empty());
+    assert!(axod.pi_log().is_empty());
+}
+
+#[test]
 fn the_local_bridge_resolves_its_own_published_snapshot_and_checks_the_peer_reply() {
     let hub = fork_hub(false);
     let (axod, target) = linked(&hub, Pi::Fake);
@@ -940,7 +994,28 @@ fn the_local_bridge_resolves_its_own_published_snapshot_and_checks_the_peer_repl
             .then_some(())
     });
     let path = format!("/peers/{PEER}/client");
-    let params = json!({"sessionId":source,"destinationHostId":PEER,"requestId":REQUEST});
+    let plan = json!({"sourceAgent":"pi","historyFormat":"pi/3","decision":{"kind":"choose","agents":["codex"]}});
+    hub.respond_on_peer(&path, "axo.client.command", Answer::Result(plan.clone()));
+    assert_eq!(
+        axod.ok(
+            "axo.session.fork.plan",
+            json!({
+                "sessionId": source, "destinationHostId": PEER,
+            })
+        ),
+        plan
+    );
+    assert_eq!(
+        hub.wait_for_request("axo.client.command")["params"],
+        json!({
+            "hostId": PEER, "method": FORK_PLAN, "params": {
+                "target":{"hostId":PEER,"hostGeneration":PEER_GENERATION}, "sourceHostId":target["hostId"],
+                "sessionId":source,"epoch":4,"head":2
+            }
+        })
+    );
+    let params =
+        json!({"sessionId":source,"destinationHostId":PEER,"requestId":REQUEST,"agent":"codex"});
     hub.respond_on_peer(
         &path,
         "axo.client.command",
@@ -948,13 +1023,27 @@ fn the_local_bridge_resolves_its_own_published_snapshot_and_checks_the_peer_repl
     );
     let error = axod.err("axo.session.fork", params.clone());
     assert_eq!(error.message, "Choose a destination folder");
-    let forwarded = hub.wait_for_request("axo.client.command");
+    let forwarded = hub.wait_for("the selected Codex fork", |message| {
+        message["method"] == "axo.client.command" && message["params"]["method"] == FORK_METHOD
+    });
     assert_eq!(
         forwarded["params"],
         json!({ "hostId": PEER, "method": FORK_METHOD, "params": {
             "target":{"hostId":PEER,"hostGeneration":PEER_GENERATION}, "sourceHostId":target["hostId"],
-            "sessionId":source,"epoch":4,"head":2,"requestId":REQUEST
+            "sessionId":source,"epoch":4,"head":2,"requestId":REQUEST,"agent":"codex"
         }})
+    );
+    let unavailable = json!({"kind":"forkHarnessUnavailable","created":false});
+    hub.respond_on_peer(
+        &path,
+        "axo.client.command",
+        Answer::StructuredError(json!({
+            "code": -32003, "message": "Selected harness unavailable", "data": unavailable,
+        })),
+    );
+    assert_eq!(
+        axod.err("axo.session.fork", params.clone()).data,
+        unavailable
     );
     let wrong = json!({ "session": { "hostId": target["hostId"], "sessionId": CHILD, "name":"Fork", "status":"ready",
         "hasAgent":true, "shells":[], "updatedAt":"2026-11-21T00:00:00Z" } });

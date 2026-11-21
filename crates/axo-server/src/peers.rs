@@ -453,6 +453,7 @@ impl Peers {
             return Err(PeerCommandError {
                 code: -32602,
                 message: format!("{} cannot be sent to another Mac", request.method),
+                data: None,
             });
         }
         let access = self.access().map_err(|_| PeerCommandError::offline())?;

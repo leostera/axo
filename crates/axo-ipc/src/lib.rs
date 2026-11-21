@@ -25,6 +25,6 @@ pub fn rpc_error(error: axo_protocol::rpc::MethodError) -> RpcError {
     RpcError {
         code: ErrorCode::from(error.code),
         message: error.message,
-        data: None,
+        data: error.data,
     }
 }

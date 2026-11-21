@@ -443,6 +443,7 @@ impl<'a> Follower<'a> {
                         .as_str()
                         .unwrap_or("The Mac refused the command")
                         .to_owned(),
+                    data: error.get("data").cloned(),
                 }));
                 Ok(())
             }
@@ -960,6 +961,7 @@ impl<'a> Follower<'a> {
                 let _ = command.reply.send(Err(PeerCommandError {
                     code: axo_protocol::rpc::error_code::STALE_HOST,
                     message: "Stale host".to_owned(),
+                    data: None,
                 }));
                 return Ok(());
             }

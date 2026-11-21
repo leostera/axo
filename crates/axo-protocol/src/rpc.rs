@@ -14,6 +14,8 @@ use crate::{ConfigKey, LayoutNode, SessionId, SessionRecord, ShellId};
 pub struct MethodError {
     pub code: i64,
     pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<serde_json::Value>,
 }
 
 impl MethodError {
@@ -21,7 +23,13 @@ impl MethodError {
         Self {
             code,
             message: message.into(),
+            data: None,
         }
+    }
+
+    pub fn with_data(mut self, data: serde_json::Value) -> Self {
+        self.data = Some(data);
+        self
     }
 
     /// The parameters are not what the method takes.
@@ -82,6 +90,7 @@ pub mod method {
     pub const SESSION_TIMER_CREATE: &str = "axo.session.timer.create";
     pub const SESSION_TIMER_LIST: &str = "axo.session.timer.list";
     pub const SESSION_TIMER_CANCEL: &str = "axo.session.timer.cancel";
+    pub const SESSION_FORK_PLAN: &str = "axo.session.fork.plan";
     pub const SESSION_FORK: &str = "axo.session.fork";
     pub const SESSION_CREATE: &str = "axo.session.create";
     pub const SESSION_CLOSE: &str = "axo.session.close";
@@ -146,6 +155,8 @@ pub mod method {
         SESSION_CATALOG,
         SESSION_CREATE,
         SESSION_FORK,
+        #[cfg(unix)]
+        SESSION_FORK_PLAN,
         SESSION_CLOSE,
         SESSION_REOPEN,
         SESSION_RENAME,

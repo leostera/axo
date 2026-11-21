@@ -183,6 +183,14 @@ impl Extension for Remote {
         add(
             handler,
             core,
+            crate::forks::REMOTE_PLAN,
+            |core, request: ForkPlanParams| async move {
+                crate::forks::destination_plan(core, request.snapshot()).await
+            },
+        );
+        add(
+            handler,
+            core,
             crate::forks::REMOTE_METHOD,
             |core, request: ForkSessionParams| async move {
                 crate::forks::destination_fork(
@@ -194,6 +202,7 @@ impl Extension for Remote {
                         head: request.head,
                         request_id: request.request_id,
                         folder: request.folder,
+                        agent: request.agent,
                     },
                 )
                 .await
@@ -588,10 +597,27 @@ macro_rules! params {
     };
 }
 
+impl ForkPlanParams {
+    fn snapshot(self) -> crate::forks::SnapshotRequest {
+        crate::forks::SnapshotRequest {
+            source_host_id: self.source_host_id,
+            session_id: self.session_id,
+            epoch: self.epoch,
+            head: self.head,
+        }
+    }
+}
+
 params! {
     AgentsParams {}
     AgentModelsParams { agent: axo_agent::AgentKind }
     SessionTargetParams { session_id: SessionId }
+    ForkPlanParams {
+        source_host_id: String,
+        session_id: SessionId,
+        epoch: u64,
+        head: u64,
+    }
     ForkSessionParams {
         source_host_id: String,
         session_id: SessionId,
@@ -599,6 +625,7 @@ params! {
         head: u64,
         request_id: SessionId,
         folder: Option<std::path::PathBuf>,
+        agent: Option<axo_agent::AgentKind>,
     }
     CreateSessionParams {
         like: Option<SessionId> = default,
