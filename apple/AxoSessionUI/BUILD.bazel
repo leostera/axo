@@ -1,10 +1,17 @@
 load("@rules_swift//swift:swift_library.bzl", "swift_library")
+load("@rules_swift//swift:swift_test.bzl", "swift_test")
 
 swift_library(
     name = "AxoSessionUI",
     module_name = "AxoSessionUI",
-    srcs = ["SessionForkSheet.swift"],
+    srcs = ["ForkConfirmation.swift", "SessionForkSheet.swift"],
     copts = ["-swift-version", "5"],
     visibility = ["//apple:__subpackages__"],
-    deps = ["//apple/AxoClient"],
+    deps = ["//apple/AxoClient", "//apple/AxoProtocol"],
+)
+
+swift_test(
+    name = "AxoSessionUITests",
+    srcs = ["ForkConfirmationTests.swift"],
+    deps = [":AxoSessionUI", "//apple/AxoClient", "//apple/AxoProtocol"],
 )

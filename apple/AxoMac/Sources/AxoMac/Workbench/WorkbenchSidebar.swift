@@ -29,8 +29,11 @@ struct WorkbenchSidebar: View {
       }
     }
     .sheet(item: $fork) { operation in
-      SessionForkSheet(machine: operation.destination.label) { requestID, folder in
-        try await sessions.forkSession(operation.sessionID, to: operation.destination, requestID: requestID, folder: folder)
+      SessionForkSheet(machine: operation.destination.label,
+        retry: sessions.pendingFork(operation.sessionID, to: operation.destination)) {
+        try await sessions.planSessionFork(operation.sessionID, to: operation.destination)
+      } fork: { requestID, folder, agent in
+        return try await sessions.forkSession(operation.sessionID, to: operation.destination, requestID: requestID, folder: folder, agent: agent)
       }
     }
   }

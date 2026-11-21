@@ -21,7 +21,8 @@ protocol AxodClient: AnyObject {
   func createSession(like sessionID: SessionID) async throws -> TerminalSession
   /// Running `agent`, beside `sessionID` or at home (RFD0072).
   func createSession(agent: CodingAgent, like sessionID: SessionID?) async throws -> TerminalSession
-  func forkSession(_ sessionID: SessionID, to destinationHostID: UUID, requestID: UUID, folder: String?) async throws -> RemoteSession
+  func planSessionFork(_ sessionID: SessionID, to destinationHostID: UUID) async throws -> SessionForkPlan
+  func forkSession(_ sessionID: SessionID, to destinationHostID: UUID, requestID: UUID, folder: String?, agent: CodingAgent?) async throws -> RemoteSession
   func closeSession(_ sessionID: SessionID) async throws -> ClosedTerminalSession
   func reopenClosedSession() async throws -> TerminalSession
   func renameSession(_ sessionID: SessionID, to name: String) async throws -> TerminalSession

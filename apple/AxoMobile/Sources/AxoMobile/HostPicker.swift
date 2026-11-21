@@ -17,14 +17,21 @@ struct HostPicker: View {
     let id = UUID()
     let source: SessionForkSnapshot
     let destination: RemoteHost
+    let credential: UUID
+    let retry: SessionForkAttempt?
   }
 
   var body: some View {
     picker
       .popover(item: $fork) { operation in
-        SessionForkSheet(machine: operation.destination.label) { requestID, folder in
+        SessionForkSheet(machine: operation.destination.label, retry: operation.retry) {
+          guard operation.credential == phone.agentDiscoveryRevision else { throw SessionForkError.selectionChanged }
+          return try await phone.planSessionFork(from: operation.source, to: operation.destination.reference)
+        } fork: { requestID, folder, agent in
+          guard operation.credential == phone.agentDiscoveryRevision else { throw SessionForkError.selectionChanged }
           try await phone.forkSession(from: operation.source, to: operation.destination.reference,
-            requestID: requestID, folder: folder)
+            requestID: requestID, folder: folder, agent: agent)
+          return nil
         }
         .presentationCompactAdaptation(.popover)
       }
@@ -49,7 +56,9 @@ struct HostPicker: View {
                 phone.chooseHost(candidate.hostId, voice: voice)
               } else {
                 do {
-                  fork = Fork(source: try phone.forkSnapshot(), destination: candidate)
+                  let retry = phone.pendingFork(to: candidate.reference)
+                  fork = Fork(source: try retry?.snapshot ?? phone.forkSnapshot(), destination: candidate,
+                    credential: phone.agentDiscoveryRevision, retry: retry?.attempt)
                 } catch {
                   forkError = error.localizedDescription
                 }

@@ -9,9 +9,6 @@ public struct SessionForkSnapshot: Equatable, Sendable {
   public let head: Int64
 
   public init(_ source: RemoteSession) throws {
-    guard source.agent == .pi, source.hasAgent != false else {
-      throw SessionForkError.unsupportedAgent
-    }
     guard let epoch = source.epoch, epoch > 0, let head = source.head, head > 0 else {
       throw SessionForkError.historyUnavailable
     }
@@ -22,19 +19,38 @@ public struct SessionForkSnapshot: Equatable, Sendable {
   }
 }
 
-public enum SessionForkError: LocalizedError {
-  case unsupportedAgent
+/// An unacknowledged submission must be replayed with exactly the same payload and ID.
+public struct SessionForkAttempt: Equatable, Sendable {
+  public let id: UUID
+  public let folder: String?
+  public let agent: CodingAgent?
+
+  public init(id: UUID = UUID(), folder: String?, agent: CodingAgent?) {
+    self.id = id
+    self.folder = folder
+    self.agent = agent
+  }
+}
+
+public enum SessionForkError: LocalizedError, Equatable {
+  case harnessUnavailable
   case historyUnavailable
   case destinationUnavailable
   case selectionChanged
+  case pendingAttempt
 
   public var errorDescription: String? {
     switch self {
-    case .unsupportedAgent: "Only Pi sessions can be forked."
-    case .historyUnavailable: "This session’s Pi history is not available to fork yet."
+    case .harnessUnavailable: "The selected harness is no longer available."
+    case .historyUnavailable: "This session’s history is not available to fork yet."
     case .destinationUnavailable: "The destination machine is no longer available."
     case .selectionChanged: "This session is no longer available to fork here."
+    case .pendingAttempt: "Retry the existing fork before requesting a new one."
     }
+  }
+
+  public static func permitsNewAttempt(_ error: Error) -> Bool {
+    (error as? Self) == .harnessUnavailable || needsDestinationFolder(error)
   }
 
   public static func needsDestinationFolder(_ error: Error) -> Bool {

@@ -675,21 +675,57 @@ final class TerminalSessionsModel {
     peerHosts.filter { $0.hostId != peerHostBySession[source] && UUID(uuidString: $0.hostId) != nil }
   }
 
-  func forkSession(_ source: SessionID, to destination: PeerHost, requestID: UUID, folder: String?) async throws {
+  private func forkDestinationID(_ source: SessionID, to destination: PeerHost) throws -> UUID {
     guard session(for: source) != nil else { throw SessionForkError.selectionChanged }
     guard let destinationID = UUID(uuidString: destination.hostId),
       forkDestinations(for: source).contains(where: { $0.hostId == destination.hostId && $0.online })
     else { throw SessionForkError.destinationUnavailable }
+    return destinationID
+  }
+
+  @ObservationIgnored private var forkAttempts: [SessionID: [String: SessionForkAttempt]] = [:]
+  @ObservationIgnored private var sendingForks: Set<UUID> = []
+
+  func pendingFork(_ source: SessionID, to destination: PeerHost) -> SessionForkAttempt? {
+    forkAttempts[source]?[destination.hostId]
+  }
+
+  func planSessionFork(_ source: SessionID, to destination: PeerHost) async throws -> SessionForkPlan {
+    let destinationID = try forkDestinationID(source, to: destination)
+    let plan = try await requireClient().planSessionFork(source, to: destinationID)
+    _ = try forkDestinationID(source, to: destination)
+    return plan
+  }
+
+  @discardableResult
+  func forkSession(_ source: SessionID, to destination: PeerHost, requestID: UUID, folder: String?, agent: CodingAgent? = nil) async throws -> URL? {
+    let destinationID = try forkDestinationID(source, to: destination)
     let revision = navigationRevision
-    // The daemon is authoritative about the source agent, owner and published history boundary.
-    let child = try await requireClient().forkSession(source, to: destinationID, requestID: requestID, folder: folder)
-    guard navigationRevision == revision else { return }
+    let attempt = SessionForkAttempt(id: requestID, folder: folder, agent: agent)
+    guard pendingFork(source, to: destination).map({ $0 == attempt }) != false,
+      sendingForks.insert(requestID).inserted else { throw SessionForkError.pendingAttempt }
+    defer { sendingForks.remove(requestID) }
+    forkAttempts[source, default: [:]][destination.hostId] = attempt
+    let child: RemoteSession
+    do {
+      child = try await requireClient().forkSession(source, to: destinationID, requestID: requestID, folder: folder, agent: agent)
+    } catch {
+      if SessionForkError.permitsNewAttempt(error) { forkAttempts[source]?[destination.hostId] = nil }
+      throw error
+    }
+    forkAttempts[source]?[destination.hostId] = nil
+    // The native peer pane runs Pi; don't open it for an alternative harness.
+    if (child.agent ?? agent) != nil, (child.agent ?? agent) != .pi {
+      return RelayEndpoint.production.webURL("/app/\(child.hostId.uuidString.lowercased())/\(child.sessionId.rawValue)")
+    }
+    guard navigationRevision == revision else { return nil }
     if let host = peerHostBySession[child.sessionId], UUID(uuidString: host) == destinationID {
       showSession(child.sessionId)
     } else {
       pendingForkChild = (child.sessionId, destinationID)
       await refreshPeerSessions()
     }
+    return nil
   }
 
   func createSession(inFolder folder: String) async {

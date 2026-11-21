@@ -186,13 +186,18 @@ public final class AxodConnection: Sendable {
       SessionCreateRequest(folder: nil, like: sessionID, name: nil, agent: agent == .pi ? nil : agent))
   }
 
+  public func planSessionFork(_ sessionID: SessionID, to destinationHostID: UUID) async throws -> SessionForkPlan {
+    try await call(AxodMethods.crossHostSessionForkPlan, CrossHostSessionForkPlanRequest(
+      sessionId: sessionID, destinationHostId: destinationHostID.uuidString.lowercased()))
+  }
+
   /// Axod resolves the source owner and snapshot, and dispatches the fork to the destination.
   public func forkSession(
-    _ sessionID: SessionID, to destinationHostID: UUID, requestID: UUID, folder: String?
+    _ sessionID: SessionID, to destinationHostID: UUID, requestID: UUID, folder: String?, agent: CodingAgent? = nil
   ) async throws -> RemoteSession {
     let created = try await call(AxodMethods.crossHostSessionFork, CrossHostSessionForkRequest(
       sessionId: sessionID, destinationHostId: destinationHostID.uuidString.lowercased(),
-      requestId: requestID.uuidString.lowercased(), folder: folder))
+      requestId: requestID.uuidString.lowercased(), folder: folder, agent: agent))
     return try created.session.forkChild(of: sessionID, on: destinationHostID)
   }
 

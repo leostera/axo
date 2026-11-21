@@ -10,10 +10,14 @@ extension AccountConnection {
     try await HostConnection(account: self, host: host).availableCodingAgents()
   }
 
+  public func planSessionFork(from snapshot: SessionForkSnapshot, to host: RemoteHostRef) async throws -> SessionForkPlan {
+    try await HostConnection(account: self, host: host).planSessionFork(from: snapshot)
+  }
+
   public func forkSession(
-    from snapshot: SessionForkSnapshot, to host: RemoteHostRef, requestID: UUID, folder: String?
+    from snapshot: SessionForkSnapshot, to host: RemoteHostRef, requestID: UUID, folder: String?, agent: CodingAgent? = nil
   ) async throws -> RemoteSession {
-    try await HostConnection(account: self, host: host).forkSession(from: snapshot, requestID: requestID, folder: folder)
+    try await HostConnection(account: self, host: host).forkSession(from: snapshot, requestID: requestID, folder: folder, agent: agent)
   }
 }
 
@@ -63,15 +67,23 @@ public struct HostConnection: Sendable {
         SessionCreateTarget(target: host, like: sessionID, name: nil, agent: agent == .pi ? nil : agent)))
   }
 
+  public func planSessionFork(from snapshot: SessionForkSnapshot) async throws -> SessionForkPlan {
+    try await call("axo.remote.session.fork.plan", forkBoundary(snapshot))
+  }
+
+  private func forkBoundary(_ snapshot: SessionForkSnapshot) -> SessionForkBoundary {
+    SessionForkBoundary(target: host, sourceHostId: snapshot.hostID.uuidString.lowercased(),
+      sessionId: snapshot.sessionID, epoch: snapshot.epoch, head: snapshot.head)
+  }
+
   /// Forks a confirmed snapshot onto this host without changing the source Session.
   public func forkSession(
-    from snapshot: SessionForkSnapshot, requestID: UUID, folder: String? = nil
+    from snapshot: SessionForkSnapshot, requestID: UUID, folder: String? = nil, agent: CodingAgent? = nil
   ) async throws -> RemoteSession {
     try await session(from: call(
       "axo.remote.session.fork",
-      SessionForkTarget(target: host, sourceHostId: snapshot.hostID.uuidString.lowercased(),
-        sessionId: snapshot.sessionID, epoch: snapshot.epoch, head: snapshot.head,
-        requestId: requestID.uuidString.lowercased(), folder: folder)))
+      SessionForkTarget(boundary: forkBoundary(snapshot),
+        requestId: requestID.uuidString.lowercased(), folder: folder, agent: agent)))
       .forkChild(of: snapshot.sessionID, on: host.hostId)
   }
 
@@ -270,14 +282,28 @@ private struct SessionCreateTarget: Encodable, Sendable {
   let name: String?
   var agent: CodingAgent? = nil
 }
-private struct SessionForkTarget: Encodable, Sendable {
+private struct SessionForkBoundary: Encodable, Sendable {
   let target: RemoteHostRef
   let sourceHostId: String
   let sessionId: SessionID
   let epoch: Int64
   let head: Int64
+}
+private struct SessionForkTarget: Encodable, Sendable {
+  let boundary: SessionForkBoundary
   let requestId: String
   let folder: String?
+  let agent: CodingAgent?
+
+  private enum CodingKeys: String, CodingKey { case requestId, folder, agent }
+
+  func encode(to encoder: Encoder) throws {
+    try boundary.encode(to: encoder)
+    var container = encoder.container(keyedBy: CodingKeys.self)
+    try container.encode(requestId, forKey: .requestId)
+    try container.encodeIfPresent(folder, forKey: .folder)
+    try container.encodeIfPresent(agent, forKey: .agent)
+  }
 }
 private struct SessionTarget: Encodable, Sendable {
   let target: RemoteHostRef

@@ -708,6 +708,46 @@ final class AccountConnectionTests: XCTestCase {
     XCTAssertEqual(child.sessionId, 7)
   }
 
+  func testMacPlansAndSendsExplicitCodexUsingOnlyTheLocalBridge() async throws {
+    let transport = FakeTransport()
+    let client = AxodConnection(transport: transport)
+    let target = host.hostId
+    let requestID = UUID()
+    async let plan = client.planSessionFork(3, to: target)
+    let channel = try await transport.channel(0)
+    let lookup = try await request(channel, 0)
+    XCTAssertEqual(lookup["method"] as? String, "axo.session.fork.plan")
+    XCTAssertEqual(lookup["params"] as? [String: String], [
+      "sessionId": SessionID.fixture(3).rawValue, "destinationHostId": target.uuidString.lowercased(),
+    ])
+    channel.reply(to: try XCTUnwrap(lookup["id"] as? Int),
+      result: #"{"sourceAgent":"pi","historyFormat":"pi/3","decision":{"kind":"choose","agents":["codex"]}}"#)
+    let options = try await plan
+    XCTAssertEqual(options.decision, .choose([.codex]))
+
+    for (index, data) in [
+      #"{"kind":"forkHarnessUnavailable","created":true}"#,
+      #"{"kind":"forkHarnessUnavailable","created":false}"#,
+    ].enumerated() {
+      async let fork = client.forkSession(3, to: target, requestID: requestID, folder: #"C:\repo"#, agent: .codex)
+      let send = try await request(channel, index + 1)
+      XCTAssertEqual(send["method"] as? String, "axo.session.fork")
+      XCTAssertEqual(send["params"] as? [String: String], [
+        "sessionId": SessionID.fixture(3).rawValue, "destinationHostId": target.uuidString.lowercased(),
+        "requestId": requestID.uuidString.lowercased(), "folder": #"C:\repo"#, "agent": "codex",
+      ])
+      let id = try XCTUnwrap(send["id"] as? Int)
+      channel.send(raw: #"{"jsonrpc":"2.0","id":\#(id),"error":{"code":-32004,"message":"forkHarnessUnavailable","data":\#(data)}}"#)
+      do {
+        _ = try await fork
+        XCTFail("rejection cannot confirm a child")
+      } catch {
+        XCTAssertEqual((error as? SessionForkError) == .harnessUnavailable, index == 1)
+        XCTAssertEqual(SessionForkError.permitsNewAttempt(error), index == 1)
+      }
+    }
+  }
+
   func testMacForkUsesLocalBridgeAndRejectsOriginalAsChild() async throws {
     let transport = FakeTransport()
     let client = AxodConnection(transport: transport)

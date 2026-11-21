@@ -1,3 +1,4 @@
+import AxoClient
 import AxoProtocol
 import Foundation
 import Observation
@@ -604,6 +605,40 @@ final class TerminalSessionsModelPublishingTests: XCTestCase {
     XCTAssertEqual(model.sidebarMacs, .all)
   }
 
+  func testWindowsCodexRetryUsesSameRequestAndOffersWebInsteadOfPiPane() async throws {
+    let suite = "axo-fork-windows-\(UUID())"
+    let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+    defer { defaults.removePersistentDomain(forName: suite) }
+    let client = FakeAxodClient()
+    client.methods.append(AxodMethodName.peerSessionsList.rawValue)
+    client.sessions = [TerminalSession(id: 1, folder: "/", shells: [])]
+    let hostID = UUID()
+    let windows = PeerHost(hostId: hostID.uuidString.lowercased(), label: "Windows", online: true, hostKind: "windows")
+    client.peers = PeerSessionList(connected: true, hosts: [windows], sessions: [])
+    let model = TerminalSessionsModel(client: client, selectedSessionDefaults: defaults)
+    await model.refresh()
+    model.showSession(1)
+    let requestID = UUID()
+    client.forkResult = .failure(AxoClientError.requestTimedOut)
+    do {
+      try await model.forkSession(1, to: windows, requestID: requestID, folder: nil, agent: .codex)
+      XCTFail("lost reply cannot confirm the child")
+    } catch {}
+    XCTAssertEqual(model.pendingFork(1, to: windows)?.id, requestID)
+    do {
+      try await model.forkSession(1, to: windows, requestID: UUID(), folder: nil)
+      XCTFail("an unknown outcome cannot switch harness or request IDs")
+    } catch {
+      XCTAssertEqual(error as? SessionForkError, .pendingAttempt)
+    }
+    client.forkResult = .success(RemoteSession(hostId: hostID, sessionId: 9, agent: .codex))
+    let url = try await model.forkSession(1, to: windows, requestID: requestID, folder: nil, agent: .codex)
+    XCTAssertEqual(url?.absoluteString, "https://axo.leostera.dev/app/\(windows.hostId)/\(SessionID.fixture(9).rawValue)")
+    XCTAssertNil(model.pendingFork(1, to: windows))
+    XCTAssertEqual(model.selectedSessionID, 1)
+    XCTAssertTrue(client.openedPeers.isEmpty)
+  }
+
   func testForkWaitsForPeerListingBeforeShowingChildAndKeepsSourceOnFailure() async throws {
     let suite = "axo-fork-sidebar-\(UUID())"
     let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
@@ -618,6 +653,7 @@ final class TerminalSessionsModelPublishingTests: XCTestCase {
     await model.refresh()
     model.showSession(1)
 
+    client.forkResult = .failure(AxoClientError.serverRejected(code: -32602, message: "Choose a destination folder"))
     do {
       try await model.forkSession(1, to: host, requestID: UUID(), folder: nil)
       XCTFail("a rejected fork cannot navigate")

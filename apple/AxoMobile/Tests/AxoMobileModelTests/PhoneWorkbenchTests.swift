@@ -148,7 +148,10 @@ final class PhoneWorkbenchTests: XCTestCase {
       switch request.method {
       case "axo.client.session.open":
         return .result(Wire.opened(epoch: nil, []))
+      case "axo.remote.session.fork.plan":
+        return .result(#"{"sourceAgent":"pi","historyFormat":"pi/3","decision":{"kind":"choose","agents":["codex"]}}"#)
       case "axo.remote.session.fork":
+        guard request.params["agent"] as? String == "codex" else { return .error(-32602, "Expected explicit harness") }
         guard request.params["folder"] as? String == "/src/project" else {
           return .error(-32602, "Choose a destination folder")
         }
@@ -161,14 +164,17 @@ final class PhoneWorkbenchTests: XCTestCase {
     phone.select(host: first.id, session: 1)
     let origin = try XCTUnwrap(phone.selection)
     phone.setDraft("A’s unsent draft", for: origin)
-    XCTAssertThrowsError(try phone.forkSnapshot(), "unknown agents cannot fork")
+    XCTAssertThrowsError(try phone.forkSnapshot(), "an unavailable snapshot cannot fork")
     let boundary = ClientSession(hostId: first.id, sessionId: 1, metadata: .init(agent: .pi), epoch: 2, head: 55)
     phone.hosts.update(sessions: [boundary], of: first.id)
     let snapshot = try phone.forkSnapshot()
     let target = try XCTUnwrap(phone.hosts.hosts.first { $0.hostId == second.id }).reference
     XCTAssertEqual(snapshot.head, 55)
+    let plan = try await phone.planSessionFork(from: snapshot, to: target)
+    XCTAssertEqual(plan.decision, .choose([.codex]))
+    XCTAssertEqual(phone.selection, origin)
     do {
-      try await phone.forkSession(from: snapshot, to: target, requestID: UUID(), folder: nil)
+      try await phone.forkSession(from: snapshot, to: target, requestID: UUID(), folder: nil, agent: .codex)
       XCTFail("a missing destination folder must not create a session")
     } catch {
       XCTAssertTrue(SessionForkError.needsDestinationFolder(error))
@@ -176,7 +182,7 @@ final class PhoneWorkbenchTests: XCTestCase {
     XCTAssertEqual(phone.selection, origin)
     XCTAssertEqual(phone.draft(for: origin), "A’s unsent draft")
 
-    try await phone.forkSession(from: snapshot, to: target, requestID: UUID(), folder: "/src/project")
+    try await phone.forkSession(from: snapshot, to: target, requestID: UUID(), folder: "/src/project", agent: .codex)
     XCTAssertEqual(phone.selection, .init(host: second.id, session: 7))
     XCTAssertEqual(phone.current?.selectedSession?.displayName, "Fork")
     XCTAssertEqual(phone.draft(for: origin), "A’s unsent draft")

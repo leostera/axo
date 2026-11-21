@@ -246,6 +246,9 @@ public actor JSONRPCConnection {
       throw AxoClientError.invalidResponse("could not decode the reply: \(error)")
     }
     if let error = decoded.error {
+      if error.data?.kind == "forkHarnessUnavailable", error.data?.created == false {
+        throw SessionForkError.harnessUnavailable
+      }
       throw AxoClientError.serverRejected(code: error.code, message: error.message)
     }
     guard let result = decoded.result else {
@@ -305,4 +308,20 @@ private struct JSONRPCReply<Result: Decodable>: Decodable {
 private struct JSONRPCErrorObject: Decodable {
   let code: Int
   let message: String
+  let data: ForkFailure?
+
+  private enum CodingKeys: String, CodingKey { case code, message, data }
+
+  init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    code = try container.decode(Int.self, forKey: .code)
+    message = try container.decode(String.self, forKey: .message)
+    // Other RPC methods can use any shape for error.data.
+    data = try? container.decode(ForkFailure.self, forKey: .data)
+  }
+
+  struct ForkFailure: Decodable {
+    let kind: String
+    let created: Bool
+  }
 }

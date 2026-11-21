@@ -8,7 +8,8 @@ public protocol AccountFeed: ChatFeed {
   var events: AsyncStream<AccountEvent> { get }
   var connectionLost: AsyncStream<Void> { get }
   func availableCodingAgents(on host: RemoteHostRef) async throws -> [CodingAgent]
-  func forkSession(from snapshot: SessionForkSnapshot, to host: RemoteHostRef, requestID: UUID, folder: String?) async throws -> RemoteSession
+  func planSessionFork(from snapshot: SessionForkSnapshot, to host: RemoteHostRef) async throws -> SessionForkPlan
+  func forkSession(from snapshot: SessionForkSnapshot, to host: RemoteHostRef, requestID: UUID, folder: String?, agent: CodingAgent?) async throws -> RemoteSession
   func connect() async throws
   func disconnect() async
   func refresh() async throws -> ClientHello
@@ -570,18 +571,62 @@ public final class PhoneWorkbench {
     return try SessionForkSnapshot(source)
   }
 
-  public func forkSession(
-    from snapshot: SessionForkSnapshot, to target: RemoteHostRef, requestID: UUID, folder: String?
-  ) async throws {
+  private struct ForkRoute: Hashable {
+    let credential: UUID
+    let source: Selection
+    let target: RemoteHostRef
+  }
+
+  @ObservationIgnored private var forkAttempts: [ForkRoute: (SessionForkSnapshot, SessionForkAttempt)] = [:]
+  @ObservationIgnored private var sendingForks: Set<UUID> = []
+
+  private func forkRoute(from source: Selection, to target: RemoteHostRef) -> ForkRoute {
+    ForkRoute(credential: account.credentialRevision, source: source, target: target)
+  }
+
+  public func pendingFork(to target: RemoteHostRef) -> (snapshot: SessionForkSnapshot, attempt: SessionForkAttempt)? {
+    guard let selection else { return nil }
+    return forkAttempts[forkRoute(from: selection, to: target)]
+  }
+
+  private func checkForkRoute(from snapshot: SessionForkSnapshot, to target: RemoteHostRef) throws {
     guard selection == Selection(host: snapshot.hostID, session: snapshot.sessionID) else {
       throw SessionForkError.selectionChanged
     }
     guard target.hostId != snapshot.hostID, hosts.hosts.contains(where: { $0.reference == target && $0.status == .online }) else {
       throw SessionForkError.destinationUnavailable
     }
+  }
+
+  public func planSessionFork(from snapshot: SessionForkSnapshot, to target: RemoteHostRef) async throws -> SessionForkPlan {
+    try checkForkRoute(from: snapshot, to: target)
+    let credential = account.credentialRevision
+    let plan = try await feed.planSessionFork(from: snapshot, to: target)
+    guard account.credentialRevision == credential else { throw SessionForkError.selectionChanged }
+    try checkForkRoute(from: snapshot, to: target)
+    return plan
+  }
+
+  public func forkSession(
+    from snapshot: SessionForkSnapshot, to target: RemoteHostRef, requestID: UUID, folder: String?, agent: CodingAgent? = nil
+  ) async throws {
+    try checkForkRoute(from: snapshot, to: target)
     let navigation = navigationRevision
     let credential = account.credentialRevision
-    let child = try await feed.forkSession(from: snapshot, to: target, requestID: requestID, folder: folder)
+    let route = forkRoute(from: Selection(host: snapshot.hostID, session: snapshot.sessionID), to: target)
+    let attempt = SessionForkAttempt(id: requestID, folder: folder, agent: agent)
+    guard forkAttempts[route].map({ $0.0 == snapshot && $0.1 == attempt }) != false,
+      sendingForks.insert(requestID).inserted else { throw SessionForkError.pendingAttempt }
+    defer { sendingForks.remove(requestID) }
+    forkAttempts[route] = (snapshot, attempt)
+    let child: RemoteSession
+    do {
+      child = try await feed.forkSession(from: snapshot, to: target, requestID: requestID, folder: folder, agent: agent)
+    } catch {
+      if SessionForkError.permitsNewAttempt(error) { forkAttempts[route] = nil }
+      throw error
+    }
+    forkAttempts[route] = nil
     guard account.credentialRevision == credential else { return }
     hosts.registerFork(child)
     if navigationRevision == navigation {
