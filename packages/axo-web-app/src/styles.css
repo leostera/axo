@@ -203,6 +203,8 @@ button:disabled { cursor: default; }
 
 .message { display: flex; flex-direction: column; gap: 10px; }
 .user-message { align-items: flex-end; }
+.user-message + .user-message { margin-top: calc(4px - var(--gap)); }
+.user-message:has(+ .user-message) > .message-time { display: none; }
 .user-bubble {
   max-width: min(calc(100% - 48px), 600px); padding: 13px 17px; border: 0.5px solid color-mix(in srgb, var(--blue) 34%, transparent);
   border-radius: 23px; background: color-mix(in srgb, var(--blue) 24%, transparent);
@@ -330,6 +332,13 @@ button:disabled { cursor: default; }
 .output-sheet-text { min-height: 0; max-height: none; flex: 1; }
 
 /* What a Mac's agent asks the person (RFD0029): a tool card in blue, answered in place. */
+.inline-approval { padding: 24px 0; border-bottom: 1px solid var(--separator); display: grid; gap: 6px; font-size: 15px; overflow-wrap: anywhere; }
+.inline-approval .tool-heading { color: var(--secondary); font-size: 12px; }
+.inline-approval strong, .inline-approval p { white-space: pre-wrap; }
+.inline-approval p { margin: 0; color: var(--secondary); }
+.inline-approval .elicitation-actions { justify-content: flex-end; gap: 12px; padding-top: 12px; }
+.inline-approval .elicitation-button { min-height: 44px; padding-inline: 18px; border: none; color: var(--text); background: var(--fill-strong); }
+.inline-approval .elicitation-button.primary { color: var(--bg); background: var(--text); }
 .tool-card.elicitation-card { --tint: var(--blue); }
 .elicitation-card .tool-heading .icon { color: var(--blue); }
 .elicitation-card .spinner { width: 14px; height: 14px; }

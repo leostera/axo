@@ -264,7 +264,8 @@ export function PendingView({ prompt, onDismiss }: { prompt: WaitingPrompt; onDi
  * What a Mac's agent asks the person (RFD0029). Only the person can answer: the agent waits for
  * Yes or No, and an answer from any of their devices settles it everywhere.
  */
-export function ElicitationCard({ question, canAnswer, onAnswer }: {
+export function ElicitationCard({ question, canAnswer, onAnswer, inline = false }: {
+  inline?: boolean;
   question: AskedQuestion;
   canAnswer: boolean;
   onAnswer: (action: "accept" | "decline", values?: Record<string, string>) => void;
@@ -274,14 +275,17 @@ export function ElicitationCard({ question, canAnswer, onAnswer }: {
   const disabled = !canAnswer || answering !== null;
   // Axo's computer-use gate asks before an action it stopped; only axod's own tools can say so.
   const title = elicitation.askedBy === "computerUse" ? "Axo asks before acting on your Mac" : "The agent asks you";
+  const split = elicitation.message.search(/[?\n]/) + 1;
+  const headline = elicitation.title || (split ? elicitation.message.slice(0, split).trim() : elicitation.message);
+  const detail = elicitation.title ? elicitation.message : split ? elicitation.message.slice(split).trim() : "";
   return (
-    <div className="tool-card elicitation-card" role="group" aria-label={title}>
+    <div className={inline ? "inline-approval" : "tool-card elicitation-card"} role="group" aria-label={title}>
       <div className="tool-heading">
-        <Icon name={elicitation.askedBy === "computerUse" ? "laptop" : "question"} size={18} />
-        <span className="tool-name">{title}</span>
+        {!inline && <Icon name={elicitation.askedBy === "computerUse" ? "laptop" : "question"} size={18} />}
+        <span>{inline ? (elicitation.askedBy === "computerUse" ? "Mac action · approval required" : "Approval required") : title}</span>
         {answering ? <span className="spinner" aria-hidden="true" /> : null}
       </div>
-      <p className="elicitation-message">{elicitation.message}</p>
+      {inline ? <><strong>{headline}</strong>{detail && <p>{detail}</p>}</> : <p className="elicitation-message">{elicitation.message}</p>}
       <div className="elicitation-actions">
         <button className="elicitation-button primary" disabled={disabled} onClick={() => onAnswer("accept")}>Yes</button>
         <button className="elicitation-button" disabled={disabled} onClick={() => onAnswer("decline")}>No</button>

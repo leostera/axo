@@ -8,9 +8,9 @@ test("global inbox reaches both devices and Yes followed by voice Send never int
   skip: !existsSync(chromePath) && "Chrome/Chromium required", timeout: 60_000,
 }, async () => {
   const cloud = await startCloud(new Map([
-    [sid(1), [record(1, { role: "user", content: "Original chat" })]],
+    [sid(1), [record(1, { role: "user", content: "Original chat", timestamp: 1000 }), record(2, { role: "user", content: "One more", timestamp: 2000 })]],
     [sid(2), [record(1, { role: "user", content: "A different chat" })]],
-  ]), [listed(sid(1), "Original", 1), listed(sid(2), "Different", 1)]);
+  ]), [listed(sid(1), "Original", 2), listed(sid(2), "Different", 1)]);
   let app;
   try {
     app = await startApp(cloud);
@@ -46,6 +46,8 @@ test("global inbox reaches both devices and Yes followed by voice Send never int
       await heading.waitFor();
       assert.ok((await heading.boundingBox()).width > 30, "the active chat title is visible, not screen-reader-only");
     }
+    await desktop.getByText("One more", { exact: true }).waitFor();
+    assert.equal(await desktop.locator(".user-message time:visible").count(), 1);
     const emptyBell = desktop.getByTestId("elicitation-bell");
     assert.equal(await emptyBell.isDisabled(), true);
     await emptyBell.evaluate(button => button.click());
@@ -128,6 +130,7 @@ test("global inbox reaches both devices and Yes followed by voice Send never int
     const inline = desktop.getByTestId("transcript").getByRole("group", { name: "The agent asks you" });
     assert.equal(await inline.count(), 1, "a replay never duplicates the inline card");
     assert.equal(await phone.getByTestId("transcript").getByText(question.message).count(), 0, "other chats stay private");
+    await inline.getByText("Approval required", { exact: true }).waitFor();
     await inline.getByRole("button", { name: "Yes", exact: true }).click();
     await phoneInbox.waitFor({ state: "hidden" });
     await inline.waitFor({ state: "hidden" });

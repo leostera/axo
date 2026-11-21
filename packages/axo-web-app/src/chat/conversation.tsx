@@ -255,7 +255,7 @@ export function Conversation({ workbench, wide, onShowChats, onToggleInfo, onApp
           ) : null}
 
           <HoldRow.Provider value={holdRow}><ConversationRows feed={feed} dismiss={dismiss} /></HoldRow.Provider>
-          {requests.map(question => <ElicitationCard key={question.elicitation.id} question={question}
+          {requests.map(question => <ElicitationCard inline key={question.elicitation.id} question={question}
             canAnswer={online && !chat?.cached && workbench.link === "connected"}
             onAnswer={(action, values) => void workbench.answerQuestion(question.elicitation.id, action, values)} />)}
           {preview ? <PendingView prompt={{ id: "submitting", text: workbench.draft(), files: workbench.attachments().map(file => file.name), state: "sending", mine: true, delivery: "interrupt" }} onDismiss={() => {}} /> : null}
