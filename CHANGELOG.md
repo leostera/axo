@@ -10,6 +10,10 @@ What changed in each published version of Axo. Every publish raises the minor ve
 
 ## Unreleased
 
+## 0.91 (Mac app build 363, axod 107)
+
+- Edit host-local agent guidance in Settings → Agent → System Prompt or `~/.axo/agent/SYSTEM_PROMPT.md`. Both edit the same Markdown file; a blank file keeps Axo’s defaults.
+
 ## 0.90 (Mac app build 362, axod 106)
 
 - Axo’s injected guidance now opens by explaining that a user may override it by explicitly accepting a confirmation or elicitation for that specific override.

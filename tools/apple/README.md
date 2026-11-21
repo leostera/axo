@@ -1,5 +1,9 @@
 # Operated Apple releases
 
+## Mac release checklist
+
+For a Mac-only release, bump `version`, `builds.mac` and `builds.axod` in `config.json`, leave `builds.phone` unchanged, and record the change in `CHANGELOG.md`. Pin clean upstream `main` and run the gates below. Verify the annotated tag points to that exact commit before signing. Publish the stapled ZIP with the official publisher, then independently check `/cdn/latest.json` and the downloaded ZIP's size and SHA-256. The public manifest is written last, not edited by hand. Report installed app and daemon readiness separately from publication.
+
 Reusable code lives here; run state, approval receipts, profiles, device inventories, signed staging copies and artifacts stay in a private directory **outside Git**. Builds and tests still use Bazel. None of these tools creates certificates, changes provisioning, exports keys, resets apps or approves its own actions.
 
 ## Checks
