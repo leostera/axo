@@ -7,10 +7,10 @@ import SwiftUI
 public struct SessionForkSheet: View {
   let machine: String
   let plan: @MainActor () async throws -> SessionForkPlan
-  let fork: @MainActor (UUID, String?, CodingAgent?) async throws -> URL?
+  let fork: @MainActor (UUID, String?, CodingAgent?) async throws -> SessionForkWebHandoff?
   @Environment(\.dismiss) private var dismiss
   @State private var confirmation: ForkConfirmation
-  @State private var childURL: URL?
+  @State private var handoff: SessionForkWebHandoff?
   @State private var folder = ""
   @State private var checking = true
   @State private var submitting = false
@@ -19,7 +19,7 @@ public struct SessionForkSheet: View {
   public init(
     machine: String, retry: SessionForkAttempt? = nil,
     plan: @escaping @MainActor () async throws -> SessionForkPlan,
-    fork: @escaping @MainActor (UUID, String?, CodingAgent?) async throws -> URL?
+    fork: @escaping @MainActor (UUID, String?, CodingAgent?) async throws -> SessionForkWebHandoff?
   ) {
     self.machine = machine
     self.plan = plan
@@ -31,14 +31,15 @@ public struct SessionForkSheet: View {
 
   public var body: some View {
     Group {
-      if let childURL {
+      if let handoff {
         VStack(alignment: .leading, spacing: 14) {
-          Text("Session forked to \(machine)").font(.headline)
+          Text("Forked to \(handoff.agent.displayName) on \(machine)").font(.headline)
+            .accessibilityAddTraits(.isHeader)
           Text("Open the new session in Axo on the web.").foregroundStyle(.secondary)
           HStack {
             Spacer()
             Button("Done") { dismiss() }.keyboardShortcut(.cancelAction)
-            Link("Open in Web", destination: childURL).buttonStyle(.borderedProminent)
+            Link("Open in Web", destination: handoff.url).buttonStyle(.borderedProminent)
           }
         }
       } else {
@@ -160,8 +161,8 @@ public struct SessionForkSheet: View {
     Task {
       defer { submitting = false }
       do {
-        if let url = try await fork(request.id, request.folder, request.agent) {
-          childURL = url
+        if let result = try await fork(request.id, request.folder, request.agent) {
+          handoff = result
         } else {
           dismiss()
         }

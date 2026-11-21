@@ -632,8 +632,13 @@ final class TerminalSessionsModelPublishingTests: XCTestCase {
       XCTAssertEqual(error as? SessionForkError, .pendingAttempt)
     }
     client.forkResult = .success(RemoteSession(hostId: hostID, sessionId: 9, agent: .codex))
-    let url = try await model.forkSession(1, to: windows, requestID: requestID, folder: nil, agent: .codex)
-    XCTAssertEqual(url?.absoluteString, "https://axo.leostera.dev/app/\(windows.hostId)/\(SessionID.fixture(9).rawValue)")
+    let handoff = try await model.forkSession(1, to: windows, requestID: requestID, folder: nil, agent: .codex)
+    let link = try XCTUnwrap(handoff)
+    XCTAssertEqual(link.agent, .codex)
+    let expected = "https://axo.leostera.dev/app/\(windows.hostId)/\(SessionID.fixture(9).rawValue)"
+    XCTAssertEqual(link.url.absoluteString, expected)
+    XCTAssertEqual(link.url.absoluteString, expected, "The handoff remains reusable after success")
+    XCTAssertEqual(client.forkRequests, [requestID, requestID], "Reading or reusing the link never submits a fork")
     XCTAssertNil(model.pendingFork(1, to: windows))
     XCTAssertEqual(model.selectedSessionID, 1)
     XCTAssertTrue(client.openedPeers.isEmpty)

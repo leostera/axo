@@ -32,6 +32,24 @@ public struct SessionForkAttempt: Equatable, Sendable {
   }
 }
 
+/// An acknowledged child whose harness does not run in the native peer pane. This value
+/// carries only a link, never a callback or request that can create another fork.
+public struct SessionForkWebHandoff: Equatable, Sendable {
+  public let agent: CodingAgent
+  public let url: URL
+
+  public init(child: RemoteSession, sourceID: SessionID, destinationID: UUID, agent: CodingAgent) throws {
+    _ = try child.forkChild(of: sourceID, on: destinationID)
+    guard agent != .pi, child.agent == agent else {
+      throw AxoClientError.invalidResponse("the destination did not confirm the requested harness")
+    }
+    self.agent = agent
+    // The production ChatApp uses /app/<hostId>/<sessionId>. Both path segments are typed UUIDs;
+    // only the returned child IDs go in the URL, never credentials or backend-supplied URLs.
+    url = RelayEndpoint.production.webURL("/app/\(child.hostId.uuidString.lowercased())/\(child.sessionId.rawValue)")
+  }
+}
+
 public enum SessionForkError: LocalizedError, Equatable {
   case harnessUnavailable
   case historyUnavailable

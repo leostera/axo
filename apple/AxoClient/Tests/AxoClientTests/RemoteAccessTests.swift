@@ -748,6 +748,28 @@ final class AccountConnectionTests: XCTestCase {
     }
   }
 
+  func testForkHandoffRequiresConfirmedDestinationChildAndHarness() throws {
+    let destination = UUID(uuidString: "ABCDEF00-95FD-4C93-8586-A71A8A52BF73")!
+    let validChild = RemoteSession(
+      hostId: destination, sessionId: 9, name: "https://example.invalid/?token=test", agent: .codex)
+    let handoff = try SessionForkWebHandoff(child: validChild, sourceID: 3, destinationID: destination, agent: .codex)
+    XCTAssertEqual(handoff.url.absoluteString,
+      "https://axo.leostera.dev/app/abcdef00-95fd-4c93-8586-a71a8a52bf73/\(SessionID.fixture(9).rawValue)")
+    XCTAssertNil(handoff.url.query)
+    XCTAssertNil(handoff.url.user)
+    XCTAssertNil(handoff.url.password)
+    XCTAssertNil(handoff.url.fragment)
+
+    for invalid in [
+      RemoteSession(hostId: UUID(), sessionId: 9, agent: .codex),
+      RemoteSession(hostId: destination, sessionId: 3, agent: .codex),
+      RemoteSession(hostId: destination, sessionId: 9, agent: .pi),
+      RemoteSession(hostId: destination, sessionId: 9),
+    ] {
+      XCTAssertThrowsError(try SessionForkWebHandoff(child: invalid, sourceID: 3, destinationID: destination, agent: .codex))
+    }
+  }
+
   func testMacForkUsesLocalBridgeAndRejectsOriginalAsChild() async throws {
     let transport = FakeTransport()
     let client = AxodConnection(transport: transport)

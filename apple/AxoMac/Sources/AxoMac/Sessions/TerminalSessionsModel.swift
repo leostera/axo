@@ -698,7 +698,7 @@ final class TerminalSessionsModel {
   }
 
   @discardableResult
-  func forkSession(_ source: SessionID, to destination: PeerHost, requestID: UUID, folder: String?, agent: CodingAgent? = nil) async throws -> URL? {
+  func forkSession(_ source: SessionID, to destination: PeerHost, requestID: UUID, folder: String?, agent: CodingAgent? = nil) async throws -> SessionForkWebHandoff? {
     let destinationID = try forkDestinationID(source, to: destination)
     let revision = navigationRevision
     let attempt = SessionForkAttempt(id: requestID, folder: folder, agent: agent)
@@ -713,11 +713,13 @@ final class TerminalSessionsModel {
       if SessionForkError.permitsNewAttempt(error) { forkAttempts[source]?[destination.hostId] = nil }
       throw error
     }
-    forkAttempts[source]?[destination.hostId] = nil
     // The native peer pane runs Pi; don't open it for an alternative harness.
-    if (child.agent ?? agent) != nil, (child.agent ?? agent) != .pi {
-      return RelayEndpoint.production.webURL("/app/\(child.hostId.uuidString.lowercased())/\(child.sessionId.rawValue)")
+    if let harness = agent ?? child.agent, harness != .pi {
+      let handoff = try SessionForkWebHandoff(child: child, sourceID: source, destinationID: destinationID, agent: harness)
+      forkAttempts[source]?[destination.hostId] = nil
+      return handoff
     }
+    forkAttempts[source]?[destination.hostId] = nil
     guard navigationRevision == revision else { return nil }
     if let host = peerHostBySession[child.sessionId], UUID(uuidString: host) == destinationID {
       showSession(child.sessionId)
