@@ -4,7 +4,7 @@ use axo_protocol::SessionId;
 use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::{Value, json};
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 pub fn initialize(database: &Connection) -> io::Result<()> {
     database.execute_batch(
