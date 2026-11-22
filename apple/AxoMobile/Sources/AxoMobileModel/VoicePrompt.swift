@@ -66,14 +66,15 @@ public struct VoiceTranscript: Equatable, Sendable, Identifiable {
   }
 }
 
-/// The microphone and the recogniser, as one: the app's is Apple's on-device speech; tests and the
-/// simulator preview use stand-ins.
+/// The microphone and the on-device recognizer, as one.
 @MainActor
 public protocol DictationEngine: AnyObject {
   /// Loudness now, 0...1, read only while the waveform is on screen.
   var audioLevel: Double { get }
   func requestPermission() async -> Bool
-  /// Makes sure the speech model is on the device, downloading it if needed. Done once.
+  /// Whether preparation must run again after the previous recording released the recognizer.
+  var needsPreparationEachTime: Bool { get }
+  /// Makes sure the speech model is ready, downloading it if needed.
   func prepare(progress: @escaping @MainActor (VoiceSetupProgress) -> Void) async throws
   /// Starts listening. What is heard arrives through `heard`; `interrupted` says the audio was
   /// taken away (a call, the headphones unplugged) and listening is over.
@@ -82,6 +83,10 @@ public protocol DictationEngine: AnyObject {
   func finish() async throws -> String
   /// Stops listening and forgets what was heard.
   func cancel() async
+}
+
+public extension DictationEngine {
+  var needsPreparationEachTime: Bool { false }
 }
 
 public enum VoicePromptError: LocalizedError, Equatable {
@@ -160,7 +165,7 @@ public final class VoicePrompt {
       guard await engine.requestPermission() else { return fail(.microphoneDenied, current) }
       guard current == generation else { return }
       do {
-        if !prepared {
+        if !prepared || engine.needsPreparationEachTime {
           state = .preparing(VoiceSetupProgress(stage: .checking))
           try await engine.prepare { [weak self] progress in
             guard let self, current == self.generation, case .preparing = self.state else { return }
@@ -245,10 +250,10 @@ public final class VoicePrompt {
   }
 
   /// A lock/call is not Cancel: keep even tentative recognized words for review, never send.
-  public func interrupt() {
+  public func interrupt(_ error: any Error = VoicePromptError.interrupted) {
     guard isBusy else { return }
     retireWork()
-    if !recoverHeardDraft() { state = .failed(VoicePromptError.interrupted.localizedDescription) }
+    if !recoverHeardDraft() { state = .failed(error.localizedDescription) }
   }
 
   @discardableResult

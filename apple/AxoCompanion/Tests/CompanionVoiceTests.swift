@@ -83,22 +83,8 @@ final class CompanionVoiceTests: XCTestCase {
     XCTAssertEqual(try parsed.transcript(for: request, authentication: .signedIn(login)), "hello world")
   }
 
-  func testRealSpeechFixtureWhenRequested() async throws {
-    #if os(macOS)
-    guard #available(macOS 26, *) else { throw XCTSkip("Requires SpeechAnalyzer") }
-    guard let path = ProcessInfo.processInfo.environment["AXO_REAL_SPEECH_FIXTURE"] else {
-      throw XCTSkip("Opt in with a synthetic speech fixture; ordinary unit tests never download speech models")
-    }
-    let text = try await CompanionAudioTranscriber().transcribe(URL(fileURLWithPath: path))
-    let words = text.lowercased().split { !$0.isLetter }.map(String.init)
-    XCTAssertTrue(words.contains("hello"), "Synthetic hello-world fixture should be recognized")
-    XCTAssertTrue(words.contains("world"), "Synthetic hello-world fixture should be recognized")
-    #endif
-  }
-
   func testOversizedAudioIsRejectedBeforeAnySpeechModelPreparation() async throws {
     #if os(macOS)
-    guard #available(macOS 26, *) else { throw XCTSkip("Requires SpeechAnalyzer") }
     let file = FileManager.default.temporaryDirectory.appendingPathComponent("oversize-voice-\(UUID()).m4a")
     try Data(repeating: 0, count: CompanionVoiceRequest.maximumAudioBytes + 1).write(to: file)
     defer { try? FileManager.default.removeItem(at: file) }

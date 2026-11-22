@@ -41,8 +41,7 @@ final class AppEnvironment: ObservableObject {
       guard let token else { return .signedOut }
       return .signedIn(try CompanionSession(token: token.value))
     }, enabled: !(MobileTransferConfiguration.requested && Bundle.main.bundleIdentifier == "dev.leostera.axo"), transcribeAudio: { url in
-      guard #available(iOS 26, *) else { throw CompanionVoiceFailure.unsupported }
-      return try await CompanionAudioTranscriber().transcribe(url)
+      try await CompanionAudioTranscriber().transcribe(url)
     })
     CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(),
       Unmanaged.passUnretained(self).toOpaque(), { _, observer, _, _, _ in

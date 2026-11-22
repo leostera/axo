@@ -9864,7 +9864,7 @@
           "REPO_MAPPING:rules_swift_package_manager+,bazel_skylib bazel_skylib+",
           "REPO_MAPPING:rules_swift_package_manager+,bazel_tools bazel_tools",
           "REPO_MAPPING:rules_swift_package_manager+,cgrindel_bazel_starlib cgrindel_bazel_starlib+",
-          "FILE:@@//apple/Package.resolved bd8df9093a0e44578c45ca3e2b15f5d0842730b4878421f84e58a12f055e939a"
+          "FILE:@@//apple/Package.resolved 12c7b7eabdf7027308ca160743f2786f622a620dde85b06b14c7b0560ed15911"
         ],
         "generatedRepoSpecs": {
           "swift_package": {
@@ -9878,6 +9878,7 @@
             "repoRuleId": "@@rules_swift_package_manager+//swiftpkg/bzlmod:swift_deps.bzl%_swift_deps_package_repos",
             "attributes": {
               "repo_names": [
+                "swiftpkg_fluidaudio",
                 "swiftpkg_fuzzymatch",
                 "swiftpkg_rive_ios"
               ]
@@ -9920,12 +9921,32 @@
               "bazel_target_mods": "",
               "package_repos": "@@rules_swift_package_manager++swift_deps+swift_deps_package_repos//:package_repos.json"
             }
+          },
+          "swiftpkg_fluidaudio": {
+            "repoRuleId": "@@rules_swift_package_manager+//swiftpkg/internal:swift_package.bzl%swift_package",
+            "attributes": {
+              "bazel_package_name": "swiftpkg_fluidaudio",
+              "commit": "b10bdcb51dcfeedb8001353b4ba363da1a616d6d",
+              "remote": "https://github.com/FluidInference/FluidAudio.git",
+              "version": "0.14.0",
+              "env": {},
+              "env_inherit": [],
+              "cached_json_directory": "",
+              "make_files_read_only": false,
+              "replace_scm_with_registry": false,
+              "target_deps": {},
+              "module_aliases": {},
+              "dep_module_aliases": "",
+              "bazel_target_mods": "",
+              "package_repos": "@@rules_swift_package_manager++swift_deps+swift_deps_package_repos//:package_repos.json"
+            }
           }
         },
         "moduleExtensionMetadata": {
           "explicitRootModuleDirectDeps": [
             "swiftpkg_fuzzymatch",
             "swiftpkg_rive_ios",
+            "swiftpkg_fluidaudio",
             "swift_package"
           ],
           "explicitRootModuleDirectDevDeps": [],

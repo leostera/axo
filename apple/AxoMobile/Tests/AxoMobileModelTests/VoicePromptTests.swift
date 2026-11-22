@@ -22,6 +22,19 @@ final class VoicePromptTests: XCTestCase {
     XCTAssertEqual(engine.starts, 2)
   }
 
+  func testAReleasedRecognizerIsPreparedAgainBeforeTheNextRecording() async throws {
+    let engine = FakeDictation()
+    engine.needsPreparationEachTime = true
+    let voice = VoicePrompt(engine: engine)
+    voice.start()
+    try await until { voice.isListening }
+    voice.cancel()
+    voice.start()
+    try await until { voice.isListening }
+    XCTAssertEqual(engine.preparations, 2)
+    XCTAssertEqual(engine.starts, 2)
+  }
+
   func testWordsShowAsTheyAreHeard() async throws {
     let engine = FakeDictation()
     let voice = VoicePrompt(engine: engine)
@@ -420,6 +433,7 @@ private struct FakeError: LocalizedError { var errorDescription: String? { "fake
 private final class FakeDictation: DictationEngine {
   var audioLevel: Double = 0.5
   var permission = true
+  var needsPreparationEachTime = false
   var prepareError: Error?
   var finishError: Error?
   var holdPreparation = false

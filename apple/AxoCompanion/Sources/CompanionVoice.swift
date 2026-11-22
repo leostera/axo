@@ -54,12 +54,13 @@ struct CompanionVoiceAudioPacket: Codable, Sendable {
 }
 
 public enum CompanionVoiceFailure: String, Codable, Error, LocalizedError, Sendable {
-  case phoneUnavailable, unsupported, noSpeech, invalidAudio, expired, failed
+  case phoneUnavailable, unsupported, noSpeech, invalidAudio, expired, failed, modelNotReady
 
   public var errorDescription: String? {
     switch self {
     case .phoneUnavailable: "Open Axo on your iPhone and try again. Nothing was sent."
-    case .unsupported: "Watch voice needs on-device speech on an iPhone running iOS 26 or later."
+    case .unsupported: "The paired iPhone does not support Watch voice."
+    case .modelNotReady: "Open Axo on your iPhone and tap the microphone to set up English dictation. Nothing was sent."
     case .noSpeech: "Nothing was heard. Try speaking closer to your Watch."
     case .invalidAudio: "The recording could not be read. Nothing was sent."
     case .expired: "Voice transfer timed out. Nothing was sent. Try again with your iPhone nearby."

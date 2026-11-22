@@ -12,7 +12,7 @@ The companion verifies the account with the existing `/api/auth/me` endpoint on 
 4. Tap **↑ Send** to stop the microphone, transcribe on the paired iPhone, and send directly to that Session. There is no review sheet. **× Cancel** discards the attempt, including during transcription. An unsent message remains explicitly retryable without displaying a transcript preview.
 5. Read the streamed conversation. Tools and reasoning remain hidden. Scroll with the Digital Crown; there is no Latest/down-scroll button.
 
-watchOS cannot use Apple's Speech framework. Audio is recorded locally as bounded mono AAC and leaves the Watch **only after Send**. Short recordings use an immediate WatchConnectivity data message; longer recordings and unreachable-message fallbacks use its queued file transport. The iPhone copies incoming temporary files before the delegate returns, runs on-device SpeechAnalyzer/SpeechTranscriber, and returns a request-bound result. Audio is not uploaded to a cloud transcription service. Local temporary recordings are removed on completion/cancellation; the OS manages residual temporary storage after a process crash. Speech models may need Apple's asset download on first use. Keep the paired iPhone nearby; if unavailable, nothing is sent. Phone activation occurs at application launch, including background wakes. Locked-Keychain unavailability is not mistaken for sign-out; non-secret metadata can recognize the already published Watch identity for local transcription only, never grant API access.
+Audio is recorded as bounded mono AAC and leaves the Watch **only after Send**, through WatchConnectivity to the paired iPhone. The iPhone copies incoming temporary files before the delegate returns, transcribes locally with [English Parakeet v2](../AxoMobile/PARAKEET.md), and returns a request-bound result. Audio is not uploaded. To set up the speech model, open Axo on the iPhone and tap the microphone once; if the cache is missing, the Watch reports that setup is needed and sends nothing. Keep the paired iPhone nearby. Phone activation occurs at application launch, including background wakes. Locked-Keychain unavailability is not mistaken for sign-out; non-secret metadata can recognize the already published Watch identity for local transcription only, never grant API access. Temporary recordings are removed on completion/cancellation.
 
 Requests/results are bound to the account, exact sign-in fingerprint, request ID, and expiry. Cancellation fences late callbacks. Audio/file size, duration, reply size, cached replies, and outstanding work are bounded.
 
@@ -131,15 +131,7 @@ A small `Library/Application Support/watch-connection.json` report in the Watch 
 
 Build 44 verified authenticated HTTPS connectivity on an iPhone 15 Pro and Apple Watch Series 10 (watchOS 26.6), followed by a person-sent Watch message and reply. Build 41's WebSocket version could launch but not connect, so launch alone is not connectivity evidence.
 
-Build 45 adds custom recording/phone transcription, warm-session continuity, and automatic same-Session restoration after a Mac restart. Its signed device bundle builds, installs on both devices, and launches on the physical Watch. Build 45's physical connection report verified `state: connected`, `transport: https`, and a completed account hello at `2026-11-12T20:12:10Z`. Automated tests cover authentication, account/host fencing, cached selection/title, suspend retention, stale voice requests/replies, audio message budgets, no speech, oversized input, and locked-phone identity/sign-out behavior. The actual SpeechAnalyzer file path was separately exercised on this Mac using synthetic hello-world speech; it recognized the expected words in about five seconds. Run that opt-in integration check with:
-
-```sh
-say -o /tmp/axo-watch-synthetic-voice.aiff 'Hello world. This is a test message from my watch.'
-bazel test //apple/AxoCompanion:AxoCompanionTests \
-  --test_filter='CompanionVoiceTests/testRealSpeechFixtureWhenRequested' \
-  --test_env=AXO_REAL_SPEECH_FIXTURE=/tmp/axo-watch-synthetic-voice.aiff \
-  --strategy=TestRunner=local --test_timeout=180
-```
+Build 45 adds custom recording/phone transcription, warm-session continuity, and automatic same-Session restoration after a Mac restart. Its signed device bundle builds, installs on both devices, and launches on the physical Watch. Build 45's physical connection report verified `state: connected`, `transport: https`, and a completed account hello at `2026-11-12T20:12:10Z`. Automated tests cover authentication, account/host fencing, cached selection/title, suspend retention, stale voice requests/replies, audio message budgets, no speech, oversized input, and locked-phone identity/sign-out behavior. For the current runtime's opt-in speech fixture see [Parakeet verification](../AxoMobile/PARAKEET.md#verification).
 
 Build 46 restores brand assets and embeds the signed WidgetKit mascot extension. Its real Bazel
 bundle installed on the iPhone and Watch and the Watch process launched successfully. Its

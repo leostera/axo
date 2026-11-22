@@ -79,7 +79,7 @@ struct WorkbenchView: View {
   /// starts as Settings › Chats says.
   @State private var earlierFolded: Bool?
   @State private var showingAllEarlier = false
-  /// Voice prompting, one dictation at a time for the whole app (nil before iOS 26).
+  /// Voice prompting, one dictation at a time for the whole app.
   @State private var voice = Dictation.makeVoicePrompt()
   /// Downloads the pictures tools came back with that are kept in the account's assets.
   private let assetLoader: AssetLoader

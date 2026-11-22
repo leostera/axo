@@ -8,6 +8,11 @@ swift_library(
     srcs = glob(["Sources/**/*.swift"]),
     module_name = "AxoCompanion",
     copts = ["-swift-version", "5"],
+    deps = select({
+        "@platforms//os:ios": ["@swiftpkg_fluidaudio//:FluidAudio"],
+        "@platforms//os:macos": ["@swiftpkg_fluidaudio//:FluidAudio"],
+        "//conditions:default": [],
+    }),
 )
 
 swift_test(

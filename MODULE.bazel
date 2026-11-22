@@ -181,7 +181,7 @@ swift_deps.from_package(
     resolved = "//apple:Package.resolved",
     swift = "//apple:Package.swift",
 )
-use_repo(swift_deps, "swift_package", "swiftpkg_fuzzymatch", "swiftpkg_rive_ios")
+use_repo(swift_deps, "swift_package", "swiftpkg_fluidaudio", "swiftpkg_fuzzymatch", "swiftpkg_rive_ios")
 
 # config.json, config.local.json and what this Mac can do (RFD0021).
 axo_config = use_extension("//bazel/config:extension.bzl", "axo_config")

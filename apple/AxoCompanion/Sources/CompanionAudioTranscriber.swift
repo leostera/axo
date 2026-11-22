@@ -1,58 +1,42 @@
-#if (os(iOS) || os(macOS)) && canImport(Speech)
+#if os(iOS) || os(macOS)
 import AVFoundation
 import Foundation
-import Speech
 
-/// File transcription uses the same on-device SpeechTranscriber as the phone's live voice UI.
-/// Recordings are never uploaded to Axo or to a third-party speech API.
-@available(iOS 26, macOS 26, *)
-public actor CompanionAudioTranscriber {
-  public init() {}
+/// Watch recordings traverse only the existing paired-device transport. The phone decodes them
+/// with the same local English model as live dictation.
+public struct CompanionAudioTranscriber: Sendable {
+  private let speech: ParakeetSpeech
+
+  public init() { self.init(speech: .shared) }
+
+  init(speech: ParakeetSpeech) { self.speech = speech }
 
   public func transcribe(_ url: URL) async throws -> String {
-    let values = try url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
-    guard values.isRegularFile == true, let bytes = values.fileSize,
-      bytes > 0, bytes <= CompanionVoiceRequest.maximumAudioBytes else { throw CompanionVoiceFailure.invalidAudio }
-    let file = try AVAudioFile(forReading: url)
-    let rate = file.processingFormat.sampleRate
-    guard rate > 0, Double(file.length) / rate <= CompanionVoiceRequest.maximumDuration + 2 else {
-      throw CompanionVoiceFailure.invalidAudio
-    }
-    guard SpeechTranscriber.isAvailable else { throw CompanionVoiceFailure.unsupported }
-    var locale = await SpeechTranscriber.supportedLocale(equivalentTo: Locale.current)
-    if locale == nil { locale = await SpeechTranscriber.supportedLocale(equivalentTo: Locale(identifier: "en-US")) }
-    guard let locale else { throw CompanionVoiceFailure.unsupported }
-    _ = try await AssetInventory.reserve(locale: locale)
-    let module = SpeechTranscriber(locale: locale, transcriptionOptions: [], reportingOptions: [], attributeOptions: [])
-    if let installation = try await AssetInventory.assetInstallationRequest(supporting: [module]) {
-      try await withTaskCancellationHandler {
-        try await installation.downloadAndInstall()
-      } onCancel: { installation.progress.cancel() }
-    }
-    try Task.checkCancellation()
-    let analyzer = SpeechAnalyzer(modules: [module], options: .init(priority: .userInitiated, modelRetention: .whileInUse))
-    let results = Task {
-      var text = ""
-      for try await result in module.results where result.isFinal {
-        text += String(result.text.characters)
-      }
-      return text.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
     do {
-      return try await withTaskCancellationHandler {
-        _ = try await analyzer.analyzeSequence(from: file)
-        try await analyzer.finalizeAndFinishThroughEndOfInput()
-        let text = try await results.value
-        guard !text.isEmpty else { throw CompanionVoiceFailure.noSpeech }
-        guard text.utf8.count <= 32_768 else { throw CompanionVoiceFailure.failed }
-        return text
-      } onCancel: {
-        results.cancel()
-        Task { await analyzer.cancelAndFinishNow() }
-      }
+      let values = try url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
+      guard values.isRegularFile == true, let bytes = values.fileSize,
+        bytes > 0, bytes <= CompanionVoiceRequest.maximumAudioBytes else { throw CompanionVoiceFailure.invalidAudio }
+      let file = try AVAudioFile(forReading: url)
+      let format = file.processingFormat
+      guard format.sampleRate > 0, format.sampleRate <= 192_000, (1...2).contains(format.channelCount),
+        file.length > 0, Double(file.length) / format.sampleRate <= CompanionVoiceRequest.maximumDuration + 2
+      else { throw CompanionVoiceFailure.invalidAudio }
+    } catch { throw CompanionVoiceFailure.invalidAudio }
+
+    let id = UUID()
+    do {
+      // A first-time model download is too large for a Watch request/background wake.
+      // Report setup-needed rather than gambling with Send or silently choosing another engine.
+      try await speech.prepare(for: id, allowDownload: false)
+      let text = try await speech.transcribeFile(url, for: id)
+      try Task.checkCancellation()
+      guard !text.isEmpty else { throw CompanionVoiceFailure.noSpeech }
+      guard text.utf8.count <= 32_768 else { throw CompanionVoiceFailure.failed }
+      await speech.release(id)
+      return text
     } catch {
-      results.cancel()
-      await analyzer.cancelAndFinishNow()
+      await speech.release(id)
+      if error as? ParakeetError == .modelNotReady { throw CompanionVoiceFailure.modelNotReady }
       throw error
     }
   }

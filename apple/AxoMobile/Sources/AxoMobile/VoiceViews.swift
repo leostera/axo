@@ -117,7 +117,7 @@ struct VoiceStatusCard: View {
             }
             dismissButton("Cancel") { voice.cancel() }
           }
-          Text("Speech is turned into words on this iPhone; audio never leaves it.")
+          Text("English dictation runs on this device. Audio is never uploaded.")
             .font(.caption).foregroundStyle(.secondary)
           if progress.stage == .downloading {
             ProgressView(value: progress.fraction).tint(.primary)
@@ -144,7 +144,7 @@ struct VoiceStatusCard: View {
   private func title(_ progress: VoiceSetupProgress) -> String {
     switch progress.stage {
     case .checking: "Getting voice ready…"
-    case .downloading: "Downloading the speech model"
+    case .downloading: "Downloading the English speech model"
     case .finishing: "Getting voice ready…"
     }
   }
