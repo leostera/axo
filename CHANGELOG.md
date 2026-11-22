@@ -10,6 +10,10 @@ What changed in each published version of Axo. Every publish raises the minor ve
 
 ## Unreleased
 
+## 0.94 (web and mobile build 92)
+
+- Desktop web dictation runs multilingual Parakeet v3 in the browser. iPhone and iPad use English Parakeet v2 on-device, including recordings received from Watch. Model downloads do not upload recordings.
+
 ## 0.93 (Mac app build 365, mobile build 91, axod 109)
 
 - Answer pending web requests directly in their chat. The global inbox remains available.
