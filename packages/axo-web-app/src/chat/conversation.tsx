@@ -5,7 +5,9 @@ import { BrandIcon } from "./brand-icon.tsx";
 import { hostIcon } from "./host-model.ts";
 import { Icon } from "./icons.tsx";
 import { ElicitationCard, MessageView, PendingView, QuestionCard } from "./message-views.tsx";
-import { appendTranscript, BrowserDictation, VoicePrompt, waveformHeight } from "./voice.ts";
+import { BrowserDictation, dictationUnavailable } from "./browser-dictation.ts";
+import { dictationDownloadMB } from "./parakeet-assets.ts";
+import { appendTranscript, VoicePrompt, waveformHeight } from "./voice.ts";
 import { ConversationFeed, type FeedItem } from "./feed.ts";
 import { HoldRow } from "./tool-views.tsx";
 import { CODING_AGENTS, chatTitle, type ChatWorkbench, type DraftAttachment } from "./workbench.ts";
@@ -42,7 +44,9 @@ export function Conversation({ workbench, wide, onShowChats, onToggleInfo, onApp
   const transcript = chat?.transcript ?? null;
   const online = workbench.canSendToSelection;
   const canCompose = Boolean(host && selection) && !workbench.isSending;
-  const voice = useMemo(() => givenVoice !== undefined ? givenVoice : BrowserDictation.supported ? new VoicePrompt(new BrowserDictation()) : null, [givenVoice]);
+  const engine = useMemo(() => givenVoice === undefined && BrowserDictation.supported ? new BrowserDictation() : null, [givenVoice]);
+  const voice = useMemo(() => givenVoice ?? (engine ? new VoicePrompt(engine) : null), [givenVoice, engine]);
+  useEffect(() => () => engine?.dispose(), [engine]);
 
   // The rows, kept by the feed as the transcript changes; the list renders only as one is added.
   const feed = session && chat ? chat.feed : noFeed;
@@ -383,13 +387,12 @@ function Composer({ workbench, voice, placeholder, canCompose, canSend, onSend, 
   }, [workbench.selection, canCompose, listening]);
 
   // Words said for one chat never land in another.
-  useEffect(() => () => voice?.cancel(), [workbench.selection, voice]);
+  useLayoutEffect(() => () => voice?.cancel(), [workbench.selection, voice]);
 
   // A finished dictation goes after what is typed, and is sent if Send ended it.
   useEffect(() => {
-    const transcript = voice?.transcript;
-    if (!voice || !transcript) return;
-    voice.consume(transcript);
+    const transcript = voice?.consume();
+    if (!transcript) return;
     workbench.setDraft(appendTranscript(workbench.draft(), transcript.text));
     if (transcript.delivery === "send" && canSend && !workbench.isSending) onSend("interrupt");
     else if (window.matchMedia("(pointer: fine)").matches) field.current?.focus();
@@ -527,13 +530,12 @@ function Composer({ workbench, voice, placeholder, canCompose, canSend, onSend, 
             <HostPicker workbench={workbench} />
             <AgentPicker workbench={workbench} />
             <ModelPicker workbench={workbench} session={session} disabled={!canSend || workbench.isSending} />
-            {voice ? (
-              <button type="button" className="round-button composer-mic"
-                disabled={!canCompose || voice.isBusy} onClick={() => void voice.start()}
-                aria-label="Talk" title="Say your message; stop to read it first, or send it straight away">
-                {voiceState === "requestingPermission" ? <span className="spinner" aria-hidden="true" /> : <Icon name="mic" size={20} />}
-              </button>
-            ) : null}
+            <button type="button" className="round-button composer-mic"
+              disabled={!canCompose || Boolean(voice?.isBusy) || voiceState === "needsDownload"} aria-disabled={!voice || undefined}
+              onClick={() => void voice?.start()} aria-label={voice ? "Talk" : dictationUnavailable}
+              title={voice ? "Dictate on this device" : dictationUnavailable}>
+              <Icon name={voice ? "mic" : "micSlash"} size={20} />
+            </button>
             <SendButton ready={ready} onSend={onSend} />
           </div>
         </form>
@@ -885,17 +887,17 @@ const RowView = memo(function RowView({ item, dismiss }: { item: FeedItem; dismi
 const touchTyping = () => window.matchMedia("(pointer: coarse)").matches;
 const zero = () => 0;
 
-/** While listening, the message box becomes this: the words as heard, how loud, and what to do with them. */
+/** While recording, the message box becomes a waveform with Cancel, Stop and Send. */
 function VoiceListeningBar({ voice, canSend }: { voice: VoicePrompt; canSend: boolean }) {
-  const state = voice.state;
-  const finishing = state.kind === "finishing";
-  const heard = state.kind === "listening" ? state.heard : { settled: "", tentative: "" };
-  const empty = !heard.settled && !heard.tentative;
+  const finishing = voice.state.kind === "finishing";
 
   useEffect(() => {
     const onKeyDown = (event: globalThis.KeyboardEvent) => {
-      if (event.key === "Escape") voice.cancel();
-      else if (event.key === "Enter" && !finishing) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        voice.cancel();
+      } else if (event.key === "Enter" && !finishing && !event.defaultPrevented
+        && !(event.target instanceof HTMLElement && event.target.closest("button, input, textarea, select, [contenteditable]"))) {
         event.preventDefault();
         void voice.finish(canSend ? "send" : "draft");
       }
@@ -906,11 +908,7 @@ function VoiceListeningBar({ voice, canSend }: { voice: VoicePrompt; canSend: bo
 
   return (
     <div className="composer voice-listening" role="group" aria-label="Listening">
-      <p className="voice-heard" aria-live="polite">
-        {empty ? <span className="voice-placeholder">{finishing ? "Finishing…" : "Listening…"}</span> : (
-          <>{heard.settled}{heard.settled && heard.tentative ? " " : ""}<span className="voice-tentative">{heard.tentative}</span></>
-        )}
-      </p>
+      <p className="voice-recording-label" role="status">{finishing ? "Transcribing on this device…" : "Listening on this device…"}</p>
       <div className="voice-controls">
         <button type="button" className="round-button inset" onClick={() => voice.cancel()} aria-label="Cancel"><Icon name="close" size={17} /></button>
         {finishing ? <span className="voice-finishing"><span className="spinner" aria-hidden="true" /></span> : <VoiceWaveform voice={voice} />}
@@ -940,14 +938,26 @@ function VoiceWaveform({ voice }: { voice: VoicePrompt }) {
   );
 }
 
-/** Why voice did not work, above the box. */
+/** Setup is explicit and leaves the draft usable; the microphone opens only once the model is ready. */
 function VoiceStatusCard({ voice }: { voice: VoicePrompt }) {
-  if (voice.state.kind !== "failed") return null;
+  const state = voice.state;
+  let message: string;
+  switch (state.kind) {
+    case "checking": message = "Checking dictation files…"; break;
+    case "needsDownload": message = `Download on-device dictation (${dictationDownloadMB} MB). Your audio stays in this browser.`; break;
+    case "downloading": message = `Downloading dictation… ${state.percent}%`; break;
+    case "loading": message = "Loading on-device dictation…"; break;
+    case "requestingPermission": message = "Opening the microphone…"; break;
+    case "failed": message = state.message; break;
+    default: return null;
+  }
+  const failed = state.kind === "failed";
   return (
-    <div className="voice-card" role="alert">
-      <span className="voice-card-icon"><Icon name="micSlash" size={18} /></span>
-      <span className="voice-card-message">{voice.state.message}</span>
-      <button className="plain-icon-button" onClick={() => voice.dismissFailure()} aria-label="Dismiss"><Icon name="close" size={14} /></button>
+    <div className="voice-card">
+      <span className={failed ? "voice-card-icon failed" : "voice-card-icon"}><Icon name={failed ? "micSlash" : "mic"} size={18} /></span>
+      <span className="voice-card-message" role={failed ? "alert" : "status"}>{message}</span>
+      {state.kind === "needsDownload" ? <button className="voice-download" autoFocus onClick={() => void voice.start(true)}>Download</button> : null}
+      <button className="plain-icon-button" onClick={() => voice.cancel()} aria-label={failed ? "Dismiss" : "Cancel"}><Icon name="close" size={14} /></button>
     </div>
   );
 }

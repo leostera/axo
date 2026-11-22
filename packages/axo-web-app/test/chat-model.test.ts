@@ -11,7 +11,7 @@ import { ElicitationNotifications } from "../src/chat/elicitation-notifications.
 import { conversationRows, levelsOf, matchingCommands, matchingModels, modelsByProvider, pendingLabel, runtimeLabel, slashQuery, withCommand } from "../src/chat/pi-controls.ts";
 import type { UploadAsset } from "../src/chat/assets.ts";
 import { safeFileName } from "../src/chat/assets.ts";
-import { appendTranscript, VoicePrompt, voiceMessages, waveformHeight, type DictationEngine, type HeardText } from "../src/chat/voice.ts";
+import { appendTranscript, VoicePrompt, voiceMessages, waveformHeight, type DictationEngine } from "../src/chat/voice.ts";
 import { appsResults, type PiModel } from "@axo/protocol";
 import { oauthStart, parseRoute, parseSettingsRoute, routePath, settingsPath, signInTarget, type SettingsRoute } from "../src/chat/route.ts";
 import { parseAuthenticatedSession } from "../src/auth-session.ts";
@@ -422,36 +422,40 @@ test("Apps reads a listing from a Worker one release older, without the newest d
   assert.deepEqual(app?.kind === "app" && [app.description, app.provider, app.category, app.permissions], ["", "", "", []]);
 });
 
-/** A stand-in for the microphone and recogniser, driven by the test. */
 class FakeDictation implements DictationEngine {
   audioLevel = 0.5;
   allowed = true;
-  heard: ((text: HeardText) => void) | null = null;
+  cached = true;
+  opened = false;
   interrupted: ((message: string) => void) | null = null;
-  final = "";
-  cancelled = 0;
-  async requestPermission() { return this.allowed; }
-  async start(heard: (text: HeardText) => void, interrupted: (message: string) => void) {
-    this.heard = heard;
+  final: string | Promise<string> = "";
+  async prepare(download: boolean) {
+    this.cached ||= download;
+    return this.cached ? "ready" as const : "needsDownload" as const;
+  }
+  async start(interrupted: (message: string) => void) {
+    if (!this.allowed) throw new Error(voiceMessages.microphoneDenied);
+    this.opened = true;
     this.interrupted = interrupted;
   }
   async finish() { return this.final; }
-  cancel() { this.cancelled += 1; }
+  cancel() { this.opened = false; }
 }
 
-test("voice: words show as heard, Stop puts them in the box and Send sends them", async () => {
+test("voice: download is explicit, Stop returns a draft and Send marks it for sending", async () => {
   const engine = new FakeDictation();
+  engine.cached = false;
   const voice = new VoicePrompt(engine);
   await voice.start();
+  assert.equal(voice.state.kind, "needsDownload");
+  assert.equal(engine.opened, false);
+  await voice.start(true);
   assert.equal(voice.state.kind, "listening");
-  engine.heard!({ settled: "look at", tentative: "the lo" });
-  assert.deepEqual(voice.state, { kind: "listening", heard: { settled: "look at", tentative: "the lo" } });
   engine.final = " look at the logs ";
   await voice.finish("draft");
   assert.equal(voice.state.kind, "idle");
-  assert.deepEqual({ text: voice.transcript?.text, delivery: voice.transcript?.delivery }, { text: "look at the logs", delivery: "draft" });
-  voice.consume(voice.transcript!);
-  assert.equal(voice.transcript, null);
+  assert.deepEqual(voice.consume(), { text: "look at the logs", delivery: "draft" });
+  assert.equal(voice.consume(), null);
 
   await voice.start();
   engine.final = "ship it";
@@ -459,20 +463,23 @@ test("voice: words show as heard, Stop puts them in the box and Send sends them"
   assert.equal(voice.transcript?.delivery, "send");
 });
 
-test("voice: a cancel forgets what was heard, and failures say why", async () => {
+test("voice: cancelling during inference drops the stale result; failures say why", async () => {
   const engine = new FakeDictation();
   const voice = new VoicePrompt(engine);
   await voice.start();
+  const result = Promise.withResolvers<string>();
+  engine.final = result.promise;
+  const finishing = voice.finish("send");
   voice.cancel();
+  result.resolve("too late");
+  await finishing;
   assert.equal(voice.state.kind, "idle");
-  engine.heard!({ settled: "too late", tentative: "" });
-  assert.equal(voice.state.kind, "idle", "words after a cancel never come back");
+  assert.equal(voice.consume(), null);
 
   await voice.start();
   engine.final = "  ";
   await voice.finish("draft");
   assert.deepEqual(voice.state, { kind: "failed", message: voiceMessages.noSpeech });
-  voice.dismissFailure();
 
   engine.allowed = false;
   await voice.start();

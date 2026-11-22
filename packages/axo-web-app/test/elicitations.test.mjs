@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { test } from "node:test";
 import { chromePath, hostId, listed, record, sid, startApp, startCloud } from "./fake-cloud.mjs";
+import { mockDictation } from "./dictation-fixture.mjs";
 
 test("global inbox reaches both devices and Yes followed by voice Send never interrupts", {
   skip: !existsSync(chromePath) && "Chrome/Chromium required", timeout: 60_000,
@@ -30,13 +31,8 @@ test("global inbox reaches both devices and Yes followed by voice Send never int
           close() { this.entry.closed = true; }
         }
         window.Notification = FakeNotification;
-        Object.defineProperty(navigator, "mediaDevices", { value: { getUserMedia: async () => new MediaStream() } });
-        window.SpeechRecognition = class {
-          start() { queueMicrotask(() => this.onresult?.({ results: [{ isFinal: true, 0: { transcript: "These are my recorded words." } }] })); }
-          stop() { queueMicrotask(() => this.onend?.()); }
-          abort() { this.onend?.(); }
-        };
       });
+      await page.addInitScript(mockDictation, { text: "These are my recorded words." });
       await page.goto(`${app.appUrl}/__tests__/chat/${hostId}/${session}`, { waitUntil: "networkidle" });
       pages.push(page);
     }

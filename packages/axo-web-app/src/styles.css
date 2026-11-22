@@ -622,15 +622,18 @@ button.host-picker-button:hover { background-color: var(--fill-strong); color: v
 
 /* Listening: the box shows the words as they are heard, how loud, and what to do with them. */
 .voice-listening { flex-direction: column; align-items: stretch; gap: 8px; }
-.voice-heard { max-height: 132px; margin: 0; overflow-y: auto; padding: 6px 12px 0; font-size: 16px; line-height: 22px; white-space: pre-wrap; }
-.voice-placeholder, .voice-tentative { color: var(--secondary); }
+.voice-recording-label { margin: 0; padding: 6px 12px 0; color: var(--secondary); font-size: 14px; line-height: 22px; }
+.composer-mic[aria-disabled="true"] { color: var(--secondary); cursor: default; }
 .voice-controls { display: flex; align-items: center; gap: 10px; }
 .voice-waveform { display: flex; height: 34px; min-width: 0; flex: 1; align-items: center; gap: 3px; }
 .voice-waveform span { min-width: 0; flex: 1; border-radius: 999px; background: var(--secondary); transition: height .05s linear; }
 .voice-finishing { display: flex; height: 34px; flex: 1; align-items: center; justify-content: center; }
 .voice-card { display: flex; align-items: flex-start; gap: 10px; padding: 14px; border-radius: 20px; background: color-mix(in srgb, var(--surface) 85%, transparent); backdrop-filter: blur(30px); font-size: 14px; animation: rise .3s var(--spring); }
-.voice-card-icon { display: grid; color: var(--orange); }
+.voice-card-icon { display: grid; color: var(--secondary); }
+.voice-card-icon.failed { color: var(--orange); }
 .voice-card-message { flex: 1; }
+.voice-download { border: 0; padding: 2px 6px; border-radius: 5px; background: transparent; color: var(--text); font: inherit; font-weight: 600; cursor: pointer; }
+.voice-download:hover, .voice-download:focus-visible { background: color-mix(in srgb, var(--secondary) 16%, transparent); }
 
 /* What the agent is asking. */
 .question-card { display: flex; flex-direction: column; align-items: flex-start; gap: 14px; padding: 18px; border: 1px solid color-mix(in srgb, var(--orange) 40%, transparent); border-radius: 20px; background: var(--surface); }
@@ -802,7 +805,7 @@ button.grouped-row:hover { background: var(--fill); }
   .composer textarea { min-height: 30px; padding: 5px 0 5px 11px; font-size: 13.5px; line-height: 20px; }
   .round-button { width: 30px; height: 30px; }
   .round-button .icon { width: 16px; height: 16px; }
-  .voice-heard { padding: 4px 10px 0; font-size: 13.5px; line-height: 20px; }
+  .voice-recording-label { padding: 4px 10px 0; font-size: 13.5px; line-height: 20px; }
   .voice-controls { gap: 8px; }
   .voice-waveform, .voice-finishing { height: 28px; }
   .voice-card { padding: 10px 12px; border-radius: 14px; font-size: 12.5px; }

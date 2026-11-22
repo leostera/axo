@@ -37,6 +37,15 @@ export default defineConfig(({ command }) => ({
   build: {
     target: "es2022",
   },
+  // Workers load outside Vite's initial dependency scan. Prebundle them so Talk doesn't reload the app in dev.
+  optimizeDeps: {
+    include: [
+      "@axo/web-app > @noble/hashes/sha2.js",
+      "@axo/web-app > @noble/hashes/utils.js",
+      "@axo/web-app > onnxruntime-web",
+      "@axo/web-app > parakeet.js/parakeet",
+    ],
+  },
   server: {
     host: "127.0.0.1",
     port: Number(process.env.PORT ?? 5173),

@@ -190,7 +190,9 @@ export async function startCloud(transcripts, sessions, { models = [], commands 
 }
 
 /** The app, served by Vite from the site, its API the cloud's; and Chrome. */
-export async function startApp(cloud) {
+export async function startApp(cloud, launchBrowser = () => chromium.launch({
+  executablePath: chromePath, headless: true, args: ["--no-sandbox", "--disable-dev-shm-usage"],
+})) {
   cloud.http.listen(0, "127.0.0.1");
   await once(cloud.http, "listening");
   const apiPort = cloud.http.address().port;
@@ -201,7 +203,15 @@ export async function startApp(cloud) {
     root: siteRoot,
     define: { "import.meta.env.VITE_AXO_API_BASE_URL": JSON.stringify(appUrl), __AXO_WEB_BUILD__: JSON.stringify("test") },
     plugins: [react()],
-    optimizeDeps: { force: true }, // Workspace packages can change without changing the lockfile.
+    optimizeDeps: {
+      force: true, // Workspace packages can change without changing the lockfile.
+      include: [
+        "@axo/web-app > @noble/hashes/sha2.js",
+        "@axo/web-app > @noble/hashes/utils.js",
+        "@axo/web-app > onnxruntime-web",
+        "@axo/web-app > parakeet.js/parakeet",
+      ],
+    },
     resolve: { dedupe: ["react", "react-dom"], alias: { "@axo/web-app": resolve(import.meta.dirname, "../src/main.tsx") } },
     server: {
       host: "127.0.0.1", port: appPort, strictPort: true,
@@ -211,7 +221,7 @@ export async function startApp(cloud) {
     logLevel: "error",
   });
   await vite.listen();
-  const browser = await chromium.launch({ executablePath: chromePath, headless: true, args: ["--no-sandbox", "--disable-dev-shm-usage"] });
+  const browser = await launchBrowser();
   return {
     appUrl, browser,
     async close() {

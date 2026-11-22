@@ -9,6 +9,7 @@ import react from "@vitejs/plugin-react";
 import { chromium } from "playwright-core";
 import { WebSocketServer } from "ws";
 import { createServer as createViteServer } from "vite";
+import { mockDictation } from "./dictation-fixture.mjs";
 
 const hostId = "1e1e7f91-3d8f-4f97-8f71-4fc7d53313c6";
 const hostGeneration = "f9c5761c-3b2d-42a8-bb19-9a8c0b8cf230";
@@ -590,20 +591,7 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     assert.ok((await page.getByRole("link", { name: "Continue with Cloudflare" }).getAttribute("href"))
       .endsWith("/api/auth/cloudflare/start"), "the landing page starts the Worker's Cloudflare sign-in");
 
-    // Voice, with stand-ins for the microphone and the browser's speech recognition: a guess at
-    // the words first, then the words settled.
-    await page.addInitScript(() => {
-      const result = (transcript, isFinal) => Object.assign([{ transcript }], { isFinal });
-      window.SpeechRecognition = window.webkitSpeechRecognition = class {
-        start() {
-          setTimeout(() => this.onresult?.({ results: [result("and check the", false)] }), 20);
-          setTimeout(() => this.onresult?.({ results: [result("and check the logs", true)] }), 400);
-        }
-        stop() { setTimeout(() => this.onend?.(), 0); }
-        abort() {}
-      };
-      navigator.mediaDevices.getUserMedia = async () => new AudioContext().createMediaStreamDestination().stream;
-    });
+    await page.addInitScript(mockDictation, { text: "and check the logs", needsDownload: true });
     await page.goto(`${appUrl}/__tests__/chat`, { waitUntil: "networkidle" });
     const chats = page.getByRole("navigation", { name: "Chats" });
     // Chats in groups, as on the Mac: Active (the one a minute old), then Earlier by last activity,
@@ -769,23 +757,38 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     const chooser = page.waitForEvent("filechooser");
     await addMenu.getByRole("menuitem", { name: "Files" }).click();
     assert.equal((await chooser).isMultiple(), true, "Files picks files");
-    // Voice, as on the phone: an empty box offers it where Send goes. While listening the box
-    // shows the words as heard; Stop puts them in the box to read first.
+    // Dictation prepares before opening the microphone; Stop puts the transcript in the draft.
     await box.fill("");
     await page.getByRole("button", { name: "Talk" }).click();
     const listening = page.getByRole("group", { name: "Listening" });
-    await expect(listening.locator(".voice-tentative", { hasText: "and check the" }));
-    await expect(listening.getByText("and check the logs"));
+    await expect(page.getByText(/Your audio stays in this browser/));
+    assert.equal(await listening.count(), 0);
+    await page.getByRole("button", { name: "Download" }).click();
+    await expect(listening.getByText("Listening on this device…"));
     await shot("voice-listening");
     await listening.getByRole("button", { name: "Stop" }).click();
     await page.waitForFunction(() => document.querySelector("textarea[aria-label='Message']")?.value === "and check the logs", null, { timeout: 5_000 });
     assert.equal(await page.getByRole("button", { name: "Talk" }).count(), 1, "voice stays next to Send");
     assert.equal(await page.getByRole("button", { name: "Send" }).isDisabled(), false);
-    // Cancel forgets what was heard.
-    await box.fill("");
+    // Cancellation during inference and inference failure leave the typed draft alone.
+    await box.fill("Keep this draft");
+    await page.evaluate(() => { window.dictationFixture.hold = true; });
     await page.getByRole("button", { name: "Talk" }).click();
+    await listening.getByRole("button", { name: "Send" }).click();
+    await page.waitForFunction(() => window.dictationFixture.inferences === 2);
     await listening.getByRole("button", { name: "Cancel" }).click();
-    assert.equal(await box.inputValue(), "");
+    assert.equal(await box.inputValue(), "Keep this draft");
+    await page.evaluate(() => {
+      window.dictationFixture.hold = false;
+      window.dictationFixture.failure = "Dictation failed (fixture).";
+    });
+    await page.getByRole("button", { name: "Talk" }).click();
+    await listening.getByRole("button", { name: "Send" }).click();
+    await expect(page.getByText("Dictation failed (fixture)."));
+    assert.equal(await box.inputValue(), "Keep this draft");
+    assert.equal(prompts.length, 0);
+    await page.getByRole("button", { name: "Dismiss" }).click();
+    await page.evaluate(() => { window.dictationFixture.failure = null; });
     // Shift-Enter starts a new line rather than sending.
     await box.fill("first line");
     await box.press("Shift+Enter");
@@ -958,8 +961,9 @@ test("browser chats with Axo on a Mac: history, live replies, new chats, info, a
     assert.deepEqual(prompts[1], { sessionId: sid(2), text: "Start fresh" });
     // Send in the listening bar sends what was said.
     await page.getByText("Done with: Start fresh", { exact: true }).waitFor();
+    await page.evaluate(() => { window.dictationFixture.needsDownload = false; });
     await page.getByRole("button", { name: "Talk" }).click();
-    await expect(listening.getByText("and check the logs"));
+    await expect(listening.getByText("Listening on this device…"));
     await listening.getByRole("button", { name: "Send" }).click();
     await expect(page.getByText("Done with: and check the logs", { exact: true }));
     assert.deepEqual(prompts[2], { sessionId: sid(2), text: "and check the logs" });
