@@ -1,20 +1,22 @@
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir, arch, platform, cpus } from "node:os";
+import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { test } from "node:test";
 import { chromium } from "playwright-core";
 import { chromePath, hostId, listed, record, sid, startApp, startCloud } from "./fake-cloud.mjs";
 
 const fixture = process.env.AXO_PARAKEET_FIXTURE;
+const resultsPath = process.env.AXO_PARAKEET_BENCH_RESULTS;
 const expected = process.env.AXO_PARAKEET_TEXT || "The blue notebook is on the kitchen table.";
 const words = text => text.toLowerCase().match(/[a-z]+/g)?.join(" ");
 
 // Opt-in: downloads ~696 MB, with a normal Chrome profile (private mode can fail the cache quota).
 test("real Parakeet WASM: microphone to Stop/Send, cancellation, offline cache and integrity", {
   skip: (!fixture || !existsSync(chromePath)) && "set AXO_PARAKEET_FIXTURE to a synthetic speech WAV and install Chrome",
-  timeout: 300_000,
+  timeout: resultsPath ? 600_000 : 300_000,
 }, async () => {
   const profile = await mkdtemp(join(tmpdir(), "axo-web-parakeet-"));
   const session = sid(1);
@@ -23,7 +25,7 @@ test("real Parakeet WASM: microphone to Stop/Send, cancellation, offline cache a
   let app;
   try {
     app = await startApp(cloud, () => chromium.launchPersistentContext(profile, {
-      executablePath: chromePath, headless: true, args: ["--no-sandbox"],
+      executablePath: chromePath, headless: true, viewport: { width: 1440, height: 960 }, args: ["--no-sandbox"],
     }));
     const external = [];
     const blockedModel = [];
@@ -51,7 +53,31 @@ test("real Parakeet WASM: microphone to Stop/Send, cancellation, offline cache a
       if (request.url().startsWith(app.appUrl)) console.log(request.url(), request.failure());
     });
     await page.addInitScript(base64 => {
+      window.dictationMicCalls = 0;
+      window.dictationWorkerReplies = [];
+      const RealWorker = window.Worker;
+      window.Worker = class extends RealWorker {
+        constructor(url, options) {
+          super(url, options);
+          if (String(url).includes("parakeet.worker")) {
+            this.addEventListener("message", ({ data }) => window.dictationWorkerReplies.push(data.kind));
+          }
+        }
+      };
+      document.addEventListener("click", event => {
+        if (!event.target.closest('button[aria-label="Talk"]')) return;
+        const clickMs = performance.now();
+        window.dictationLatency = new Promise(resolve => {
+          const observer = new MutationObserver(() => {
+            if (!document.querySelector('[aria-label="Listening"]')) return;
+            observer.disconnect();
+            resolve({ clickToListeningMs: performance.now() - clickMs, clickMs });
+          });
+          observer.observe(document, { childList: true, subtree: true });
+        });
+      }, true);
       navigator.mediaDevices.getUserMedia = async () => {
+        window.dictationMicCalls++;
         const audio = new AudioContext();
         const destination = audio.createMediaStreamDestination();
         const source = audio.createBufferSource();
@@ -72,15 +98,19 @@ test("real Parakeet WASM: microphone to Stop/Send, cancellation, offline cache a
     const box = page.getByRole("textbox", { name: "Message" });
     const talk = page.getByRole("button", { name: "Talk" });
     const listening = page.getByRole("group", { name: "Listening" });
-    await page.goto(path);
+    // Let Vite finish dependency discovery before interacting with this first load.
+    await page.goto(path, { waitUntil: "networkidle" });
     await page.getByText("Original chat", { exact: true }).waitFor();
+    assert.deepEqual(await page.evaluate(() => window.dictationWorkerReplies), [], "fresh setup does not prepare in the background");
     await box.fill("Typed draft.");
-    await talk.click();
     const download = page.getByRole("button", { name: "Download", exact: true });
-    await download.waitFor({ timeout: 10_000 }).catch(async error => {
-      console.log(await page.locator("body").innerText());
-      throw error;
-    });
+    // The dev server may reload once when it first discovers the worker's dependencies.
+    const initialLoad = page.waitForEvent("framenavigated", { predicate: frame => frame === page.mainFrame(), timeout: 10_000 });
+    await talk.click();
+    if (await Promise.race([initialLoad.then(() => true), download.waitFor({ timeout: 10_000 }).then(() => false)])) {
+      await talk.click();
+      await download.waitFor({ timeout: 10_000 });
+    }
     assert.equal(external.filter(request => request.host === "huggingface.co").length, 0);
     assert.equal(await page.evaluate(() => typeof window.playDictationFixture), "undefined");
     const cold = performance.now();
@@ -120,6 +150,73 @@ test("real Parakeet WASM: microphone to Stop/Send, cancellation, offline cache a
     assert.equal(runtimeDownloads, 1, "a reload reuses the checked WASM binary too");
     assert.ok(external.every(({ host, method }) => method === "GET" && (host === "huggingface.co" || host.endsWith(".hf.co"))), JSON.stringify(external));
     console.log({ cachedMs, sent: cloud.prompts[0].text });
+
+    if (resultsPath) {
+      const results = {
+        schemaVersion: 1,
+        generatedAt: new Date().toISOString(),
+        commit: execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim(),
+        dirty: Boolean(execFileSync("git", ["status", "--porcelain"], { encoding: "utf8" }).trim()),
+        environment: { platform: platform(), arch: arch(), cpu: cpus()[0]?.model, chrome: await page.evaluate(() => navigator.userAgent), app: "local Vite + fake cloud" },
+        config: { samplesPerDelay: 5, delayMs: [0, 20000] },
+        notes: "Real Talk click to Listening DOM, after page reload with a verified disk cache. Real WASM model and Web Audio graph; synthetic getUserMedia stream (no physical mic or permission prompt).",
+        samples: [],
+      };
+      for (let i = 0; i < results.config.samplesPerDelay; i++) {
+        for (const delayMs of results.config.delayMs) {
+          await page.reload();
+          await talk.waitFor();
+          await page.waitForFunction(() => !document.querySelector('button[aria-label="Talk"]').disabled);
+          const visible = await page.evaluate(() => performance.now());
+          if (delayMs) await new Promise(done => setTimeout(done, delayMs));
+          assert.equal(await page.evaluate(() => window.dictationMicCalls), 0);
+          await talk.click();
+          await listening.waitFor({ timeout: 60_000 });
+          const { clickToListeningMs, clickMs } = await page.evaluate(() => window.dictationLatency);
+          assert.equal(await page.evaluate(() => window.dictationMicCalls), 1);
+          assert.deepEqual(blockedModel, []);
+          assert.equal(runtimeDownloads, 1);
+          results.samples.push({ delayMs, observedDelayMs: Math.round(clickMs - visible), clickToListeningMs: Math.round(clickToListeningMs) });
+          console.log("Reload benchmark", results.samples.at(-1));
+          await writeFile(resultsPath, JSON.stringify(results, null, 2) + "\n");
+          await listening.getByRole("button", { name: "Cancel" }).click();
+        }
+      }
+    }
+
+    // With a complete cache, the worker reaches ready before Talk, but the mic stays closed.
+    await page.reload();
+    await page.waitForFunction(() => window.dictationWorkerReplies.includes("ready"), undefined, { timeout: 60_000 });
+    assert.equal(await page.evaluate(() => window.dictationMicCalls), 0);
+    await box.waitFor();
+    assert.equal(await download.count(), 0);
+    assert.deepEqual(blockedModel, []);
+    assert.equal(runtimeDownloads, 1);
+
+    // A partial cache must not cause a model or WASM fetch, even when every model file is present.
+    await page.evaluate(async () => {
+      const cache = await caches.open("axo-parakeet-v1");
+      const runtime = (await cache.keys()).find(key => new URL(key.url).pathname.endsWith(".wasm"));
+      const backup = await caches.open("dictation-test-runtime-backup");
+      await backup.put(runtime, await cache.match(runtime));
+      await cache.delete(runtime);
+    });
+    await page.reload();
+    await page.waitForFunction(() => window.dictationWorkerReplies.includes("needsDownload"));
+    assert.equal(await download.count(), 0, "a background miss doesn't prompt");
+    assert.equal(await page.evaluate(() => window.dictationMicCalls), 0);
+    assert.deepEqual(blockedModel, []);
+    assert.equal(runtimeDownloads, 1);
+    await talk.click();
+    await download.waitFor();
+    assert.equal(await page.evaluate(() => window.dictationMicCalls), 0);
+    await page.evaluate(async () => {
+      const cache = await caches.open("axo-parakeet-v1");
+      const backup = await caches.open("dictation-test-runtime-backup");
+      const [runtime] = await backup.keys();
+      await cache.put(runtime, await backup.match(runtime));
+      await caches.delete("dictation-test-runtime-backup");
+    });
 
     // Unsupported browsers keep the normal message composer.
     const mobile = await app.browser.newPage();

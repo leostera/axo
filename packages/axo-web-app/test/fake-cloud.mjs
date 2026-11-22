@@ -215,6 +215,8 @@ export async function startApp(cloud, launchBrowser = () => chromium.launch({
     resolve: { dedupe: ["react", "react-dom"], alias: { "@axo/web-app": resolve(import.meta.dirname, "../src/main.tsx") } },
     server: {
       host: "127.0.0.1", port: appPort, strictPort: true,
+      // Report browser errors without an overlay covering the app under test.
+      hmr: { overlay: false },
       fs: { allow: [resolve(siteRoot, "../.."), resolve(realpathSync(resolve(siteRoot, "index.html")), "../../..")] },
       proxy: { "/api": { target: `http://127.0.0.1:${apiPort}`, changeOrigin: true, ws: true } },
     },

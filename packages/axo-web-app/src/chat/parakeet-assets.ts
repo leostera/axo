@@ -19,6 +19,7 @@ export const modelAssets = {
   tokenizer: modelAsset("vocab.txt", 102132, "ba8e4007c65f4bb4358ffe2ecc13d9ccc7a10351151065242b5c3a943e685742"),
 };
 export const modelBytes = Object.values(modelAssets).reduce((sum, asset) => sum + asset.bytes, 0);
+export const parakeetCacheName = "axo-parakeet-v1";
 export const runtimeBytes = 24_911_187;
 export const dictationDownloadMB = Math.ceil((modelBytes + runtimeBytes) / 1_000_000);
 

@@ -1,8 +1,16 @@
 import captureUrl from "./dictation-capture.js?url&no-inline";
-import { dictationSampleRate, maxDictationSamples, type ModelReply, type ModelRequest } from "./parakeet-assets.ts";
+import { dictationSampleRate, maxDictationSamples, modelAssets, parakeetCacheName, type ModelReply, type ModelRequest } from "./parakeet-assets.ts";
 import { voiceMessages, type DictationEngine, type VoiceSetupProgress } from "./voice.ts";
 
 export const dictationUnavailable = "On-device dictation needs a supported desktop browser.";
+
+type PrepareResult = "ready" | "needsDownload";
+
+interface Preparation {
+  result: Promise<PrepareResult>;
+  progress?: VoiceSetupProgress;
+  onProgress?: (state: VoiceSetupProgress) => void;
+}
 
 export class BrowserDictation implements DictationEngine {
   static get supported(): boolean {
@@ -15,17 +23,58 @@ export class BrowserDictation implements DictationEngine {
 
   private worker: Worker | null = null;
   private ready = false;
+  private preparation: Preparation | null = null;
   private stopRequest: (() => void) | null = null;
   private capture: MicrophoneCapture | null = null;
 
   get audioLevel(): number { return this.capture?.audioLevel ?? 0; }
 
-  async prepare(download: boolean, progress: (state: VoiceSetupProgress) => void): Promise<"ready" | "needsDownload"> {
+  /** Speculative setup never uses the download or microphone paths. */
+  async prewarm(signal: AbortSignal): Promise<void> {
+    try {
+      if (signal.aborted || this.ready || this.preparation) return;
+      // The last cached model file is a cheap setup hint. The worker checks every asset, including WASM.
+      const tokenizer = await caches.match(modelAssets.tokenizer.url, { cacheName: parakeetCacheName });
+      if (!tokenizer || signal.aborted || this.ready || this.preparation) return;
+      const preparation = this.beginPrepare(false);
+      const abort = () => {
+        // Once Talk joins, only the explicit dictation lifecycle can cancel it.
+        if (this.preparation === preparation && !preparation.onProgress) this.dispose();
+      };
+      signal.addEventListener("abort", abort, { once: true });
+      try {
+        await preparation.result;
+      } finally {
+        signal.removeEventListener("abort", abort);
+      }
+    } catch {
+      // Background misses and failures never change the composer UI.
+    }
+  }
+
+  async prepare(download: boolean, progress: (state: VoiceSetupProgress) => void): Promise<PrepareResult> {
     if (this.ready) return "ready";
-    const reply = await this.request({ kind: "prepare", download }, progress);
-    if (reply.kind !== "ready") return "needsDownload";
-    this.ready = true;
-    return "ready";
+    const preparation = this.preparation ?? this.beginPrepare(download);
+    preparation.onProgress = progress;
+    if (preparation.progress) progress(preparation.progress);
+    return preparation.result;
+  }
+
+  private beginPrepare(download: boolean): Preparation {
+    const preparation: Preparation = {
+      result: this.request({ kind: "prepare", download }, state => {
+        preparation.progress = state;
+        preparation.onProgress?.(state);
+      }).then((reply): PrepareResult => {
+        if (this.preparation !== preparation || reply.kind !== "ready") return "needsDownload";
+        this.ready = true;
+        return "ready";
+      }).finally(() => {
+        if (this.preparation === preparation) this.preparation = null;
+      }),
+    };
+    this.preparation = preparation;
+    return preparation;
   }
 
   async start(interrupted: (message: string) => void, timeLimit: () => void): Promise<void> {
@@ -45,16 +94,22 @@ export class BrowserDictation implements DictationEngine {
   }
 
   cancel(): void {
-    this.capture?.close();
-    this.capture = null;
+    this.closeCapture();
     if (this.stopRequest) this.dispose();
   }
 
   dispose(): void {
+    this.closeCapture();
+    this.preparation = null;
     this.stopRequest?.();
     this.worker?.terminate();
     this.worker = null;
     this.ready = false;
+  }
+
+  private closeCapture(): void {
+    this.capture?.close();
+    this.capture = null;
   }
 
   private request(message: ModelRequest, progress?: (state: VoiceSetupProgress) => void): Promise<ModelReply> {

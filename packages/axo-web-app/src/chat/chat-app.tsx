@@ -255,7 +255,8 @@ export function ChatApp({ accountId, profile, backend, onSignOut, pairingUrl, ap
           />
         </div>
         <div className="layer layer-conversation" inert={!wide && layer !== "conversation"}>
-          <Conversation workbench={workbench} wide={wide} onShowChats={() => show("chats")} onToggleInfo={toggleInfo}
+          <Conversation workbench={workbench} wide={wide} visible={!settings && !sheet && (wide || layer === "conversation")}
+            onShowChats={() => show("chats")} onToggleInfo={toggleInfo}
             onApps={appsUrl ? () => openSettings({ kind: "apps" }) : undefined} />
         </div>
         {!wide && (layer === "chats" || layer === "account") ? (

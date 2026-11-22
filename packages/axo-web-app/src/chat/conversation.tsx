@@ -26,14 +26,15 @@ const OLDER_SLACK_PX = 400;
  * still hear it), the menu button, the Mac's trouble when it has any, the transcript, what Axo is
  * doing with a way to stop it, and the message box.
  */
-export function Conversation({ workbench, wide, onShowChats, onToggleInfo, onApps, voice: givenVoice }: {
+export function Conversation({ workbench, wide, visible, onShowChats, onToggleInfo, onApps, voice: givenVoice }: {
   workbench: ChatWorkbench;
   wide: boolean;
+  visible: boolean;
   onShowChats: () => void;
   onToggleInfo: () => void;
   /** Settings › Apps: what the Session can use, from the box's + menu (Plugins). */
   onApps?: () => void;
-  /** Tests give their own; otherwise the browser's speech recognition, where there is one. */
+  /** Tests can supply their own voice prompt instead of on-device dictation. */
   voice?: VoicePrompt | null;
 }) {
   noteRender("Conversation");
@@ -47,6 +48,29 @@ export function Conversation({ workbench, wide, onShowChats, onToggleInfo, onApp
   const engine = useMemo(() => givenVoice === undefined && BrowserDictation.supported ? new BrowserDictation() : null, [givenVoice]);
   const voice = useMemo(() => givenVoice ?? (engine ? new VoicePrompt(engine) : null), [givenVoice, engine]);
   useEffect(() => () => engine?.dispose(), [engine]);
+  // Words said for one chat never land in another, including when the composer is stacked away.
+  const hostId = host?.hostId;
+  useLayoutEffect(() => () => voice?.cancel(), [hostId, selection, visible, voice]);
+  const shouldPrewarm = visible && canCompose;
+  useEffect(() => {
+    if (!engine || !shouldPrewarm) return;
+    let attempt: AbortController | undefined;
+    const update = () => {
+      if (document.visibilityState !== "visible") {
+        attempt?.abort();
+        attempt = undefined;
+      } else if (!attempt) {
+        attempt = new AbortController();
+        void engine.prewarm(attempt.signal);
+      }
+    };
+    document.addEventListener("visibilitychange", update);
+    update();
+    return () => {
+      document.removeEventListener("visibilitychange", update);
+      attempt?.abort();
+    };
+  }, [engine, hostId, selection, shouldPrewarm]);
 
   // The rows, kept by the feed as the transcript changes; the list renders only as one is added.
   const feed = session && chat ? chat.feed : noFeed;
@@ -385,9 +409,6 @@ function Composer({ workbench, voice, placeholder, canCompose, canSend, onSend, 
       field.current?.focus({ preventScroll: true });
     }
   }, [workbench.selection, canCompose, listening]);
-
-  // Words said for one chat never land in another.
-  useLayoutEffect(() => () => voice?.cancel(), [workbench.selection, voice]);
 
   // A finished dictation goes after what is typed, and is sent if Send ended it.
   useEffect(() => {

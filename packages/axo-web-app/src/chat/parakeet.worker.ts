@@ -3,7 +3,7 @@ import { bytesToHex } from "@noble/hashes/utils.js";
 import { env } from "onnxruntime-web";
 import wasmUrl from "onnxruntime-web/ort-wasm-simd-threaded.jsep.wasm?url";
 import { ParakeetModel } from "parakeet.js/parakeet";
-import { dictationSampleRate, modelAssets, modelBytes, runtimeBytes, type Asset, type ModelReply, type ModelRequest } from "./parakeet-assets.ts";
+import { dictationSampleRate, modelAssets, modelBytes, parakeetCacheName, runtimeBytes, type Asset, type ModelReply, type ModelRequest } from "./parakeet-assets.ts";
 
 const runtime: Asset = {
   url: new URL(wasmUrl, self.location.href).href,
@@ -11,7 +11,6 @@ const runtime: Asset = {
   sha256: "5febcf74919ee7ba3c7e838290c9ef2c03d6da297f06a8facfd7d22f623d7cd9",
 };
 const assets = [modelAssets.encoder, modelAssets.decoder, modelAssets.tokenizer];
-const cacheName = "axo-parakeet-v1";
 
 let model: ParakeetModel | undefined;
 
@@ -66,10 +65,10 @@ async function readAsset(
 
 async function prepare(download: boolean): Promise<void> {
   if (model) return report({ kind: "ready" });
-  const cache = await caches.open(cacheName).catch(() => {
+  const cache = await caches.open(parakeetCacheName).catch(() => {
     throw new Error("Dictation needs browser storage. Check your browser settings and try again.");
   });
-  if (!download && !(await Promise.all(assets.map(asset => cache.match(asset.url)))).every(Boolean)) {
+  if (!download && !(await Promise.all([runtime, ...assets].map(asset => cache.match(asset.url)))).every(Boolean)) {
     return report({ kind: "needsDownload" });
   }
 
@@ -91,8 +90,8 @@ async function prepare(download: boolean): Promise<void> {
     report({ kind: "loading" });
     // The loader JS is bundled from the locked npm tarball; ORT instantiates only this checked binary.
     if (!env.wasm.wasmBinary) {
-      const binary = await readAsset(cache, runtime, true, () => {});
-      if (!binary) throw new Error("Dictation runtime is missing.");
+      const binary = await readAsset(cache, runtime, download, () => {});
+      if (!binary) return report({ kind: "needsDownload" });
       env.wasm.wasmPaths = { wasm: runtime.url }; // Keep the loader bundled; do not use a runtime CDN.
       env.wasm.wasmBinary = await binary.arrayBuffer();
     }
