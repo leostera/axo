@@ -44,7 +44,10 @@ final class ParakeetTests: XCTestCase {
     let aac = pcm.deletingPathExtension().appendingPathExtension("m4a")
     let speech = ParakeetSpeech(cacheRoot: URL(fileURLWithPath: cache))
     let id = UUID()
-    try await speech.prepare(for: id, allowDownload: true)
+    let clock = ContinuousClock()
+    let setupStart = clock.now
+    try await speech.prepare(for: id, allowDownload: env["AXO_PARAKEET_OFFLINE"] != "1")
+    let setup = setupStart.duration(to: clock.now)
     do {
       try await speech.prepare(for: UUID(), allowDownload: false)
       XCTFail("A second recording must not load another recognizer")
@@ -57,14 +60,20 @@ final class ParakeetTests: XCTestCase {
     try pcmFile.read(into: buffer)
     let channel = try XCTUnwrap(buffer.floatChannelData?[0])
     let samples = Array(UnsafeBufferPointer(start: channel, count: Int(buffer.frameLength)))
+    let pcmStart = clock.now
     let text = try await speech.transcribe(samples, for: id)
+    let pcmElapsed = pcmStart.duration(to: clock.now)
     await speech.release(id)
+    let watchStart = clock.now
     let watchText = try await CompanionAudioTranscriber(speech: speech).transcribe(aac)
-    for (input, transcript) in [("PCM", text), ("Watch AAC", watchText)] {
-      print("Parakeet v2 synthetic fixture [\(input)]: \(transcript)")
+    let watchElapsed = watchStart.duration(to: clock.now)
+    let expected = env["AXO_PARAKEET_EXPECTED"] ?? "Hello world. The little bird is singing in the garden."
+    print("Parakeet v2 setup: \(setup); clip: \(Double(samples.count) / 16_000) s")
+    for (input, transcript, elapsed) in [("PCM", text, pcmElapsed), ("Watch AAC", watchText, watchElapsed)] {
+      print("Parakeet v2 synthetic fixture [\(input), \(elapsed)]: \(transcript)")
       // Punctuation can legitimately differ across inputs and Core ML compute units.
       let words = transcript.lowercased().split { !$0.isLetter }.map(String.init)
-      XCTAssertEqual(words, "hello world the little bird is singing in the garden".components(separatedBy: " "))
+      XCTAssertEqual(words, expected.lowercased().split { !$0.isLetter }.map(String.init))
     }
   }
 }

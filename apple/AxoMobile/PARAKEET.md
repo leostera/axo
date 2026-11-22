@@ -39,3 +39,17 @@ bazel test //apple/AxoCompanion:AxoCompanionTests \
   --test_env=AXO_PARAKEET_FIXTURE=/tmp/axo-parakeet-fixture.wav \
   --test_env=AXO_PARAKEET_TEST_CACHE="$(mktemp -d /tmp/axo-parakeet.XXXXXX)"
 ```
+
+Set `AXO_PARAKEET_EXPECTED` for a different synthetic clip. For a warm-cache offline
+check, reuse the populated cache directory, set `AXO_PARAKEET_OFFLINE=1`, and invoke the
+built test binary with networking denied:
+
+```sh
+bazel build //apple/AxoCompanion:AxoCompanionTests
+# Export AXO_PARAKEET_FIXTURE, AXO_PARAKEET_TEST_CACHE and optionally AXO_PARAKEET_EXPECTED.
+AXO_PARAKEET_OFFLINE=1 sandbox-exec -p '(version 1) (allow default) (deny network*)' \
+  bazel-bin/apple/AxoCompanion/AxoCompanionTests.xctest/Contents/MacOS/AxoCompanionTests
+```
+
+The test reports model preparation, PCM inference after preparation, and Watch AAC
+end-to-end file transcription (including loading from the cache) separately.
