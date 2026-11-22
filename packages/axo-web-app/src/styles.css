@@ -628,7 +628,7 @@ button.host-picker-button:hover { background-color: var(--fill-strong); color: v
 .voice-waveform { display: flex; height: 34px; min-width: 0; flex: 1; align-items: center; gap: 3px; }
 .voice-waveform span { min-width: 0; flex: 1; border-radius: 999px; background: var(--secondary); transition: height .05s linear; }
 .voice-finishing { display: flex; height: 34px; flex: 1; align-items: center; justify-content: center; }
-.voice-card { display: flex; align-items: flex-start; gap: 10px; padding: 14px; border-radius: 20px; background: color-mix(in srgb, var(--surface) 85%, transparent); backdrop-filter: blur(30px); font-size: 14px; animation: rise .3s var(--spring); }
+.voice-card { display: flex; align-items: center; gap: 10px; padding: 14px; border-radius: 20px; background: color-mix(in srgb, var(--surface) 85%, transparent); backdrop-filter: blur(30px); font-size: 14px; animation: rise .3s var(--spring); }
 .voice-card-icon { display: grid; color: var(--secondary); }
 .voice-card-icon.failed { color: var(--orange); }
 .voice-card-message { flex: 1; }
