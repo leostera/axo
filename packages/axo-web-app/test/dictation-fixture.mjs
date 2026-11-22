@@ -23,7 +23,10 @@ export function mockDictation({ text, needsDownload = false, holdPrepare = false
         return report({ kind: "ready" });
       }
       fixture.inferences++;
-      if (fixture.hold) return;
+      if (fixture.hold) {
+        fixture.release = () => report({ kind: "transcript", text });
+        return;
+      }
       if (fixture.failure) return report({ kind: "failed", message: fixture.failure });
       report({ kind: "transcript", text });
     }

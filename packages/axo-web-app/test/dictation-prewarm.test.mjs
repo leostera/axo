@@ -81,6 +81,18 @@ test("only a visible composer prewarms; Talk joins it, and cancellation drops st
     await release(4);
     await listening.waitFor();
     assert.deepEqual(await state(), { prepares: [false, false, false, false, false], terminated: 4, micCalls: 1 });
+
+    // Neither speculative abort nor stacking the composer away should cancel captured audio.
+    await page.evaluate(() => { window.dictationFixture.hold = true; });
+    await listening.getByRole("button", { name: "Stop", exact: true }).click();
+    await page.waitForFunction(() => window.dictationFixture.inferences === 1);
+    await setVisibility("hidden");
+    await page.getByRole("button", { name: "Chats menu" }).click();
+    await page.evaluate(() => window.dictationFixture.release());
+    await setVisibility("visible");
+    await page.getByRole("button", { name: "Conversation", exact: true }).click();
+    await page.waitForFunction(() => document.querySelector('textarea[aria-label="Message"]')?.value === "must not land in the next chat");
+    assert.deepEqual(await state(), { prepares: [false, false, false, false, false], terminated: 4, micCalls: 1 });
     assert.equal(cloud.prompts.length, 0);
   } finally {
     await app.close();

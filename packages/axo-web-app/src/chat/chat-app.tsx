@@ -3,6 +3,8 @@ import { RemoteAxoApi } from "@axo/app";
 import { hostPairingCreateResultSchema } from "@axo/protocol/v1";
 import { AxoMascot } from "../axo-mascot.tsx";
 import { Conversation } from "./conversation.tsx";
+import { BrowserDictation } from "./browser-dictation.ts";
+import { DraftDictation } from "./draft-dictation.ts";
 import { AppsSettings, signInNotice, signInPage } from "./apps.tsx";
 import { ChatList, ChatListSettings, MarkAllRead } from "./chat-list.tsx";
 import { hostIcon } from "./host-model.ts";
@@ -147,6 +149,8 @@ export function ChatApp({ accountId, profile, backend, onSignOut, pairingUrl, ap
 }) {
   const workbench = useMemo(() => new ChatWorkbench(backend ?? new RemoteAxoApi(apiBaseUrl), undefined, undefined, undefined, undefined, assetUploader(apiBaseUrl), accountId ? new ChatCache(accountId) : null), [backend, accountId]);
   useSyncExternalStore(workbench.subscribe, workbench.getVersion);
+  const dictation = useMemo(() => BrowserDictation.supported ? new DraftDictation(workbench, new BrowserDictation()) : null, [workbench]);
+  useEffect(() => dictation?.connect(), [dictation]);
   const wide = useWide();
   const [layer, setLayer] = useState<Layer>("conversation");
   const [infoOpen, setInfoOpen] = useState(false);
@@ -255,7 +259,7 @@ export function ChatApp({ accountId, profile, backend, onSignOut, pairingUrl, ap
           />
         </div>
         <div className="layer layer-conversation" inert={!wide && layer !== "conversation"}>
-          <Conversation workbench={workbench} wide={wide} visible={!settings && !sheet && (wide || layer === "conversation")}
+          <Conversation workbench={workbench} dictation={dictation} wide={wide} visible={!settings && !sheet && (wide || layer === "conversation")}
             onShowChats={() => show("chats")} onToggleInfo={toggleInfo}
             onApps={appsUrl ? () => openSettings({ kind: "apps" }) : undefined} />
         </div>

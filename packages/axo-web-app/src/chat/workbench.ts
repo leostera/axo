@@ -36,6 +36,8 @@ import { ChatTranscript, type Delivery, type TranscriptRecord } from "./transcri
  * first, a page at a time, and only as far back as the person scrolls.
  */
 
+export const maxMessageBytes = 16_000;
+
 /** A chat as the menu and the conversation show it. */
 export interface Session {
   readonly hostId: string;
@@ -1202,13 +1204,27 @@ export class ChatWorkbench {
     return selection.kind === "chat" ? `${this.openHostId}/chat/${selection.sessionId}` : `${this.openHostId}/new`;
   }
 
+  get selectedDraftKey(): string | null {
+    return this.selection ? this.draftKey(this.selection) : null;
+  }
+
+  /** A captured draft key still names its original Mac and chat after navigation. */
+  appendToDraft(key: string, append: (draft: string) => string): string {
+    const text = append(this.drafts.get(key) ?? "");
+    this.writeDraft(key, text);
+    return text;
+  }
+
   draft(selection: Selection | null = this.selection): string {
     return selection ? this.drafts.get(this.draftKey(selection)) ?? "" : "";
   }
 
   setDraft(text: string, selection: Selection | null = this.selection): void {
     if (!selection) return;
-    const key = this.draftKey(selection);
+    this.writeDraft(this.draftKey(selection), text);
+  }
+
+  private writeDraft(key: string, text: string): void {
     if (text) {
       this.drafts.delete(key);
       this.drafts.set(key, text);

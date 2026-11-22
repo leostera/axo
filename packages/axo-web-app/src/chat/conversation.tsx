@@ -1,16 +1,17 @@
-import { memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ClipboardEvent, type KeyboardEvent, type TouchEvent, type WheelEvent } from "react";
+import { memo, useCallback, useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore, type ClipboardEvent, type KeyboardEvent, type TouchEvent, type WheelEvent } from "react";
 import { flushSync } from "react-dom";
 import { AxoMascot } from "../axo-mascot.tsx";
 import { BrandIcon } from "./brand-icon.tsx";
 import { hostIcon } from "./host-model.ts";
 import { Icon } from "./icons.tsx";
 import { ElicitationCard, MessageView, PendingView, QuestionCard } from "./message-views.tsx";
-import { BrowserDictation, dictationUnavailable } from "./browser-dictation.ts";
+import { dictationUnavailable } from "./browser-dictation.ts";
+import type { DraftDictation } from "./draft-dictation.ts";
 import { dictationDownloadMB } from "./parakeet-assets.ts";
-import { appendTranscript, VoicePrompt, waveformHeight } from "./voice.ts";
+import { waveformHeight, type VoicePrompt } from "./voice.ts";
 import { ConversationFeed, type FeedItem } from "./feed.ts";
 import { HoldRow } from "./tool-views.tsx";
-import { CODING_AGENTS, chatTitle, type ChatWorkbench, type DraftAttachment } from "./workbench.ts";
+import { CODING_AGENTS, chatTitle, maxMessageBytes, type ChatWorkbench, type DraftAttachment } from "./workbench.ts";
 import { SendButton, SlashMenu } from "./composer-controls.tsx";
 import { ModelPicker } from "./model-picker.tsx";
 import { matchingCommands, slashQuery, withCommand } from "./pi-controls.ts";
@@ -26,7 +27,7 @@ const OLDER_SLACK_PX = 400;
  * still hear it), the menu button, the Mac's trouble when it has any, the transcript, what Axo is
  * doing with a way to stop it, and the message box.
  */
-export function Conversation({ workbench, wide, visible, onShowChats, onToggleInfo, onApps, voice: givenVoice }: {
+export function Conversation({ workbench, wide, visible, onShowChats, onToggleInfo, onApps, dictation }: {
   workbench: ChatWorkbench;
   wide: boolean;
   visible: boolean;
@@ -34,8 +35,7 @@ export function Conversation({ workbench, wide, visible, onShowChats, onToggleIn
   onToggleInfo: () => void;
   /** Settings › Apps: what the Session can use, from the box's + menu (Plugins). */
   onApps?: () => void;
-  /** Tests can supply their own voice prompt instead of on-device dictation. */
-  voice?: VoicePrompt | null;
+  dictation: DraftDictation | null;
 }) {
   noteRender("Conversation");
   const host = workbench.openHost;
@@ -45,15 +45,14 @@ export function Conversation({ workbench, wide, visible, onShowChats, onToggleIn
   const transcript = chat?.transcript ?? null;
   const online = workbench.canSendToSelection;
   const canCompose = Boolean(host && selection) && !workbench.isSending;
-  const engine = useMemo(() => givenVoice === undefined && BrowserDictation.supported ? new BrowserDictation() : null, [givenVoice]);
-  const voice = useMemo(() => givenVoice ?? (engine ? new VoicePrompt(engine) : null), [givenVoice, engine]);
-  useEffect(() => () => engine?.dispose(), [engine]);
-  // Words said for one chat never land in another, including when the composer is stacked away.
-  const hostId = host?.hostId;
-  useLayoutEffect(() => () => voice?.cancel(), [hostId, selection, visible, voice]);
+  const draftKey = workbench.selectedDraftKey;
+  useLayoutEffect(() => {
+    if (!visible) dictation?.composerHidden();
+  }, [dictation, visible]);
+
   const shouldPrewarm = visible && canCompose;
   useEffect(() => {
-    if (!engine || !shouldPrewarm) return;
+    if (!dictation || !draftKey || !shouldPrewarm) return;
     let attempt: AbortController | undefined;
     const update = () => {
       if (document.visibilityState !== "visible") {
@@ -61,7 +60,7 @@ export function Conversation({ workbench, wide, visible, onShowChats, onToggleIn
         attempt = undefined;
       } else if (!attempt) {
         attempt = new AbortController();
-        void engine.prewarm(attempt.signal);
+        void dictation.prewarm(attempt.signal);
       }
     };
     document.addEventListener("visibilitychange", update);
@@ -70,7 +69,7 @@ export function Conversation({ workbench, wide, visible, onShowChats, onToggleIn
       document.removeEventListener("visibilitychange", update);
       attempt?.abort();
     };
-  }, [engine, hostId, selection, shouldPrewarm]);
+  }, [dictation, draftKey, shouldPrewarm]);
 
   // The rows, kept by the feed as the transcript changes; the list renders only as one is added.
   const feed = session && chat ? chat.feed : noFeed;
@@ -331,7 +330,7 @@ export function Conversation({ workbench, wide, visible, onShowChats, onToggleIn
         {workbench.hostFork ? <HostForkDialog workbench={workbench} fork={workbench.hostFork} /> : null}
         <Composer
           workbench={workbench}
-          voice={voice}
+          dictation={dictation}
           placeholder={!host ? "Choose a Mac to start a draft" : "Message Axo"}
           canCompose={canCompose}
           canSend={online && !workbench.isSending}
@@ -345,7 +344,6 @@ export function Conversation({ workbench, wide, visible, onShowChats, onToggleIn
 }
 
 /** The most a message can be: the Mac takes up to 16,000 bytes of text. */
-export const maxMessageBytes = 16_000;
 const encoder = new TextEncoder();
 
 /**
@@ -354,9 +352,9 @@ const encoder = new TextEncoder();
  * the words. While listening the box becomes the listening bar. With a keyboard, Enter sends and
  * Shift-Enter starts a new line; on a touch screen Return starts a new line and Send sends.
  */
-function Composer({ workbench, voice, placeholder, canCompose, canSend, onSend, onEscape, onApps }: {
+function Composer({ workbench, dictation, placeholder, canCompose, canSend, onSend, onEscape, onApps }: {
   workbench: ChatWorkbench;
-  voice: VoicePrompt | null;
+  dictation: DraftDictation | null;
   placeholder: string;
   canCompose: boolean;
   canSend: boolean;
@@ -383,7 +381,8 @@ function Composer({ workbench, voice, placeholder, canCompose, canSend, onSend, 
   };
   /** Where the caret goes once a paste is in, after React has put the new words in the box. */
   const caret = useRef<number | null>(null);
-  useSyncExternalStore(voice?.subscribe ?? noSubscribe, voice?.getVersion ?? zero);
+  useSyncExternalStore(dictation?.voice.subscribe ?? noSubscribe, dictation?.voice.getVersion ?? zero);
+  const voice = dictation?.forSelection ?? null;
   const voiceState = voice?.state.kind ?? "idle";
   const listening = voiceState === "listening" || voiceState === "finishing";
 
@@ -398,26 +397,18 @@ function Composer({ workbench, voice, placeholder, canCompose, canSend, onSend, 
     }
   }, [draft, listening]);
 
-  const previousSelection = useRef(workbench.selection);
+  const draftKey = workbench.selectedDraftKey;
+  const previousDraft = useRef(draftKey);
   useEffect(() => {
-    const moved = previousSelection.current !== workbench.selection;
-    previousSelection.current = workbench.selection;
+    const moved = previousDraft.current !== draftKey;
+    previousDraft.current = draftKey;
     if (!canCompose || listening) return;
     // The first render can have a disabled composer. Try again when it becomes ready, without
     // stealing focus from a dialog, search field or an interaction during reconnect.
     if (moved || !document.activeElement || document.activeElement === document.body) {
       field.current?.focus({ preventScroll: true });
     }
-  }, [workbench.selection, canCompose, listening]);
-
-  // A finished dictation goes after what is typed, and is sent if Send ended it.
-  useEffect(() => {
-    const transcript = voice?.consume();
-    if (!transcript) return;
-    workbench.setDraft(appendTranscript(workbench.draft(), transcript.text));
-    if (transcript.delivery === "send" && canSend && !workbench.isSending) onSend("interrupt");
-    else if (window.matchMedia("(pointer: fine)").matches) field.current?.focus();
-  }, [voice?.version]);
+  }, [draftKey, canCompose, listening]);
 
   // The `/` list, for a chat whose Pi can be asked what it runs.
   const session = workbench.selectedSession;
@@ -552,9 +543,9 @@ function Composer({ workbench, voice, placeholder, canCompose, canSend, onSend, 
             <AgentPicker workbench={workbench} />
             <ModelPicker workbench={workbench} session={session} disabled={!canSend || workbench.isSending} />
             <button type="button" className="round-button composer-mic"
-              disabled={!canCompose || Boolean(voice?.isBusy) || voiceState === "needsDownload"} aria-disabled={!voice || undefined}
-              onClick={() => void voice?.start()} aria-label={voice ? "Talk" : dictationUnavailable}
-              title={voice ? "Dictate on this device" : dictationUnavailable}>
+              disabled={!canCompose || (dictation !== null && !voice) || Boolean(voice?.isBusy) || voiceState === "needsDownload"} aria-disabled={!dictation || undefined}
+              onClick={() => void voice?.start()} aria-label={dictation ? "Talk" : dictationUnavailable}
+              title={!dictation ? dictationUnavailable : voice ? "Dictate on this device" : "Finishing dictation in another chat"}>
               <Icon name={voice ? "mic" : "micSlash"} size={20} />
             </button>
             <SendButton ready={ready} onSend={onSend} />
