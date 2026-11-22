@@ -955,10 +955,10 @@ function VoiceStatusCard({ voice }: { voice: VoicePrompt }) {
   const state = voice.state;
   let message: string;
   switch (state.kind) {
-    case "checking": message = "Checking dictation files…"; break;
+    case "checking":
+    case "loading": message = "Warming up dictation…"; break;
     case "needsDownload": message = `Download on-device dictation (${dictationDownloadMB} MB). Your audio stays in this browser.`; break;
     case "downloading": message = `Downloading dictation… ${state.percent}%`; break;
-    case "loading": message = "Loading on-device dictation…"; break;
     case "requestingPermission": message = "Opening the microphone…"; break;
     case "failed": message = state.message; break;
     default: return null;
