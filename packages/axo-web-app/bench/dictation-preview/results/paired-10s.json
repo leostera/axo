@@ -1,0 +1,612 @@
+{
+  "schemaVersion": 1,
+  "startedAt": "2026-11-23T01:01:18.319Z",
+  "completedAt": "2026-11-23T01:03:58.043Z",
+  "harness": {
+    "commit": "871c352968cd6d3765f4f89255e68122738123a0",
+    "dirty": false
+  },
+  "environment": {
+    "platform": "darwin",
+    "release": "25.5.0",
+    "arch": "arm64",
+    "cpu": "Apple M1 Ultra",
+    "node": "v26.13.0",
+    "app": "local Vite + fake cloud",
+    "launch": {
+      "headless": true,
+      "viewport": {
+        "width": 1440,
+        "height": 960
+      },
+      "args": [
+        "--no-sandbox"
+      ]
+    }
+  },
+  "targets": [
+    {
+      "label": "batch",
+      "commit": "0f8059a80ef18da37f595c64628372e5eadef285",
+      "dirty": false,
+      "sourceCaptureLimit": 960000,
+      "chrome": "158.0.8127.37",
+      "setupModelRequests": 3,
+      "blockedLongModes": {},
+      "blockedModes": {}
+    },
+    {
+      "label": "streaming",
+      "commit": "871c352968cd6d3765f4f89255e68122738123a0",
+      "dirty": false,
+      "sourceCaptureLimit": 960000,
+      "chrome": "158.0.8127.37",
+      "setupModelRequests": 3,
+      "blockedLongModes": {},
+      "blockedModes": {}
+    }
+  ],
+  "config": {
+    "durations": [
+      10
+    ],
+    "modes": [
+      "normal"
+    ],
+    "repetitionsPerStyle": 1,
+    "minP95Attempts": 40,
+    "finalTimeoutMs": 90000
+  },
+  "manifest": {
+    "schemaVersion": 1,
+    "voice": "macOS Samantha, say -r 160",
+    "os": "ProductName:\t\tmacOS\nProductVersion:\t\t26.5\nBuildVersion:\t\t25F71",
+    "ffmpeg": "ffmpeg version 8.1.2 Copyright (c) 2000-2026 the FFmpeg developers",
+    "fixtures": [
+      {
+        "id": "10-continuous",
+        "seconds": 10,
+        "style": "continuous",
+        "gapSeconds": 0,
+        "reference": "Orchard begins the checklist for Kubernetes and Postgres while the service runs without interruption. The last word is lighthouse.",
+        "jargon": [
+          "Kubernetes",
+          "Postgres"
+        ],
+        "file": "10-continuous.wav",
+        "sha256": "43946b2ec0713ccd938f260488be5f6f84cf63d3961df9abe69e9d10152cd547"
+      },
+      {
+        "id": "10-pauses",
+        "seconds": 10,
+        "style": "pauses",
+        "gapSeconds": 2,
+        "reference": "Orchard opens our Redis migration checklist. Please write down the final word lighthouse.",
+        "jargon": [
+          "Redis"
+        ],
+        "file": "10-pauses.wav",
+        "sha256": "b145aae668b807c8c77241b44a732f45d046f67173ecc6c85bd2f1e1df9f4d28"
+      },
+      {
+        "id": "30-continuous",
+        "seconds": 30,
+        "style": "continuous",
+        "gapSeconds": 0,
+        "reference": "Orchard is the first word in the recording and the team is meeting to review the migration plan. We will start with the Postgres database and check whether the Kubernetes deployment can roll back safely. The OpenTelemetry collector forwards traces while Redis absorbs bursts from the busiest parts of the service. The last word is lighthouse.",
+        "jargon": [
+          "Postgres",
+          "Kubernetes",
+          "OpenTelemetry",
+          "Redis"
+        ],
+        "file": "30-continuous.wav",
+        "sha256": "606c56a7117c2ff63a2e04ba76676e52a411f24d5dc064f220344740ed81c4cd"
+      },
+      {
+        "id": "30-pauses",
+        "seconds": 30,
+        "style": "pauses",
+        "gapSeconds": 3,
+        "reference": "Orchard marks the beginning of our meeting. We are starting with the Postgres migration. We will check Kubernetes, update the dashboard, and look at slow queries before the next group arrives. There is one more note about Redis. Please write down the final word lighthouse.",
+        "jargon": [
+          "Postgres",
+          "Kubernetes",
+          "Redis"
+        ],
+        "file": "30-pauses.wav",
+        "sha256": "eaa7514a89750aa7d83728bc6299a28ac388bbc4a8976da0ad16007e71a47d7a"
+      },
+      {
+        "id": "120-continuous",
+        "seconds": 120,
+        "style": "continuous",
+        "gapSeconds": 0,
+        "reference": "Orchard is the first word in the recording and the team is meeting to review the migration plan. We will start with the Postgres database and check whether the Kubernetes deployment can roll back safely. The OpenTelemetry collector forwards traces while Redis absorbs bursts from the busiest parts of the service. On Tuesday the team will review a long list of alerts and separate noisy signals from the important ones. The build should use Bazel to produce the same artifacts on a laptop and on the continuous integration workers. We can keep the old connection open while the new connection has enough time to confirm the handoff. An engineer will check each dashboard and write down the results before anyone moves another part of the system. The security review covers WebAssembly and asks how much memory it needs when several documents are open. We will copy the incident timeline into a shared document so that the support team can answer customer questions. The test needs to cover a weak connection and a restart while a user is still working on a message. When the logs are ready we will compare the names in the report with the names in the release notes. At the end of the week we will read the entire report from beginning to end and say the final word lighthouse.",
+        "jargon": [
+          "Postgres",
+          "Kubernetes",
+          "OpenTelemetry",
+          "Redis",
+          "Bazel",
+          "WebAssembly"
+        ],
+        "file": "120-continuous.wav",
+        "sha256": "bd832febfaeaa942803ccc69622fa4ff21ea3a3a40016a4a07e1c7268734e370"
+      },
+      {
+        "id": "120-pauses",
+        "seconds": 120,
+        "style": "pauses",
+        "gapSeconds": 2.25,
+        "reference": "Orchard is the first word in the recording and the team is meeting to review the migration plan. We will start with the Postgres database and check whether the Kubernetes deployment can roll back safely. The OpenTelemetry collector forwards traces while Redis absorbs bursts from the busiest parts of the service. On Tuesday the team will review a long list of alerts and separate noisy signals from the important ones. The build should use Bazel to produce the same artifacts on a laptop and on the continuous integration workers. We can keep the old connection open while the new connection has enough time to confirm the handoff. An engineer will check each dashboard and write down the results before anyone moves another part of the system. The security review covers WebAssembly and asks how much memory it needs when several documents are open. We will copy the incident timeline into a shared document so that the support team can answer customer questions. The test needs to cover a weak connection and a restart while a user is still working on a message. When the logs are ready we will compare the names in the report with the names in the release notes. At the end of the week we will read the entire report from beginning to end and say the final word lighthouse.",
+        "jargon": [
+          "Postgres",
+          "Kubernetes",
+          "OpenTelemetry",
+          "Redis",
+          "Bazel",
+          "WebAssembly"
+        ],
+        "file": "120-pauses.wav",
+        "sha256": "ec3b9a5e5269598b22d951558f1a2d22a702bfbf3e2e98e73107eeecbf9fb0de"
+      },
+      {
+        "id": "10-mid-phrase",
+        "seconds": 10,
+        "style": "mid-phrase",
+        "gapSeconds": 0,
+        "continuation": "the dashboard is green",
+        "tailSeconds": 0.025,
+        "reference": "Orchard starts our Kubernetes migration and we can only safely switch the production Postgres service when",
+        "jargon": [
+          "Kubernetes",
+          "Postgres"
+        ],
+        "file": "10-mid-phrase.wav",
+        "sha256": "6c649bc0818e40eb9038e2740e623358e34b5c7266a1543754f0e4f18c896e97"
+      },
+      {
+        "id": "30-mid-phrase",
+        "seconds": 30,
+        "style": "mid-phrase",
+        "gapSeconds": 0,
+        "continuation": "the replicas agree on the checkpoint",
+        "tailSeconds": 0.025,
+        "reference": "Orchard is the first word in the recording and the team is meeting to review the migration plan. We will start with the Postgres database and check whether the Kubernetes deployment can roll back safely. The OpenTelemetry collector forwards traces while Redis absorbs bursts from the busiest parts of the service. We can only switch traffic after",
+        "jargon": [
+          "Postgres",
+          "Kubernetes",
+          "OpenTelemetry",
+          "Redis"
+        ],
+        "file": "30-mid-phrase.wav",
+        "sha256": "2681ff624f669608f863d9aadf9abce5f761a54f1995ab1363d658a70448c85b"
+      },
+      {
+        "id": "120-mid-phrase",
+        "seconds": 120,
+        "style": "mid-phrase",
+        "gapSeconds": 0,
+        "continuation": "accept writes after the leader changes",
+        "tailSeconds": 0.025,
+        "reference": "Orchard is the first word in the recording and the team is meeting to review the migration plan. We will start with the Postgres database and check whether the Kubernetes deployment can roll back safely. The OpenTelemetry collector forwards traces while Redis absorbs bursts from the busiest parts of the service. On Tuesday the team will review a long list of alerts and separate noisy signals from the important ones. The build should use Bazel to produce the same artifacts on a laptop and on the continuous integration workers. We can keep the old connection open while the new connection has enough time to confirm the handoff. An engineer will check each dashboard and write down the results before anyone moves another part of the system. The security review covers WebAssembly and asks how much memory it needs when several documents are open. We will copy the incident timeline into a shared document so that the support team can answer customer questions. The test needs to cover a weak connection and a restart while a user is still working on a message. When the logs are ready we will compare the names in the report with the names in the release notes. Before moving the remaining traffic we need to verify that the new connection can",
+        "jargon": [
+          "Postgres",
+          "Kubernetes",
+          "OpenTelemetry",
+          "Redis",
+          "Bazel",
+          "WebAssembly"
+        ],
+        "file": "120-mid-phrase.wav",
+        "sha256": "a26fe2f7403b50c8becc94327eb25e7a7b487836ee2d9ecbb599487b911ff476"
+      }
+    ]
+  },
+  "points": [
+    {
+      "target": "batch",
+      "fixture": "10-continuous",
+      "seconds": 10,
+      "style": "continuous",
+      "mode": "normal",
+      "rep": 0,
+      "phase": "warmup",
+      "status": "ok",
+      "capturedMs": 10042.666666666666,
+      "stopAt": 28464.799999713898,
+      "visibleAt": 33297.40000009537,
+      "playbackEndAt": 28439.799999713898,
+      "workerEvents": [],
+      "draft": "Typed draft sentinel. Orchard begins the checklist for Kubernetes and Postgres while the service runs without interruption. The last word is Lighthouse.",
+      "transcript": "Orchard begins the checklist for Kubernetes and Postgres while the service runs without interruption. The last word is Lighthouse.",
+      "quality": {
+        "edits": 0,
+        "referenceWords": 19,
+        "actualWords": 19,
+        "wer": 0,
+        "first": {
+          "expected": "orchard",
+          "actual": "orchard",
+          "match": true
+        },
+        "last": {
+          "expected": "lighthouse",
+          "actual": "lighthouse",
+          "match": true
+        },
+        "jargon": {
+          "Kubernetes": true,
+          "Postgres": true
+        }
+      },
+      "path": "batch",
+      "previews": [],
+      "playbackStartAt": 18439.900000095367,
+      "workerInputs": [
+        167168
+      ],
+      "capturedSamples": 167168,
+      "captureLimitSamples": 960000,
+      "stopToDraftMs": 4832.60000038147
+    },
+    {
+      "target": "batch",
+      "fixture": "10-continuous",
+      "seconds": 10,
+      "style": "continuous",
+      "mode": "normal",
+      "rep": 1,
+      "phase": "measurement",
+      "status": "ok",
+      "capturedMs": 10042.666666666666,
+      "stopAt": 43550,
+      "visibleAt": 48096.5,
+      "playbackEndAt": 43517.09999990463,
+      "workerEvents": [],
+      "draft": "Typed draft sentinel. Orchard begins the checklist for Kubernetes and Postgres while the service runs without interruption. The last word is Lighthouse.",
+      "transcript": "Orchard begins the checklist for Kubernetes and Postgres while the service runs without interruption. The last word is Lighthouse.",
+      "quality": {
+        "edits": 0,
+        "referenceWords": 19,
+        "actualWords": 19,
+        "wer": 0,
+        "first": {
+          "expected": "orchard",
+          "actual": "orchard",
+          "match": true
+        },
+        "last": {
+          "expected": "lighthouse",
+          "actual": "lighthouse",
+          "match": true
+        },
+        "jargon": {
+          "Kubernetes": true,
+          "Postgres": true
+        }
+      },
+      "path": "batch",
+      "previews": [],
+      "playbackStartAt": 33517.699999809265,
+      "workerInputs": [
+        161024
+      ],
+      "capturedSamples": 161024,
+      "captureLimitSamples": 960000,
+      "stopToDraftMs": 4546.5
+    },
+    {
+      "target": "batch",
+      "fixture": "10-pauses",
+      "seconds": 10,
+      "style": "pauses",
+      "mode": "normal",
+      "rep": 1,
+      "phase": "measurement",
+      "status": "ok",
+      "capturedMs": 10042.666666666668,
+      "stopAt": 58369.09999990463,
+      "visibleAt": 62796.5,
+      "playbackEndAt": 58333.2999997139,
+      "workerEvents": [],
+      "draft": "Typed draft sentinel. Orchard opens our redis migration checklist Please write down the final word lighthouse",
+      "transcript": "Orchard opens our redis migration checklist Please write down the final word lighthouse",
+      "quality": {
+        "edits": 0,
+        "referenceWords": 13,
+        "actualWords": 13,
+        "wer": 0,
+        "first": {
+          "expected": "orchard",
+          "actual": "orchard",
+          "match": true
+        },
+        "last": {
+          "expected": "lighthouse",
+          "actual": "lighthouse",
+          "match": true
+        },
+        "jargon": {
+          "Redis": true
+        }
+      },
+      "path": "batch",
+      "previews": [],
+      "playbackStartAt": 48300.699999809265,
+      "workerInputs": [
+        160768
+      ],
+      "capturedSamples": 160768,
+      "captureLimitSamples": 960000,
+      "stopToDraftMs": 4427.400000095367
+    },
+    {
+      "target": "batch",
+      "fixture": "10-mid-phrase",
+      "seconds": 10,
+      "style": "mid-phrase",
+      "mode": "normal",
+      "rep": 1,
+      "phase": "measurement",
+      "status": "ok",
+      "capturedMs": 10053.333333333332,
+      "stopAt": 73031.69999980927,
+      "visibleAt": 77495.69999980927,
+      "playbackEndAt": 72992.40000009537,
+      "workerEvents": [],
+      "draft": "Typed draft sentinel. Orchard starts our Kubernetes migration and we can only safely switch the production postger service when",
+      "transcript": "Orchard starts our Kubernetes migration and we can only safely switch the production postger service when",
+      "quality": {
+        "edits": 1,
+        "referenceWords": 16,
+        "actualWords": 16,
+        "wer": 0.0625,
+        "first": {
+          "expected": "orchard",
+          "actual": "orchard",
+          "match": true
+        },
+        "last": {
+          "expected": "when",
+          "actual": "when",
+          "match": true
+        },
+        "jargon": {
+          "Kubernetes": true,
+          "Postgres": false
+        }
+      },
+      "path": "batch",
+      "previews": [],
+      "playbackStartAt": 62997.199999809265,
+      "workerInputs": [
+        160896
+      ],
+      "capturedSamples": 160896,
+      "captureLimitSamples": 960000,
+      "stopToDraftMs": 4464
+    },
+    {
+      "target": "streaming",
+      "fixture": "10-continuous",
+      "seconds": 10,
+      "style": "continuous",
+      "mode": "normal",
+      "rep": 0,
+      "phase": "warmup",
+      "status": "ok",
+      "capturedMs": 10042.666666666668,
+      "stopAt": 28358.599999904633,
+      "visibleAt": 32939,
+      "playbackEndAt": 28329.699999809265,
+      "workerEvents": [],
+      "draft": "Typed draft sentinel. Orchard begins the checklist for Kubernetes and Postgres while the service runs without interruption. The last word is Lighthouse.",
+      "transcript": "Orchard begins the checklist for Kubernetes and Postgres while the service runs without interruption. The last word is Lighthouse.",
+      "quality": {
+        "edits": 0,
+        "referenceWords": 19,
+        "actualWords": 19,
+        "wer": 0,
+        "first": {
+          "expected": "orchard",
+          "actual": "orchard",
+          "match": true
+        },
+        "last": {
+          "expected": "lighthouse",
+          "actual": "lighthouse",
+          "match": true
+        },
+        "jargon": {
+          "Kubernetes": true,
+          "Postgres": true
+        }
+      },
+      "path": "batch",
+      "previews": [
+        {
+          "text": "Orchard begins the check",
+          "at": 21322.299999713898
+        }
+      ],
+      "playbackStartAt": 18331.5,
+      "workerInputs": [
+        32000,
+        32000,
+        162560
+      ],
+      "capturedSamples": 162560,
+      "captureLimitSamples": 960000,
+      "stopToDraftMs": 4580.400000095367
+    },
+    {
+      "target": "streaming",
+      "fixture": "10-continuous",
+      "seconds": 10,
+      "style": "continuous",
+      "mode": "normal",
+      "rep": 1,
+      "phase": "measurement",
+      "status": "ok",
+      "capturedMs": 10053.333333333332,
+      "stopAt": 43173.199999809265,
+      "visibleAt": 47688.699999809265,
+      "playbackEndAt": 43135.59999990463,
+      "workerEvents": [],
+      "draft": "Typed draft sentinel. Orchard begins the checklist for Kubernetes and Postgres while the service runs without interruption The last word is Lighthouse",
+      "transcript": "Orchard begins the checklist for Kubernetes and Postgres while the service runs without interruption The last word is Lighthouse",
+      "quality": {
+        "edits": 0,
+        "referenceWords": 19,
+        "actualWords": 19,
+        "wer": 0,
+        "first": {
+          "expected": "orchard",
+          "actual": "orchard",
+          "match": true
+        },
+        "last": {
+          "expected": "lighthouse",
+          "actual": "lighthouse",
+          "match": true
+        },
+        "jargon": {
+          "Kubernetes": true,
+          "Postgres": true
+        }
+      },
+      "path": "batch",
+      "previews": [
+        {
+          "text": "Orchard begins the checklist.",
+          "at": 36189.5
+        }
+      ],
+      "playbackStartAt": 33138.90000009537,
+      "workerInputs": [
+        32000,
+        32000,
+        160896
+      ],
+      "capturedSamples": 160896,
+      "captureLimitSamples": 960000,
+      "stopToDraftMs": 4515.5
+    },
+    {
+      "target": "streaming",
+      "fixture": "10-pauses",
+      "seconds": 10,
+      "style": "pauses",
+      "mode": "normal",
+      "rep": 1,
+      "phase": "measurement",
+      "status": "ok",
+      "capturedMs": 10042.666666666668,
+      "stopAt": 57922.199999809265,
+      "visibleAt": 62419.199999809265,
+      "playbackEndAt": 57890.09999990463,
+      "workerEvents": [],
+      "draft": "Typed draft sentinel. Orchard opens our redis migration checklist Please write down the final word lighthouse",
+      "transcript": "Orchard opens our redis migration checklist Please write down the final word lighthouse",
+      "quality": {
+        "edits": 0,
+        "referenceWords": 13,
+        "actualWords": 13,
+        "wer": 0,
+        "first": {
+          "expected": "orchard",
+          "actual": "orchard",
+          "match": true
+        },
+        "last": {
+          "expected": "lighthouse",
+          "actual": "lighthouse",
+          "match": true
+        },
+        "jargon": {
+          "Redis": true
+        }
+      },
+      "path": "batch",
+      "previews": [
+        {
+          "text": "Orchard opens are we",
+          "at": 50922
+        },
+        {
+          "text": "Playing the same thing.",
+          "at": 55303.7999997139
+        }
+      ],
+      "playbackStartAt": 47894.59999990463,
+      "workerInputs": [
+        32000,
+        32000,
+        160768
+      ],
+      "capturedSamples": 160768,
+      "captureLimitSamples": 960000,
+      "stopToDraftMs": 4497
+    },
+    {
+      "target": "streaming",
+      "fixture": "10-mid-phrase",
+      "seconds": 10,
+      "style": "mid-phrase",
+      "mode": "normal",
+      "rep": 1,
+      "phase": "measurement",
+      "status": "ok",
+      "capturedMs": 10042.666666666668,
+      "stopAt": 72689.59999990463,
+      "visibleAt": 77135.59999990463,
+      "playbackEndAt": 72658.19999980927,
+      "workerEvents": [],
+      "draft": "Typed draft sentinel. Orchard starts our Kubernetes migration and we can only safely switch the production postger service when",
+      "transcript": "Orchard starts our Kubernetes migration and we can only safely switch the production postger service when",
+      "quality": {
+        "edits": 1,
+        "referenceWords": 16,
+        "actualWords": 16,
+        "wer": 0.0625,
+        "first": {
+          "expected": "orchard",
+          "actual": "orchard",
+          "match": true
+        },
+        "last": {
+          "expected": "when",
+          "actual": "when",
+          "match": true
+        },
+        "jargon": {
+          "Kubernetes": true,
+          "Postgres": false
+        }
+      },
+      "path": "batch",
+      "previews": [
+        {
+          "text": "Orchard starts arguing.",
+          "at": 65686.09999990463
+        },
+        {
+          "text": "We can only safely sweep.",
+          "at": 69769.59999990463
+        }
+      ],
+      "playbackStartAt": 62623.90000009537,
+      "workerInputs": [
+        32000,
+        32000,
+        160768
+      ],
+      "capturedSamples": 160768,
+      "captureLimitSamples": 960000,
+      "stopToDraftMs": 4446
+    }
+  ],
+  "candidatePreviewQuery": false
+}

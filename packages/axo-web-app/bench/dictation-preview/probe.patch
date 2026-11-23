@@ -1,0 +1,31 @@
+--- a/run.mjs
++++ b/run.mjs
+@@ -196,11 +196,11 @@
+         const finals = events.filter(event => event.kind === 'final');
+         const final = finals[0];
+         Object.assign(point, { capturedMs, stopAt, visibleAt, playbackEndAt, workerEvents: events, draft, transcript, quality: score(fixture, transcript),
+-          path: target.label === 'streaming' ? final?.path : 'batch', fallbackReason: final?.reason,
++          path: 'batch', previews: await page.evaluate(() => window.dictationBench.previews), playbackStartAt: await page.evaluate(() => window.dictationBench.playbackStartAt), fallbackReason: final?.reason,
+           workerInputs, capturedSamples: final?.capturedSamples ?? workerInputs.at(-1),
+           captureLimitSamples: final?.captureLimitSamples ?? target.sourceCaptureLimit });
+         if (error) throw new Error(error);
+-        if (target.label === 'streaming') {
++        if (false) {
+           assert(finals.length === 1 && ['streaming', 'batch', 'fallback'].includes(final?.path) && final.at <= visibleAt, 'Candidate must mark exactly one final path before draft presentation');
+           if (final.path === 'fallback') assert(typeof final.reason === 'string' && final.reason, 'Fallback reason missing');
+           if (mode === 'forced-fallback') assert(final.path === 'fallback' && final.reason === 'bench-injected', 'Forced fallback hook was not exercised');
+--- a/page-probe.mjs
++++ b/page-probe.mjs
+@@ -52,8 +52,12 @@
+     };
+     probe.play = () => new Promise(resolve => {
+       probe.active = true;
++      probe.previews = [];
++      probe.playbackStartAt = performance.now();
+       const observe = () => {
+         if (!probe.active) return;
++        const preview = document.querySelector('.voice-preview bdi')?.textContent;
++        if (preview && preview !== probe.previews.at(-1)?.text) probe.previews.push({ text: preview, at: performance.now() });
+         const draft = document.querySelector(box);
+         const visible = document.visibilityState === 'visible' && draft?.checkVisibility({ checkVisibilityCSS: true, checkOpacity: true });
+         const listening = document.querySelector(group);
