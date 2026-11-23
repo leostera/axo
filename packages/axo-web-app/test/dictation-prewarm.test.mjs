@@ -56,7 +56,7 @@ test("only a visible composer prewarms; Talk joins it, and cancellation drops st
     await setVisibility("visible");
     await prepares(2);
     await talk.click();
-    await page.getByText("Loading on-device dictation…").waitFor();
+    await page.getByText("Warming up dictation…", { exact: true }).waitFor();
     await setVisibility("hidden");
     assert.deepEqual(await state(), { prepares: [false, false], terminated: 1, micCalls: 0 });
     await cancel.click();
