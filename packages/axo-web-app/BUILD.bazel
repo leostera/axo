@@ -138,6 +138,7 @@ node_test(
         "test/composer-pills.test.mjs",
         "test/dictation-navigation.test.mjs",
         "test/dictation-prewarm.test.mjs",
+        "test/dictation-preview.test.mjs",
         "test/chat-list.test.mjs",
         "test/cache.test.mjs",
         "test/web-polish.test.mjs",

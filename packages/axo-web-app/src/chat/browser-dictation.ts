@@ -4,6 +4,12 @@ import { voiceMessages, type DictationEngine, type VoiceSetupProgress } from "./
 
 export const dictationUnavailable = "On-device dictation needs a supported desktop browser.";
 
+// The batch encoder is not interruptible without discarding the loaded model.
+// Keep any work ahead of Stop to one short inference, never a queue.
+const previewSamples = 2 * dictationSampleRate;
+const previewInterval = 4 * dictationSampleRate;
+const previewTimeBudgetMs = 1_200;
+
 type PrepareResult = "ready" | "needsDownload";
 
 interface Preparation {
@@ -26,6 +32,8 @@ export class BrowserDictation implements DictationEngine {
   private preparation: Preparation | null = null;
   private stopRequest: (() => void) | null = null;
   private capture: MicrophoneCapture | null = null;
+  private preview: Promise<void> | null = null;
+  private previewsSlow = false;
 
   get audioLevel(): number { return this.capture?.audioLevel ?? 0; }
 
@@ -77,16 +85,40 @@ export class BrowserDictation implements DictationEngine {
     return preparation;
   }
 
-  async start(interrupted: (message: string) => void, timeLimit: () => void): Promise<void> {
-    const capture = new MicrophoneCapture(interrupted, timeLimit);
+  async start(interrupted: (message: string) => void, timeLimit: () => void, showPreview: (text: string) => void): Promise<void> {
+    const capture = new MicrophoneCapture(interrupted, timeLimit, () => this.maybePreview(capture, showPreview));
     this.capture = capture;
     await capture.start();
+  }
+
+  private maybePreview(capture: MicrophoneCapture, showPreview: (text: string) => void): void {
+    if (this.capture !== capture || !this.ready || this.preview || this.previewsSlow || document.hidden) return;
+    const pcm = capture.previewAudio();
+    if (!pcm) return;
+    const start = performance.now();
+    const preview = this.request({ kind: "transcribe", pcm }, undefined, true).then(reply => {
+      if (this.capture !== capture) return;
+      if (performance.now() - start > previewTimeBudgetMs) this.previewsSlow = true;
+      if (capture.listening && reply.kind === "transcript") showPreview(reply.text.trim());
+    }).catch(() => {
+      if (this.capture === capture) this.previewsSlow = true;
+    }).finally(() => {
+      if (this.preview === preview) this.preview = null;
+    });
+    this.preview = preview;
   }
 
   async finish(): Promise<string> {
     const capture = this.capture;
     if (!capture) return "";
+    // finish() closes preview admission synchronously, before flushing the last
+    // worklet packet. A stale reply is ignored. At most the running call drains.
     const pcm = await capture.finish();
+    await this.preview;
+    if (this.capture !== capture) return "";
+    if (!this.ready && await this.prepare(false, () => {}) !== "ready") {
+      throw new Error("On-device dictation couldn't finish. Try again.");
+    }
     if (this.capture !== capture) return "";
     this.capture = null;
     const reply = await this.request({ kind: "transcribe", pcm });
@@ -100,6 +132,10 @@ export class BrowserDictation implements DictationEngine {
 
   dispose(): void {
     this.closeCapture();
+    this.resetWorker();
+  }
+
+  private resetWorker(): void {
     this.preparation = null;
     this.stopRequest?.();
     this.worker?.terminate();
@@ -110,9 +146,10 @@ export class BrowserDictation implements DictationEngine {
   private closeCapture(): void {
     this.capture?.close();
     this.capture = null;
+    this.preview = null;
   }
 
-  private request(message: ModelRequest, progress?: (state: VoiceSetupProgress) => void): Promise<ModelReply> {
+  private request(message: ModelRequest, progress?: (state: VoiceSetupProgress) => void, preview = false): Promise<ModelReply> {
     const worker = this.worker ??= new Worker(new URL("./parakeet.worker.ts", import.meta.url), { type: "module" });
     return new Promise((resolve, reject) => {
       const cleanup = () => {
@@ -122,17 +159,18 @@ export class BrowserDictation implements DictationEngine {
         worker.onerror = null;
         worker.onmessageerror = null;
       };
-      const fail = (message: string) => {
+      const fail = (message: string, workerLost = true) => {
         cleanup();
-        this.dispose();
+        if (!preview) this.dispose();
+        else if (workerLost) this.resetWorker(); // Keep the original capture for the final.
         reject(new Error(message));
       };
       this.stopRequest = () => { cleanup(); reject(new DOMException("Cancelled", "AbortError")); };
-      const timeout = window.setTimeout(() => fail("On-device dictation timed out. Try again."), message.kind === "prepare" ? 600_000 : 60_000);
+      const timeout = window.setTimeout(() => fail("On-device dictation timed out. Try again."), message.kind === "prepare" ? 600_000 : preview ? 4_000 : 60_000);
       worker.onerror = worker.onmessageerror = () => fail("On-device dictation stopped. Try a desktop browser with more available memory.");
       worker.onmessage = ({ data }: MessageEvent<ModelReply>) => {
         if (data.kind === "downloading" || data.kind === "loading") return progress?.(data);
-        if (data.kind === "failed") return fail(data.message);
+        if (data.kind === "failed") return fail(data.message, false);
         cleanup();
         resolve(data);
       };
@@ -155,9 +193,32 @@ class MicrophoneCapture {
   private stopped: (() => void) | null = null;
   private closed = false;
   private finishing = false;
+  private nextPreview = previewSamples;
+  private audible = 0;
   audioLevel = 0;
 
-  constructor(private readonly interrupted: (message: string) => void, private readonly timeLimit: () => void) {}
+  constructor(
+    private readonly interrupted: (message: string) => void,
+    private readonly timeLimit: () => void,
+    private readonly recorded: () => void,
+  ) {}
+
+  get listening(): boolean { return !this.closed && !this.finishing; }
+
+  previewAudio(): Float32Array | null {
+    if (!this.listening || this.length < this.nextPreview || this.audible < dictationSampleRate / 5) return null;
+    this.nextPreview = this.length + previewInterval;
+    this.audible = 0;
+    const pcm = new Float32Array(previewSamples);
+    let end = previewSamples;
+    for (let i = this.chunks.length - 1; i >= 0 && end > 0; i--) {
+      const chunk = this.chunks[i]!;
+      const count = Math.min(end, chunk.length);
+      end -= count;
+      pcm.set(chunk.subarray(chunk.length - count), end);
+    }
+    return pcm;
+  }
 
   async start(): Promise<void> {
     const stream = await this.requestMicrophone();
@@ -198,7 +259,11 @@ class MicrophoneCapture {
     this.chunks.push(audio);
     this.length += count;
     this.audioLevel = Math.sqrt(audio.reduce((sum, sample) => sum + sample * sample, 0) / count);
-    if (this.length >= maxDictationSamples && !this.finishing) this.timeLimit();
+    if (this.audioLevel >= 0.003) this.audible = Math.min(previewSamples, this.audible + count);
+    else this.audible = Math.max(0, this.audible - count);
+    if (!this.listening) return;
+    if (this.length >= maxDictationSamples) this.timeLimit();
+    else this.recorded();
   }
 
   async finish(): Promise<Float32Array> {

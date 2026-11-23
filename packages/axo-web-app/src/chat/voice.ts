@@ -25,7 +25,7 @@ export function appendTranscript(draft: string, text: string): string {
 export interface DictationEngine {
   readonly audioLevel: number;
   prepare(download: boolean, progress: (state: VoiceSetupProgress) => void): Promise<"ready" | "needsDownload">;
-  start(interrupted: (message: string) => void, timeLimit: () => void): Promise<void>;
+  start(interrupted: (message: string) => void, timeLimit: () => void, preview: (text: string) => void): Promise<void>;
   finish(): Promise<string>;
   cancel(): void;
 }
@@ -39,6 +39,7 @@ export const voiceMessages = {
 export class VoicePrompt {
   state: VoiceState = { kind: "idle" };
   transcript: VoiceTranscript | null = null;
+  preview = "";
   version = 0;
   private readonly listeners = new Set<() => void>();
   /** Setup and inference can report back after Cancel or a change of chat. */
@@ -87,6 +88,11 @@ export class VoicePrompt {
       await this.engine.start(
         message => { if (current === this.generation) this.cancel(message); },
         () => { if (current === this.generation) void this.finish("draft"); },
+        text => {
+          if (current !== this.generation || this.state.kind !== "listening" || this.preview === text) return;
+          this.preview = text;
+          this.set(this.state);
+        },
       );
       if (current === this.generation) this.set({ kind: "listening" });
     } catch (error) {
@@ -97,6 +103,7 @@ export class VoicePrompt {
   async finish(delivery: VoiceDelivery): Promise<void> {
     if (this.state.kind !== "listening") return;
     const current = this.generation;
+    this.preview = "";
     this.set({ kind: "finishing" });
     try {
       const text = (await this.engine.finish()).trim();
@@ -111,6 +118,7 @@ export class VoicePrompt {
 
   cancel(failure?: string): void {
     this.transcript = null;
+    this.preview = "";
     this.generation += 1;
     this.engine.cancel();
     if (this.state.kind !== "idle") this.set(failure ? { kind: "failed", message: failure } : { kind: "idle" });

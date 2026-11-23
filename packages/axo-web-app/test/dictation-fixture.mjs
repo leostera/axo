@@ -1,5 +1,5 @@
 /** Cheap composer tests use the real microphone graph with a fake stream and model worker. */
-export function mockDictation({ text, needsDownload = false, holdPrepare = false }) {
+export function mockDictation({ text, needsDownload = false, holdPrepare = false, previewText }) {
   const RealWorker = window.Worker;
   window.dictationFixture = {
     needsDownload, failure: null, hold: false, inferences: 0,
@@ -22,6 +22,11 @@ export function mockDictation({ text, needsDownload = false, holdPrepare = false
         fixture.needsDownload = false;
         return report({ kind: "ready" });
       }
+      if (previewText && message.pcm.length === 32_000) {
+        fixture.previews = (fixture.previews ?? 0) + 1;
+        fixture.releasePreview = () => report({ kind: "transcript", text: previewText });
+        return;
+      }
       fixture.inferences++;
       if (fixture.hold) {
         fixture.release = () => report({ kind: "transcript", text });
@@ -37,8 +42,11 @@ export function mockDictation({ text, needsDownload = false, holdPrepare = false
     const context = new AudioContext();
     const destination = context.createMediaStreamDestination();
     const [track] = destination.stream.getAudioTracks();
+    const source = previewText ? context.createOscillator() : null;
+    source?.connect(destination);
+    source?.start();
     const stop = track.stop.bind(track);
-    track.stop = () => { stop(); void context.close(); };
+    track.stop = () => { source?.stop(); stop(); void context.close(); };
     return destination.stream;
   };
 }

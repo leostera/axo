@@ -921,6 +921,12 @@ function VoiceListeningBar({ voice, canSend }: { voice: VoicePrompt; canSend: bo
   return (
     <div className="composer voice-listening" role="group" aria-label="Listening">
       <p className="voice-recording-label" role="status">{finishing ? "Transcribing on this device…" : "Listening on this device…"}</p>
+      {!finishing && voice.preview && (
+        <p className="voice-preview">
+          <span className="voice-preview-label">Preview</span>{" "}
+          <bdi>{voice.preview}</bdi>
+        </p>
+      )}
       <div className="voice-controls">
         <button type="button" className="round-button inset" onClick={() => voice.cancel()} aria-label="Cancel"><Icon name="close" size={17} /></button>
         {finishing ? <span className="voice-finishing"><span className="spinner" aria-hidden="true" /></span> : <VoiceWaveform voice={voice} />}
