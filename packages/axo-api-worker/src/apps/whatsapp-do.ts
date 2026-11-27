@@ -2,6 +2,10 @@ import { DurableObject } from "cloudflare:workers";
 import { whatsapp, WhatsAppDevice, type LinkedDevice, type LinkedOutcome, type LinkStart, type LinkState } from "@axo/apps";
 import { Keyring, type KeyEnvironment } from "../auth/keys";
 
+// Emergency compute pause. Keep the namespace and pairing state; do not unlink devices.
+const WHATSAPP_PAUSED = true;
+const PAUSED = "Axo's WhatsApp integration is temporarily paused.";
+
 /**
  * One linked WhatsApp device of an account's (RFD0016, Linked devices), named
  * `<accountId>:<device>`; only the account's Durable Object, which made it, reaches it. It holds
@@ -10,10 +14,14 @@ import { Keyring, type KeyEnvironment } from "../auth/keys";
  * deploy or an eviction; WhatsApp keeps what arrived meanwhile and sends it then.
  */
 export class AxoWhatsAppDO extends DurableObject<Env> implements LinkedDevice {
-  private readonly device: WhatsAppDevice;
+  private readonly device: WhatsAppDevice | null;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
+    if (WHATSAPP_PAUSED) {
+      this.device = null;
+      return;
+    }
     const purpose = `apps-whatsapp-device\0${ctx.id.toString()}`;
     const keys = () => {
       const parsed = Keyring.parse(env as KeyEnvironment);
@@ -33,23 +41,34 @@ export class AxoWhatsAppDO extends DurableObject<Env> implements LinkedDevice {
     });
   }
 
-  startLink(start: LinkStart): Promise<LinkState> {
-    return this.device.startLink(start);
+  async startLink(start: LinkStart): Promise<LinkState> {
+    return this.device ? this.device.startLink(start) : { state: "failed", error: PAUSED };
   }
 
   async linkState(): Promise<LinkState> {
-    return this.device.linkState();
+    return this.device ? this.device.linkState() : { state: "failed", error: PAUSED };
   }
 
-  unlink(): Promise<void> {
-    return this.device.unlink();
+  async unlink(): Promise<void> {
+    if (!this.device) throw new Error(PAUSED);
+    await this.device.unlink();
   }
 
-  run(tool: string, input: Record<string, unknown>): Promise<LinkedOutcome> {
-    return this.device.run(whatsapp.tools, tool, input).catch((error: unknown) => ({ error: error instanceof Error ? error.message.slice(0, 300) : "WhatsApp failed" }));
+  async run(tool: string, input: Record<string, unknown>): Promise<LinkedOutcome> {
+    if (!this.device) return { error: PAUSED };
+    try {
+      // The first tool call after resuming restarts the watchdog for an existing pairing.
+      if (this.device.status() === "linked" && await this.ctx.storage.getAlarm() === null) {
+        await this.device.alarm();
+      }
+      return await this.device.run(whatsapp.tools, tool, input);
+    } catch (error) {
+      return { error: error instanceof Error ? error.message.slice(0, 300) : "WhatsApp failed" };
+    }
   }
 
   override async alarm(): Promise<void> {
-    await this.device.alarm();
+    // An already scheduled alarm may fire once during the pause. Do not reschedule it.
+    await this.device?.alarm();
   }
 }
