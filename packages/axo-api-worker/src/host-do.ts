@@ -550,7 +550,7 @@ export class AxoHostDO extends AxoHostRelay {
 
   /** Marks a row distrusted before a write goes out: only the SessionDO's answer verifies it again (distrustWhileWriting). */
   private distrust(sessionId: string): void {
-    this.ctx.storage.sql.exec("UPDATE session_index SET verified = 0 WHERE session_id = ?", sessionId);
+    this.ctx.storage.sql.exec("UPDATE session_index SET verified = 0 WHERE session_id = ? AND verified <> 0", sessionId);
   }
 
   private async append(params: unknown, { peer }: CallerContext): Promise<AppendResult> {
@@ -640,9 +640,13 @@ export class AxoHostDO extends AxoHostRelay {
   private refreshHead(sessionId: string, epoch: number | null, head: number, chain: string | null, verified = false): void {
     const row = this.indexRow(sessionId);
     if (!row) return;
-    if (verified !== (row.verified === 1)) this.ctx.storage.sql.exec("UPDATE session_index SET verified = ? WHERE session_id = ?", verified ? 1 : 0, sessionId);
-    if (row.epoch === epoch && row.head === head && row.chain === chain) return;
-    this.ctx.storage.sql.exec("UPDATE session_index SET epoch = ?, head = ?, chain = ? WHERE session_id = ?", epoch, head, chain, sessionId);
+    const headChanged = row.epoch !== epoch || row.head !== head || row.chain !== chain;
+    const verifiedValue = verified ? 1 : 0;
+    if (headChanged || row.verified !== verifiedValue) {
+      this.ctx.storage.sql.exec("UPDATE session_index SET epoch = ?, head = ?, chain = ?, verified = ? WHERE session_id = ?",
+        epoch, head, chain, verifiedValue, sessionId);
+    }
+    if (!headChanged) return;
     if (row.epoch !== null && epoch !== null && epoch > row.epoch) {
       // Memory is per epoch: what was held may be past the cut.
       this.clients.epochMoved(sessionId);
@@ -1174,7 +1178,8 @@ export class AxoHostDO extends AxoHostRelay {
 
   /** Keeps what the SessionDO said R2 holds; undefined (it did not say) forgets it, so the index never claims more. */
   private noteStored(sessionId: string, stored: number | undefined): void {
-    this.ctx.storage.sql.exec("UPDATE session_index SET stored = ? WHERE session_id = ?", stored ?? null, sessionId);
+    const value = stored ?? null;
+    this.ctx.storage.sql.exec("UPDATE session_index SET stored = ? WHERE session_id = ? AND stored IS NOT ?", value, sessionId, value);
   }
 
   private indexRow(sessionId: string): IndexRow | undefined {
